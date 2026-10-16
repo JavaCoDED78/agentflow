@@ -1,0 +1,41 @@
+# ---- IDE and editors ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+
+# ---- Gradle ----
+.gradle/
+**/build/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+.well-known/
+
+# ---- Logs and temp ----
+*.log
+*.pid
+tmp/
+temp/
+/tmp/
+
+# ---- Environment and secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Java / keytool artifacts ----
+*.keystore
+*.p12
+*.jks
+
+# ---- Editor/OS generated ----
+*.swp
+*~
+.fleet/
