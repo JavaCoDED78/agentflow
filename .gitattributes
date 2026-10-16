@@ -1,0 +1,43 @@
+# Line endings and file handling for AgentFlow (S01-02)
+# Aligns with .editorconfig (end_of_line = lf) so that cross-platform
+# checkouts (Windows autocrlf) stay consistent and CI on Linux is deterministic.
+
+# Default: every file is treated as text with LF line endings on commit and checkout.
+* text=auto eol=lf
+
+# Text/JSON/YAML files keep BOM-free UTF-8; mark explicitly for clarity.
+*.md     text
+*.java   text
+*.kt     text
+*.xml    text
+*.yml    text
+*.yaml   text
+*.json   text
+*.properties text
+*.sql    text
+*.sh     text eol=lf
+*.txt    text
+
+# Binary assets: do not normalize or guess encoding.
+*.png    binary
+*.jpeg    binary
+*.jpg    binary
+*.gif    binary
+*.webp   binary
+*.ico    binary
+*.svg    text
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+*.eot    binary
+*.pdf    binary
+*.zip    binary
+*.jar    binary
+*.class  binary
+*.keystore binary
+*.p12    binary
+*.jks    binary
+
+# Keep generated/generated-on-import assets untouched.
+*.lock   binary
