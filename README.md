@@ -34,6 +34,11 @@ This file is the entry point and project map. Detailed documentation lives in
 ./gradlew build         # compile with the pinned Java 25 toolchain (once modules exist)
 ```
 
+Gradle reproducibility (wrapper checksum + dependency locking, `S01-09`): a build
+against a different dependency graph fails instead of drifting. Regenerate the
+locks after any version change with `./gradlew --write-locks generateLockFiles`
+and keep `./gradlew check` green.
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

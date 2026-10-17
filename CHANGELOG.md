@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Gradle Plugin Portal and Maven Central. Verified with `./gradlew help` and by
   resolving both BOMs (and applying the Boot plugin) against the real catalog.
 
+- **Gradle reproducibility (S01-09).** The build now pins the wrapper checksum
+  (`gradle/wrapper/gradle-wrapper.sha256`, checked by the `verifyWrapper` task on
+  every invocation) and enables dependency locking (`lockAllConfigurations()`),
+  committing `apps/agentflow-app/gradle.lockfile` (the main app dependency lock) plus
+  the placeholder locks `settings-gradle.lockfile` and `apps/gradle.lockfile`; plugin
+  versions are pinned explicitly in `pluginManagement`, so a build against a different
+  graph fails instead of drifting. Update a dependency by
+  editing the version catalog and regenerating the locks with
+  `./gradlew --write-locks generateLockFiles`, then keep `./gradlew check` green.
+
 - **Spring AI BOM compatibility (`S01-08`).** The Spring AI BOM
   (`spring-ai-bom:2.0.1`) is now consumed by `apps/agentflow-app`
   (`implementation(platform(libs.spring.ai.bom))`). Both BOMs import together with

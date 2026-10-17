@@ -1,0 +1,2 @@
+# SHA-256 of gradle-wrapper.jar. Regenerate with './gradlew updateWrapperChecksum' after changing the wrapper version (S01-09).
+gradle-wrapper.jar.sha256=76805e32c009c0cf0dd5d206bddc9fb22ea42e84db904b764f3047de095493f3

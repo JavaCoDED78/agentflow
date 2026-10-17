@@ -8,6 +8,8 @@
 // Common per-module configuration (repositories, shared plugin options) is
 // added here as modules are introduced. See DEVELOPMENT_PLAN.md, Sprint 1.
 
+import java.security.MessageDigest
+
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.jvm.toolchain.JavaLanguageVersion
@@ -21,6 +23,13 @@ import org.gradle.jvm.toolchain.JavaLanguageVersion
 subprojects {
     apply(plugin = "java")
 
+    // Dependency locking (S01-09): pin every resolved configuration to the
+    // committed gradle.lockfile so a build reproduces the same module versions
+    // across machines. See docs/architecture/dependency-management.md.
+    dependencyLocking {
+        lockAllConfigurations()
+    }
+
     extensions.configure<JavaPluginExtension> {
         toolchain {
             languageVersion.set(JavaLanguageVersion.of(25))
@@ -30,5 +39,99 @@ subprojects {
     tasks.withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
         options.release.set(25)
+    }
+
+    // The wrapper checksum is part of the verification gate so a tampered or
+    // wrong gradle-wrapper.jar fails ./gradlew check on any machine.
+    tasks.matching { it.name == "check" }.configureEach {
+        dependsOn(":verifyWrapper")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gradle wrapper integrity (S01-09)
+//
+// The wrapper is the only supported build entry point, so its jar must be
+// verifiable. The committed gradle-wrapper.jar is byte-identical across Gradle
+// releases; we pin and verify its SHA-256 so a checkout on another machine uses
+// the exact same jar. The expected hash lives in
+// gradle/wrapper/gradle-wrapper.sha256 and is updated with
+// './gradlew updateWrapperChecksum' whenever the wrapper version changes.
+// ---------------------------------------------------------------------------
+
+val wrapperJar = file("gradle/wrapper/gradle-wrapper.jar")
+val checksumFile = file("gradle/wrapper/gradle-wrapper.sha256")
+
+private fun sha256Hex(target: java.io.File): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(target.readBytes())
+        .joinToString("") { "%02x".format(it) }
+
+tasks.register("updateWrapperChecksum") {
+    group = "verification"
+    description = "Writes the SHA-256 of gradle-wrapper.jar to gradle/wrapper/gradle-wrapper.sha256. Run it after changing the wrapper version and commit the new hash together with the jar."
+    doLast {
+        val actual = sha256Hex(wrapperJar)
+        checksumFile.writeText(
+            "# SHA-256 of gradle-wrapper.jar. Regenerate with './gradlew updateWrapperChecksum' after changing the wrapper version (S01-09).\n" +
+                "gradle-wrapper.jar.sha256=$actual\n",
+        )
+        println("Wrote gradle-wrapper.jar SHA-256 to ${checksumFile.path}: $actual")
+    }
+}
+
+tasks.register("verifyWrapper") {
+    group = "verification"
+    description = "Verifies the committed gradle-wrapper.jar against its pinned SHA-256 for reproducible builds."
+    val expected = provider {
+        if (!checksumFile.exists()) {
+            throw GradleException("Expected wrapper checksum file ${checksumFile.path} is missing. Generate it with './gradlew updateWrapperChecksum'.")
+        }
+        val line = checksumFile.readLines()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("gradle-wrapper.jar") }
+            ?: throw GradleException("No 'gradle-wrapper.jar' entry found in ${checksumFile.path}.")
+        line.substringAfter('=').lowercase()
+    }
+    doLast {
+        val actual = sha256Hex(wrapperJar)
+        if (actual != expected.get()) {
+            throw GradleException(
+                "gradle-wrapper.jar checksum mismatch: expected ${expected.get()} but computed $actual.\n" +
+                    "If the wrapper version changed, run './gradlew updateWrapperChecksum', commit the new hash with the jar, then retry.",
+            )
+        }
+        println("gradle-wrapper.jar checksum OK ($actual)")
+    }
+}
+
+// Generate or update the dependency lock files (S01-09).
+//
+// The `dependencies` task does not reliably write locks for every subproject
+// configuration (Gradle issue #9373), so we resolve every resolvable
+// configuration explicitly. Run it with --write-locks and commit the resulting
+// gradle.lockfile files (one per project):
+//
+//   ./gradlew generateLockFiles --write-locks
+tasks.register("generateLockFiles") {
+    group = "help"
+    description = "Generates (or updates) the dependency lock file for every resolvable configuration across all projects. Run with --write-locks and commit the resulting gradle.lockfile files."
+    doLast {
+        // Resolve the build classpaths of every project so --write-locks pins
+        // every transitive version. The artifact-metadata configurations
+        // (apiElements / runtimeElements) are not resolvable, so resolve the
+        // classpath configurations explicitly. Add any configuration that
+        // ./gradlew check later reports as missing a lock entry.
+        allprojects {
+            val classpaths = listOf(
+                "compileClasspath",
+                "runtimeClasspath",
+                "testCompileClasspath",
+                "testRuntimeClasspath",
+            )
+            configurations
+                .filter { it.name in classpaths }
+                .forEach { it.resolve() }
+        }
     }
 }

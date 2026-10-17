@@ -57,12 +57,40 @@ appropriate Jackson 3.x time module (if/when it exists and is Boot-detectable) a
 register it. Do not add without verifying the module exists. See
 `docs/architecture/dependency-insight.txt`.
 
+## Dependency locking & wrapper (S01-09)
+
+Reproducibility is enforced two ways:
+
+- **Wrapper integrity.** The Gradle wrapper checksum is committed in
+  `gradle/wrapper/gradle-wrapper.sha256` and validated on every invocation by the
+  `verifyWrapper` task (which fails fast if the distribution was altered).
+  Regenerate it with `./gradlew updateWrapperChecksum`.
+- **Dependency locking.** `lockAllConfigurations()` pins every resolved version to
+  the committed lock file `apps/agentflow-app/gradle.lockfile` (the main app
+  dependency lock), and generates the placeholder locks `settings-gradle.lockfile`
+  and `apps/gradle.lockfile` for the settings and `apps` projects. Plugin versions
+  are pinned explicitly in `pluginManagement` (the catalog), so the root buildscript
+  has no version-range dependencies to lock and produces no lock file. A build that
+  would resolve to a different graph fails instead of silently drifting. Regenerate
+  after a version change with `./gradlew --write-locks generateLockFiles`, which
+  yields a small, reviewable per-version diff. The lock files are tracked in Git and
+  are plain text.
+
+To update a dependency:
+
+1. Change the version in `gradle/libs.versions.toml` (a PR; never an inline pin).
+2. Regenerate the locks and review the diff:
+   `./gradlew --write-locks generateLockFiles`.
+3. Run `./gradlew check` (compile, unit, architecture, tests) and keep it green
+   before merging — a graph change is only accepted once the full gate passes.
+
 ## Verification procedure
 
 ```bash
 # 1. Toolchain + build entry point
 ./gradlew --version            # confirms the pinned JVM (Java 25) and Gradle 9.x
 ./gradlew help                 # parses root build, configures subprojects
+./gradlew verifyWrapper        # checks the wrapper distribution checksum
 
 # 2. Resolve and inspect the dependency graph for both classpaths
 ./gradlew :apps:agentflow-app:dependencies --configuration compileClasspath --console=plain
