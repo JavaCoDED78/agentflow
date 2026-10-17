@@ -1,0 +1,26 @@
+# AgentFlow version catalog (S01-06).
+#
+# Single source of truth for every plugin and dependency version in the build.
+# No module pins a version inline; it references an entry here through the
+# `libs` accessor (for example `plugins { libs.plugins.spring.boot }` or
+# `platform(libs.spring.boot.bom)`). Keeping versions in one file means one
+# library cannot be pinned to different versions in different build files.
+# See DEVELOPMENT_PLAN.md, Sprint 1.
+
+[versions]
+# Frameworks / platform. Pinned by DEVELOPMENT_PLAN.md §2 and verified against
+# the official releases in S01-08.
+spring-boot = "4.1.1"
+spring-ai   = "2.0.1"
+
+[libraries]
+# Bill-of-materials (BOM) artifacts are consumed with platform(...). They carry
+# every Spring-managed transitive version, so nothing is re-pinned elsewhere.
+spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
+spring-ai-bom   = { module = "org.springframework.ai:spring-ai-bom",               version.ref = "spring-ai" }
+
+[plugins]
+# Gradle plugin versions live here too, so a module applies the Boot plugin
+# without a version string and the plugin version cannot drift from the matching
+# Boot BOM version.
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
