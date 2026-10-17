@@ -1,0 +1,12 @@
+# Minimal application configuration for the AgentFlow Spring Boot artifact (S01-07).
+#
+# Profile-specific settings (local / test / kubernetes) are added later per
+# DEVELOPMENT_PLAN.md (Sprint 1). No datasource or JPA yet — persistence arrives
+# in Sprint 3 — so the skeleton boots without a database.
+
+spring:
+  application:
+    name: agentflow-app
+
+server:
+  port: 8080

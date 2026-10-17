@@ -23,3 +23,9 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "agentflow"
+
+// Subprojects are listed explicitly (rather than relying on Gradle's automatic
+// subdirectory discovery) so the set of artifacts is obvious and stable as the
+// monolith grows. Add each new module here, for example
+// include("apps:agentflow-app") (S01-07).
+include("apps:agentflow-app")

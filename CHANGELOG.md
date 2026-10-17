@@ -22,3 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pluginManagement`/`dependencyResolutionManagement` in `settings.gradle.kts` point at
   the Gradle Plugin Portal and Maven Central. Verified with `./gradlew help` and by
   resolving both BOMs (and applying the Boot plugin) against the real catalog.
+
+### Fixed
+
+- **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit
+  to the 6.0.x line and `spring-boot-test` is compiled against the JUnit Platform
+  6.0 `Store` API, so forcing the JUnit 5 line broke Spring context startup
+  (`NoSuchMethodError`) and the platform discovered zero tests. We keep the
+  BOM-managed JUnit 6.0.3 and add `junit-platform-launcher` (also BOM-managed) to
+  the test runtime classpath. The `test` task now compiles and runs the
+  `AgentflowApplicationTests` context-load test. `failOnNoDiscoveredTests = true`
+  makes a future zero-test discovery fail the build instead of passing silently.

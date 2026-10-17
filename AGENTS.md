@@ -14,7 +14,7 @@ When implementing any task from the plan (`S##-##` in `DEVELOPMENT_PLAN.md`), He
 - Gradle Wrapper + Kotlin DSL + `gradle/libs.versions.toml`, dependency locking. Versions change only through a PR.
 - PostgreSQL 18 (+ pgvector, FTS), Kafka 4.x (KRaft), Redis 8 (cache/rate-limit only), MinIO (S3), Keycloak 26.x, Tika + PDFBox.
 - Micrometer + OpenTelemetry (OTLP) → Collector → Prometheus / Loki / Tempo → Grafana.
-- JUnit 5, AssertJ, Mockito, Testcontainers 2.x, k6.
+- JUnit 6 (BOM-managed by Spring Boot 4.1.1; the Sprint 1 plan's "JUnit 5" is superseded — see `CHANGELOG.md`), AssertJ, Mockito, Testcontainers 2.x, k6.
 - Spring MVC + **one** persistence approach (S03-08) + **one** migration tool (Flyway by default). Do not introduce WebFlux, R2DBC, JPA and jOOQ side by side; virtual threads only after measurements.
 - Do not override Spring Framework / Security / Kafka client / Jackson versions on top of the BOM without an ADR. Stable releases only. No `latest` in Compose or Kubernetes manifests.
 

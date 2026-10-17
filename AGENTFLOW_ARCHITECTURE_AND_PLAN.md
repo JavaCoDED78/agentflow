@@ -68,7 +68,7 @@ AgentFlow — платформа для создания и надёжного �
 | AI model provider | Один облачный provider + Ollama как локальная опция | Изолировать провайдера интерфейсом и не привязывать доменную логику к одному SDK. Локальная модель не должна быть обязательна для CI. |
 | Document parsing | Apache Tika + PDFBox; OCR оставить расширением | Достаточно для извлечения текста и метаданных из типовых PDF/DOCX; OCR — отдельная задача. |
 | Observability | Micrometer + OpenTelemetry OTLP + OTel Collector + Prometheus + Grafana + Loki + Tempo | Корреляция API/DB/Kafka/LLM-вызовов, графики и поиск ошибок без привязки к одному коммерческому APM. |
-| Test | JUnit 5, AssertJ, Mockito, Spring Boot Test, **Testcontainers 2.0.5**, ArchUnit/Spring Modulith tests | Изолированные тесты домена плюс интеграционные тесты с настоящими PostgreSQL/Kafka/Redis/Keycloak-контейнерами. |
+| Test | JUnit 6 (BOM-managed by Spring Boot 4.1.1; the Sprint 1 plan's "JUnit 5" is superseded — see `CHANGELOG.md`), AssertJ, Mockito, Spring Boot Test, **Testcontainers 2.0.5**, ArchUnit/Spring Modulith tests | Изолированные тесты домена плюс интеграционные тесты с настоящими PostgreSQL/Kafka/Redis/Keycloak-контейнерами. |
 | Load test | k6 | Воспроизводимый профиль нагрузки и p95/p99, а не субъективное «кажется быстро». |
 | Security / supply chain | Trivy, OWASP Dependency-Check или эквивалент, SBOM CycloneDX, secret scanning | Поиск уязвимостей в зависимостях, контейнерах и случайно закоммиченных секретах. |
 | Runtime | Docker Compose для локальной разработки; Kubernetes (kind или k3d) для локального production-like профиля | Дешёвый старт и постепенный переход к реальному deployment model. |
