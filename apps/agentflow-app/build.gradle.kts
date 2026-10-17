@@ -20,6 +20,12 @@ plugins {
 dependencies {
     // Spring Boot BOM pins every managed transitive version; nothing re-pinned.
     implementation(platform(libs.spring.boot.bom))
+    // Spring AI BOM (S01-08): consume the BOM-managed, Boot-compatible
+    // transitive versions. Importing a BOM only manages versions, so it does
+    // not add runtime artifacts here and no AI code is wired yet (S08+).
+    // Boot 4.1.1 + Spring AI 2.0.1 verified together in S01-08 (uniform
+    // Spring Framework 7.0.9, Jackson 3.1.5) — see dependency-management.md.
+    implementation(platform(libs.spring.ai.bom))
     implementation("org.springframework.boot:spring-boot-starter-web")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")

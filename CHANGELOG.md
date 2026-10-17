@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Gradle Plugin Portal and Maven Central. Verified with `./gradlew help` and by
   resolving both BOMs (and applying the Boot plugin) against the real catalog.
 
+- **Spring AI BOM compatibility (`S01-08`).** The Spring AI BOM
+  (`spring-ai-bom:2.0.1`) is now consumed by `apps/agentflow-app`
+  (`implementation(platform(libs.spring.ai.bom))`). Both BOMs import together with
+  no forced overrides: Spring Framework resolves uniformly to `7.0.9` and Jackson
+  to `3.1.5` (`tools.jackson`), so the dependency graph is predictable and
+  reproducible. Manual overrides of Spring Framework/Jackson/Security remain
+  forbidden without an ADR. A runtime test
+  (`SpringAiBomCompatibilityTest`) exercises the BOM-managed `ObjectMapper`. See
+  `docs/architecture/dependency-management.md` and the saved
+  `docs/architecture/dependency-insight.txt`. Known follow-up (not a blocker): no
+  `JavaTimeModule` on the runtime classpath, so `LocalDate` does not round-trip —
+  a Jackson 3.x ecosystem question, out of scope for this task.
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit
