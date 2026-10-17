@@ -57,6 +57,19 @@ appropriate Jackson 3.x time module (if/when it exists and is Boot-detectable) a
 register it. Do not add without verifying the module exists. See
 `docs/architecture/dependency-insight.txt`.
 
+## Java formatter (S01-10)
+
+- **One formatter, part of `check`.** Java sources are standardized with Google
+  Java Format through the Spotless Gradle plugin
+  (`com.diffplug.spotless:8.10.4`), pinned in the root `plugins {}` block. The
+  `spotlessCheck` task is wired into `./gradlew check`, so a formatting violation
+  fails the build; `./gradlew spotlessApply` reformats every Java source under
+  `src/`. `googleJavaFormat()` enforces braces, spacing and import order; combined
+  with `.editorconfig` (LF, no trailing whitespace, final newline) it also
+  standardizes line endings. The target is every Java source under `src/`
+  (main + test). Build scripts and other DSLs are intentionally out of scope for
+  this Java-focused gate.
+
 ## Dependency locking & wrapper (S01-09)
 
 Reproducibility is enforced two ways:

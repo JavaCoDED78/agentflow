@@ -14,12 +14,22 @@ import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 
+import com.diffplug.gradle.spotless.SpotlessExtension
+
 // Shared Java configuration for every subproject (S01-05).
 //
 // Pin the JDK 25 toolchain, force UTF-8 source encoding and a fixed compile
 // release so the build never silently falls back to the host/system JDK. The
 // configuration is applied to all subprojects now, so it is inherited by the
 // Spring Boot artifact introduced in S01-07.
+
+// Spotless formatter (S01-10) is declared in the root so every subproject
+// inherits the plugin classpath; the formatting rules live in the subprojects
+// block below (one formatter for the whole monolith).
+plugins {
+    id("com.diffplug.spotless") version "8.10.4"
+}
+
 subprojects {
     apply(plugin = "java")
 
@@ -39,6 +49,22 @@ subprojects {
     tasks.withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
         options.release.set(25)
+    }
+
+    // Spotless formatter (S01-10): one Java formatter (Google Java Format) for
+    // every subproject. The task `spotlessCheck` is wired into `check` by the
+    // plugin, so a formatting violation fails the build. The target is every
+    // Java source under `src/`; the build scripts and other DSLs are out of
+    // scope for this Java-focused gate. googleJavaFormat() enforces Google Java
+    // style: 2-space indentation, braces, spacing and import order (java/javax,
+    // then third-party, then static last); combined with .editorconfig (LF, no
+    // trailing whitespace, final newline) it standardizes indentation, imports,
+    // whitespace and line endings.
+    apply(plugin = "com.diffplug.spotless")
+    extensions.configure<SpotlessExtension> {
+        java {
+            googleJavaFormat()
+        }
     }
 
     // The wrapper checksum is part of the verification gate so a tampered or

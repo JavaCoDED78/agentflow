@@ -39,6 +39,26 @@ against a different dependency graph fails instead of drifting. Regenerate the
 locks after any version change with `./gradlew --write-locks generateLockFiles`
 and keep `./gradlew check` green.
 
+## Formatting
+
+Java sources are standardized with one formatter —
+[Google Java Format](https://github.com/google/google-java-format), wired into
+the build through the [Spotless](https://diffplug.github.io/spotless/) Gradle
+plugin (`S01-10`). The `spotlessCheck` task is part of `./gradlew check`, so a
+formatting violation fails the build:
+
+```bash
+./gradlew spotlessApply   # auto-format every Java source under src/ (S01-10)
+./gradlew spotlessCheck   # fail the build if any source is not formatted
+./gradlew check           # compile + tests + formatting gate
+```
+
+`googleJavaFormat()` enforces Google Java style — 2-space indentation, braces,
+spacing and import order — and combined with
+[`.editorconfig`](.editorconfig) (LF line endings, no trailing whitespace,
+final newline) it standardizes indentation, imports, whitespace and line
+endings. The target is every Java source under `src/` (main + test).
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

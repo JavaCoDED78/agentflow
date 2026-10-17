@@ -46,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `JavaTimeModule` on the runtime classpath, so `LocalDate` does not round-trip —
   a Jackson 3.x ecosystem question, out of scope for this task.
 
+- **Java formatter / static check (`S01-10`).** Java sources are standardized with
+  one formatter — Google Java Format, applied through the Spotless Gradle plugin
+  (`com.diffplug.spotless:8.10.4`), pinned in the root `plugins {}` block. The
+  `spotlessCheck` task is part of `./gradlew check`, so a formatting violation
+  fails the build; `./gradlew spotlessApply` reformats every Java source under
+  `src/`. Line endings, trailing whitespace and final newlines follow
+  `.editorconfig` (LF). Existing skeleton files were reformatted to the standard.
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit
