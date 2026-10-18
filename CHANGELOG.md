@@ -92,6 +92,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PONG`, and a set key survives a container restart through the AOF; `docker
   compose ... down` tears it down cleanly.
 
+**- Kafka Compose service (S01-14).** `infra/compose/docker-compose.yml` starts a
+single combined KRaft Kafka node (broker + controller) on the pinned image
+`apache/kafka:4.3.1`, which is KRaft by default — no Zookeeper. It exposes an
+`INTERNAL` listener (`0.0.0.0:9092`, inter-broker) and a `CONTROLLER` listener
+(`:9093`, required by KRaft), advertises `INTERNAL://kafka:9092` so compose peers
+resolve the broker by the `kafka` network alias, and sets the single-node quorum
+voter to `1@localhost:9093`. It runs in the `messaging` profile with
+`replication-factor`/`min.insync.replicas` at 1, a named volume
+(`agentflow-kafka`) and a broker-level healthcheck (`kafka-broker-api-versions
+--bootstrap-server localhost:9092`, which does not depend on compose DNS). KRaft
+needs a cluster id to format its Raft log on first start; the service fails fast
+unless `KAFKA_CLUSTER_ID` is provided (documented in `.env.example` and the
+compose README). Verified: `docker compose --profile messaging up -d` brings the
+service to `healthy` in ~10s; a producer (`acks=all`) publishes a message and a
+consumer on the same network reads it back (`LOG-END-OFFSET=1`,
+`Processed a total of 1 messages`).
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit

@@ -80,8 +80,68 @@ services:
       start_period: 5s
     profiles: ["core"]
 
+  # ---------------------------------------------------------------------------
+  # Kafka 4.3.1 (KRaft) — durable event transport (S01-14).
+  # Single combined node (broker + controller) on the pinned apache/kafka:4.3.1
+  # image, which runs KRaft by default — no ZooKeeper. A dedicated CONTROLLER
+  # listener is required by KRaft; INTERNAL carries inter-broker traffic and is
+  # advertised as kafka:9092 so compose peers resolve the broker by name. The
+  # cluster id is generated once (see README) and referenced through KAFKA_CLUSTER_ID;
+  # the wrapper formats the Raft log on the first start. replication-factor 1 is
+  # consistent with the broker's min.insync.replicas default.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: agentflow-kafka
+    restart: unless-stopped
+    environment:
+      # KRaft cluster id — generated once; required for first start.
+      CLUSTER_ID: "${KAFKA_CLUSTER_ID:?set KAFKA_CLUSTER_ID in .env — run: /opt/kafka/bin/kafka-storage.sh random-uuid}"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    # Named volume keeps the Raft log across restarts; nothing lands in Git.
+    volumes:
+      - agentflow-kafka:/var/lib/kafka/data
+    # The messaging network + `kafka` alias is how peers resolve the advertised
+    # listener INTERNAL://kafka:9092.
+    networks:
+      messaging:
+        aliases:
+          - kafka
+    # Broker-level readiness: the broker must answer the API/versions request on
+    # its own INTERNAL listener (localhost, so it does not depend on compose DNS
+    # resolving its advertised alias) and have the KRaft metadata loaded. The
+    # console tool exits non-zero before the broker is ready, so Compose gates
+    # dependents on it.
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    profiles: ["messaging"]
+
 volumes:
   agentflow-pgdata:
     name: agentflow-pgdata
   agentflow-redis:
     name: agentflow-redis
+  agentflow-kafka:
+    name: agentflow-kafka
+
+networks:
+  messaging:
+    name: agentflow-messaging
+    driver: bridge
