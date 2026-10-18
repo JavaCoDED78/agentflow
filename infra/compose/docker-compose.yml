@@ -51,6 +51,37 @@ services:
       start_period: 10s
     profiles: ["core"]
 
+  # ---------------------------------------------------------------------------
+  # Redis 8 (Open Source) — cache and short-lived coordination (S01-13).
+  # Never a source of truth: workflow state lives in PostgreSQL, so losing
+  # Redis must not lose a run. Local persistence via AOF on a named volume so
+  # dev data survives restarts. No auth on the trusted local network; production
+  # (Kubernetes) must enable `requirepass` from a Secret — the password is never
+  # hardcoded in app code (acceptance S01-13).
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8.10.2
+    container_name: agentflow-redis
+    restart: unless-stopped
+    # Append-only file is the local persistence policy: everysec fsync keeps
+    # data loss within one second across a restart, which is enough for an
+    # ephemeral cache. The redis-entrypoint runs `redis-server` with these args.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    # AOF files live in /data; the named volume keeps them across restarts.
+    volumes:
+      - agentflow-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    profiles: ["core"]
+
 volumes:
   agentflow-pgdata:
     name: agentflow-pgdata
+  agentflow-redis:
+    name: agentflow-redis

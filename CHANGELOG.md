@@ -78,6 +78,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compose config` passes, the service reaches `healthy`, and test data plus the
   `vector` extension survive a container restart through the named volume.
 
+- **Redis Compose service (`S01-13`).** `infra/compose/docker-compose.yml` starts
+  Redis 8 (Open Source) on the pinned image `redis:8.10.2` (latest stable `8.10.x`
+  patch). Redis is a cache / short-lived coordination store, never a source of
+  truth: workflow state stays in PostgreSQL, so losing Redis must not lose a run.
+  It runs in the `core` profile alongside PostgreSQL, exposes a healthcheck
+  (`redis-cli ping`), and persists local development data through an append-only
+  file (AOF, `appendfsync everysec`) on the `agentflow-redis` named volume so it
+  survives restarts. No auth is configured on the trusted local network;
+  production (Kubernetes) must enable `requirepass` from a Secret, and the
+  password is never hardcoded in app code. Verified: `docker compose ... up
+  --profile core` brings the service to `healthy`, `redis-cli ping` returns
+  `PONG`, and a set key survives a container restart through the AOF; `docker
+  compose ... down` tears it down cleanly.
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit
