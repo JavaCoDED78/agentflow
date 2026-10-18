@@ -63,7 +63,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults is committed for local use (real secrets stay in the environment or a
   secret store). A scan of every text blob in the commit history (43 files)
   against AWS / GitHub / Google / Stripe / Slack key patterns, PEM private keys
-  and `key`/`token`/`password` assignments found no secret-like values.
+  key`/`token`/`password` assignments found no secret-like values.
+
+- **PostgreSQL Compose service (`S01-12`).** `infra/compose/docker-compose.yml`
+  starts the core profile's PostgreSQL on the pinned image
+  `pgvector/pgvector:0.8.6-pg18` (pgvector 0.8.6 on PostgreSQL 18 — the same
+  pgvector image Testcontainers uses). It exposes a named volume
+  (`agentflow-pgdata`), a healthcheck (`pg_isready`), a `core` profile so the
+  minimum stack starts without the other services, and env-driven config with
+  local-only defaults (`POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`/
+  `POSTGRES_PORT`) overridable through a git-ignored `.env`. Note: PostgreSQL 18
+  requires the data mount at `/var/lib/postgresql` (not
+  `/var/lib/postgresql/data`); see the compose file comment. Verified: `docker
+  compose config` passes, the service reaches `healthy`, and test data plus the
+  `vector` extension survive a container restart through the named volume.
 
 ### Fixed
 

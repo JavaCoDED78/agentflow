@@ -66,6 +66,13 @@ this file contains only `CHANGEME` placeholders and localhost defaults, and real
 secrets are read from the environment or a secret store — never from Git
 (`S01-11`).
 
+The minimum runtime stack is one Docker Compose profile (PostgreSQL + pgvector,
+`S01-12`):
+
+```bash
+docker compose --file infra/compose/docker-compose.yml --profile core up -d
+```
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

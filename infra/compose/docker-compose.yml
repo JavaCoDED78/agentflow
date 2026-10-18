@@ -1,0 +1,56 @@
+# Local infrastructure as code — runtime stack.
+#
+# Docker Compose for the AgentFlow runtime: PostgreSQL (+ pgvector, FTS), and,
+# in later sprints, Kafka (KRaft), Redis, MinIO and Keycloak. Services are
+# grouped into Compose profiles so the minimum viable stack (`core`) starts
+# without the rest. Profiles are fully defined in S01-16.
+#
+# Rules (see infra/AGENTS.md):
+#   - Images are pinned to immutable tags, never `latest`.
+#   - Secrets are never committed. Defaults below are local-only and clearly
+#     marked; override them through a local `.env` (git-ignored).
+#   - A healthcheck is present on every service.
+#   - The PostgreSQL image with pgvector is the same one Testcontainers uses.
+#
+# Load a `.env` (local, git-ignored) for real values; the defaults make the
+# service runnable without one.
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 18 (+ pgvector, FTS) — source of truth for workflow state (S01-12).
+  # pgvector/pgvector: pgvector 0.8.6 built on PostgreSQL 18; the tag pins both
+  # the extension and the major version so an unattended pull cannot jump either.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg18
+    container_name: agentflow-postgres
+    restart: unless-stopped
+    environment:
+      # Local-development defaults; a real `.env` overrides these.
+      POSTGRES_USER: ${POSTGRES_USER:-agentflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentflow-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-agentflow}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    # Named volume keeps data across restarts. pgdata is owned by uid 999
+    # inside the image; the volume is Docker-managed, so nothing lands in Git.
+    # PostgreSQL 18 expects the mount at /var/lib/postgresql (the entrypoint then
+    # uses a major-version-specific subdir); mounting at /var/lib/postgresql/data
+    # is rejected by the 18+ image (see docker-library/postgres#37, #1259).
+    volumes:
+      - agentflow-pgdata:/var/lib/postgresql
+    # /dev/shm sizing: parallel HNSW index builds (pgvector) can need more than
+    # the 64 MB default; bump it for local index work.
+    shm_size: 512mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentflow} -d ${POSTGRES_DB:-agentflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    profiles: ["core"]
+
+volumes:
+  agentflow-pgdata:
+    name: agentflow-pgdata
