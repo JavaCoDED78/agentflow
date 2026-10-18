@@ -1,9 +1,9 @@
 # Local infrastructure as code — runtime stack.
 #
-# Docker Compose for the AgentFlow runtime: PostgreSQL (+ pgvector, FTS), and,
-# in later sprints, Kafka (KRaft), Redis, MinIO and Keycloak. Services are
-# grouped into Compose profiles so the minimum viable stack (`core`) starts
-# without the rest. Profiles are fully defined in S01-16.
+# Docker Compose for the AgentFlow runtime: PostgreSQL (+ pgvector, FTS),
+# Kafka (KRaft), Redis, Garage and Keycloak. Services are grouped into Compose
+# profiles so the minimum viable stack (`core`) starts without the rest.
+# Profiles are fully defined in S01-16.
 #
 # Rules (see infra/AGENTS.md):
 #   - Images are pinned to immutable tags, never `latest`.
@@ -133,6 +133,96 @@ services:
       start_period: 30s
     profiles: ["messaging"]
 
+  # ---------------------------------------------------------------------------
+  # Garage (S3-compatible object storage) — large documents / artifacts kept
+  # outside PostgreSQL (S01-15). Runs in the `core` profile alongside PostgreSQL
+  # and Redis. Free and open source (AGPL-3.0), unlike the upstream MinIO AIStor
+  # whose pre-built images require a (single-node) SUBNET license to unlock S3 —
+  # see docs/adr/s3-object-storage-garage.md. The compose file auto-bootstraps a
+  # single-node cluster on first start:
+  #   --single-node     applies the cluster layout automatically (no manual
+  #                     `layout assign`/`layout apply`)
+  #   --default-bucket  creates the `agentflow` bucket and a default S3 access
+  #                     key from the environment below (which implies the key)
+  # The layout, bucket and key persist in the metadata volume, so restarts
+  # reconcile idempotently instead of re-bootstrapping.
+  # ---------------------------------------------------------------------------
+  garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: agentflow-garage
+    restart: unless-stopped
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      # Local-development defaults; a real `.env` overrides these. The root S3
+      # key is long-lived by design for an object store. The app's S3 client
+      # (minio.access-key / minio.secret-key in the root .env) MUST use the
+      # same values so it authenticates against this key.
+      GARAGE_DEFAULT_BUCKET: ${GARAGE_DEFAULT_BUCKET:-agentflow}
+      GARAGE_DEFAULT_ACCESS_KEY: ${GARAGE_DEFAULT_ACCESS_KEY:-agentflowdevaccess0123456789}
+      GARAGE_DEFAULT_SECRET_KEY: ${GARAGE_DEFAULT_SECRET_KEY:-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789}
+      # RPC secret for intra-node communications; injected here (not committed).
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    ports:
+      - "${GARAGE_S3_API_PORT:-3900}:3900"
+    # Config (ro): no secrets here — rpc_secret is injected via GARAGE_RPC_SECRET.
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      # Metadata (layout, key, bucket) and data volumes keep everything across
+      # restarts; nothing lands in Git.
+      - agentflow-garage-meta:/var/lib/garage/meta
+      - agentflow-garage-data:/var/lib/garage/data
+    # Garage ships a CLI health probe: exit 0 when the cluster is HEALTHY.
+    healthcheck:
+      test: ["CMD", "/garage", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    profiles: ["core"]
+
+  # ---------------------------------------------------------------------------
+  # Keycloak 26.x (OIDC identity provider) — local IdP + declarative realm
+  # import (S01-15). The `identity` profile keeps Keycloak out of the data
+  # profiles, so `core`/`messaging` start without an IdP. The realm (and admin
+  # account) persist in a named volume across restarts. Local-only defaults;
+  # production (Kubernetes) must set the admin password from a Secret.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    container_name: agentflow-keycloak
+    restart: unless-stopped
+    # Local-dev only: run as root. Keycloak 26 defaults to uid 1000, but the
+    # `agentflow-keycloak-data` named volume is root-owned on Docker Desktop, so
+    # a non-root process cannot write the H2 database (AccessDeniedException).
+    # Drop privileges in production via a non-root Kubernetes SecurityContext.
+    user: "0"
+    environment:
+      # Local-development defaults; a real `.env` overrides these.
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Allow HTTP for localhost (issuer is http://localhost:8083/realms/agentflow).
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_PORT: "8083"
+    command: ["start-dev", "--import-realm"]
+    ports:
+      - "${KEYCLOAK_PORT:-8083}:8083"
+    volumes:
+      # Realm import (ro): --import-realm reads <home>/data/import, so this file
+      # lives in a plain (non-volume) dir and is always the repo's copy.
+      - ./keycloak/realm-agentflow.json:/opt/keycloak/data/import/realm.json:ro
+      # H2 database (Keycloak 26 default: <home>/data/h2) persists across
+      # restarts in a named volume.
+      - agentflow-keycloak-data:/opt/keycloak/data/h2
+    # The image has no curl/wget; a bash /dev/tcp probe against the HTTP port is
+    # sufficient for readiness (bash is /bin/sh here).
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8083 && printf \"GET /realms/master HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && timeout 3 head -c 200 <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    profiles: ["identity"]
+
 volumes:
   agentflow-pgdata:
     name: agentflow-pgdata
@@ -140,6 +230,12 @@ volumes:
     name: agentflow-redis
   agentflow-kafka:
     name: agentflow-kafka
+  agentflow-garage-meta:
+    name: agentflow-garage-meta
+  agentflow-garage-data:
+    name: agentflow-garage-data
+  agentflow-keycloak-data:
+    name: agentflow-keycloak-data
 
 networks:
   messaging:

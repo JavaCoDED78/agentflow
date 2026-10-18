@@ -109,6 +109,21 @@ service to `healthy` in ~10s; a producer (`acks=all`) publishes a message and a
 consumer on the same network reads it back (`LOG-END-OFFSET=1`,
 `Processed a total of 1 messages`).
 
+- **Garage object storage service (`S01-15`).** `infra/compose/docker-compose.yml`
+  now starts **Garage** (`dxflrs/garage:v2.4.1`, AGPL-3.0) — a free, open source,
+  S3-compatible object store — instead of the upstream MinIO AIStor, whose
+  pre-built images require a single-node SUBNET license to unlock S3. It runs in
+  the `core` profile and auto-bootstraps a single-node cluster on first start
+  (`--single-node` applies the layout, `--default-bucket` creates the `agentflow`
+  bucket and a default S3 key from the environment); the layout, bucket and key
+  persist across restarts. The S3 API is on `:3900` (configurable via
+  `GARAGE_S3_API_PORT`). The RPC secret is injected via `GARAGE_RPC_SECRET` (not
+  committed); the app's S3 client (`minio.access-key` / `minio.secret-key` in
+  `.env`) must match the Garage root key. Verified: auto-bootstrap, an S3
+  round-trip (list/put/get, payloads match by SHA-256) and S3 working again after
+  a container restart with the same credentials. The trade-off is recorded in
+  `docs/adr/s3-object-storage-garage.md`.
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit

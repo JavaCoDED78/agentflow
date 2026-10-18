@@ -54,7 +54,7 @@ not allowed to drive v1 scope.
 | Step | What the user does | What the system guarantees |
 |---|---|---|
 | **1. Login** | Signs in through Keycloak OIDC. | JWT validated (issuer, audience, signature); a **tenant context + permission scopes** (`workflow:write`, `document:read`, `run:approve`, …) is built. Tenant comes only from the verified token — never from the request body/query. |
-| **2. Upload** | Uploads several PDFs to a knowledge base (`POST /api/v1/knowledge-bases/{id}/documents`, multipart). | Each file is validated (MIME, size, extension, `SHA-256`), stored in MinIO under a tenant-scoped key, and a document row + `ingestion-requested` outbox event are written **in one DB transaction**. Returns `202`. |
+| **2. Upload** | Uploads several PDFs to a knowledge base (`POST /api/v1/knowledge-bases/{id}/documents`, multipart). | Each file is validated (MIME, size, extension, `SHA-256`), stored in Garage under a tenant-scoped key, and a document row + `ingestion-requested` outbox event are written **in one DB transaction**. Returns `202`. |
 | **3. Index** | Waits; does not block the run. | Ingestion worker extracts text (Tika/PDFBox), chunks (500–800 tokens, 80–120 overlap), embeds via the provider adapter, and indexes into PostgreSQL (pgvector + FTS) **with a tenant filter**. Document moves to `INDEXED` only after all mandatory stages. |
 | **4. Run** | Starts *"Prepare comparison"* (`POST /api/v1/workflows/{id}/runs`, with `Idempotency-Key`). | Returns `202 Accepted` + `runId`. State + `workflow.run.requested.v1` event are written outbox-atomically. A worker claims the run (conditional update + `lease`/`lease_epoch`), loads the pinned workflow version, retrieves chunks via **tenant-scoped RAG**, asks the Planner for a typed JSON plan, validates it **server-side**, and executes only allowed tools (`document.search`, `calculator.evaluate`, `report.format`). Every external call is persisted **before** invocation; the outcome is treated as at-least-once, never exactly-once. |
 | **5. Approval** | Approves or rejects at the `HUMAN_APPROVAL` node (e.g. before finalizing/sending the report). | Run moves to `WAITING_FOR_APPROVAL`; the decision is idempotent (`Idempotency-Key`) and written to the append-only audit trail. |
@@ -151,7 +151,7 @@ column is a valid future idea but must not be built into v1.
 | Provider | One cloud provider (adapter-backed) | Second provider, model selection/routing |
 | Workflows | One approved workflow type | Custom user-authored graphs + builder UI |
 | Tools | 3 built-in tools + 1 demo MCP tool | Third-party tools, tool marketplace |
-| Storage | MinIO + pgvector/FTS | Qdrant comparison, large-scale indexing |
+| Storage | Garage + pgvector/FTS | Qdrant comparison, large-scale indexing |
 | Multi-tenant | Single-tenant operational model | Multi-org SaaS, org roles, per-org quotas |
 | Interface | REST API + demo (browser/CLI) | Full web authoring/ops panel |
 | Evaluation | Deterministic curated corpus | Live LLM eval programs with SLOs |

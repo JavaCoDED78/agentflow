@@ -1,0 +1,14 @@
+# Minimal Garage configuration for the local AgentFlow single-node stack (S01-15).
+#
+# No secrets live in this file: the RPC secret is injected through the
+# `GARAGE_RPC_SECRET` environment variable in docker-compose.yml (Garage reads
+# it as GARAGE_RPC_SECRET and uses it in place of `rpc_secret`).
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+replication_factor = 1
+rpc_bind_addr = "[::]:3901"
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"

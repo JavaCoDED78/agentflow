@@ -1,0 +1,32 @@
+{
+  "realm": "agentflow",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 300,
+  "revokeRefreshToken": false,
+  "roles": {
+    "realm": [
+      { "name": "workflow:read", "composite": false },
+      { "name": "workflow:write", "composite": false },
+      { "name": "workflow:approve", "composite": false },
+      { "name": "knowledge:read", "composite": false },
+      { "name": "tenant:admin", "composite": false }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "agentflow-api",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "agentflow-api-secret",
+      "clientAuthenticatorType": "client-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "redirectUris": ["http://localhost/*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect"
+    }
+  ]
+}

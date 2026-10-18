@@ -1,7 +1,7 @@
 # `infra/compose/` — local infrastructure as code
 
 Docker Compose files for the runtime stack: PostgreSQL (+ pgvector), Kafka
-(KRaft), Redis, MinIO and Keycloak, organised by Compose profiles
+(KRaft), Redis, Garage and Keycloak, organised by Compose profiles
 (`core`, `messaging`, `identity`, `ai-local`, `observability`, `full`).
 
 Images are pinned to immutable tags. Secrets are never committed; local
@@ -9,8 +9,21 @@ credentials are kept out of the repository (see `.gitignore`).
 
 Scaffolded in **S01-03**. The core profile's PostgreSQL (S01-12) and Redis
 (S01-13) services are present now, plus the `messaging` profile's Kafka (S01-14);
-MinIO/Keycloak (S01-15) are added in the following tasks, and the profiles are
+Garage/Keycloak (S01-15) are added in the following tasks, and the profiles are
 fully defined in **S01-16**.
+
+Garage (S01-15) is a free, open source (AGPL-3.0) S3-compatible object store.
+Unlike the upstream MinIO AIStor, its pre-built images do not require a single
+node SUBNET license to unlock S3, so the `core` profile starts an S3 store out
+of the box. The service auto-bootstraps a single-node cluster on first start
+(`--single-node` applies the cluster layout, `--default-bucket` creates the
+`agentflow` bucket and a default S3 key from the environment); the layout,
+bucket and key persist in the metadata/data volumes across restarts. See
+`docs/adr/s3-object-storage-garage.md`. The S3 API is on `:3900` (configurable
+via `GARAGE_S3_API_PORT` in a local `.env`). The RPC secret is injected via
+`GARAGE_RPC_SECRET` (never committed); the app's S3 client
+(`minio.access-key` / `minio.secret-key`) must match the Garage root key set
+here and in the root `.env`.
 
 ## Running the core profile
 

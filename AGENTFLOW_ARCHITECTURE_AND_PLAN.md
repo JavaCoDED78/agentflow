@@ -63,7 +63,7 @@ AgentFlow — платформа для создания и надёжного �
 | Vector search | pgvector + PostgreSQL full-text search | На старте меньше инфраструктуры, единые tenant-фильтры и транзакционная модель. Отдельный Qdrant — опциональное сравнение в конце. |
 | Очередь / events | Apache Kafka 4.3.x; Spring Kafka без ручного override версии клиента | Durable event log, consumer groups, replay и отдельное масштабирование API/worker. Проверить broker/client compatibility при создании проекта. |
 | Cache / ephemeral coordination | **Redis Open Source 8.10.x** | Кэш, rate-limit state, короткоживущие distributed coordination данные. PostgreSQL остаётся источником истины для workflow. |
-| Файлы | MinIO с S3 API | Документы и артефакты хранятся вне PostgreSQL; в БД — метаданные и object key. |
+| Файлы | Garage с S3 API | Документы и артефакты хранятся вне PostgreSQL; в БД — метаданные и object key. |
 | Identity | Keycloak 26.x + Spring Security OAuth2 Resource Server | OIDC, роли, локальные тестовые пользователи и отделение identity от бизнес-домена. Выбрать конкретный стабильный patch при старте. |
 | AI model provider | Один облачный provider + Ollama как локальная опция | Изолировать провайдера интерфейсом и не привязывать доменную логику к одному SDK. Локальная модель не должна быть обязательна для CI. |
 | Document parsing | Apache Tika + PDFBox; OCR оставить расширением | Достаточно для извлечения текста и метаданных из типовых PDF/DOCX; OCR — отдельная задача. |
@@ -127,7 +127,7 @@ flowchart TB
     Client --> API[AgentFlow API\nSpring Boot 4.1]
     API --> SEC[Spring Security / tenant context]
     API --> PG[(PostgreSQL 18 + pgvector)]
-    API --> OBJ[(MinIO / S3)]
+    API --> OBJ[(Garage / S3)]
     PG --> OUTBOX[Outbox Publisher]
     OUTBOX --> K[(Kafka)]
     K --> W[Workflow Worker]
@@ -157,7 +157,7 @@ flowchart TB
 2. **`agentflow-app` / workflow-worker deployment** — consumer событий workflow, исполнение шагов, retries, checkpoints, таймауты и восстановление lease.
 3. **`agentflow-app` / ingestion-worker deployment** — извлечение текста, chunking, embeddings, индексация документов. В первом релизе можно запускать эту роль как worker profile того же image.
 4. **`agentflow-mcp-lab` — опциональный отдельный сервис** — пара безопасных демонстрационных инструментов по MCP для изучения tool discovery и transport. Не должен иметь прямого доступа к внутренней БД приложения.
-5. **Infrastructure containers** — PostgreSQL, Kafka, Redis, MinIO, Keycloak, OTel Collector, Prometheus, Grafana, Loki, Tempo и, опционально, Schema Registry/Ollama.
+5. **Infrastructure containers** — PostgreSQL, Kafka, Redis, Garage, Keycloak, OTel Collector, Prometheus, Grafana, Loki, Tempo и, опционально, Schema Registry/Ollama.
 
 Не все контейнеры должны запускаться в обычном цикле разработки. Использовать профили Compose: `core`, `messaging`, `ai-local`, `observability`, `full`.
 
@@ -222,7 +222,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     Upload[Upload] --> Validate[Type/size/hash validation]
-    Validate --> Store[MinIO object]
+    Validate --> Store[Garage object]
     Store --> Tx[Document row + outbox]
     Tx --> Queue[Kafka ingestion event]
     Queue --> Extract[Tika/PDFBox extraction]
@@ -344,7 +344,7 @@ flowchart LR
 ### 8.2. Практические решения по данным
 
 - `workflow_definition_versions.graph_json` хранит декларативный граф и checksum; опубликованная версия immutable.
-- Большие входы/выходы хранить в MinIO, ссылку и checksum — в БД. Не превращать `jsonb` в объектное хранилище.
+- Большие входы/выходы хранить в Garage, ссылку и checksum — в БД. Не превращать `jsonb` в объектное хранилище.
 - Для RAG хранить source document, chunk ID, page number и offsets, чтобы отвечать с цитатой. Удаление документа должно исключать его chunks из retrieval и инициировать очистку индекса.
 - Векторный индекс строить отдельно от FTS; для небольшого объёма можно начать с точного поиска, затем добавить HNSW и измерить trade-off качества/latency.
 - Tenant фильтр применяется до выдачи результатов, а не пост-фильтром по top-k. Проверять это автоматическими тестами.
@@ -429,7 +429,7 @@ flowchart LR
 ### 10.3. RAG ingestion
 
 1. Проверить MIME, размер, расширение и SHA-256.
-2. Сохранить оригинал в MinIO в tenant-scoped object key.
+2. Сохранить оригинал в Garage в tenant-scoped object key.
 3. Создать document row и outbox event транзакционно.
 4. Worker извлекает текст через Tika/PDFBox и сохраняет диагностику ошибок.
 5. Chunking: начальный вариант 500–800 токенов с overlap 80–120 токенов; затем измерить на тестовом корпусе.
@@ -741,8 +741,8 @@ agentflow/
 Результат: один локальный Kafka broker.
 Приёмка: пробный producer публикует, consumer читает сообщение из Compose network.
 
-### S01-15 — добавить MinIO и Keycloak profiles (P0)
-Действия: добавить MinIO S3 API и Keycloak с realm import; разделить profiles так, чтобы базовые зависимости можно было запускать без всех сервисов; хранить dev credentials локально.
+### S01-15 — добавить Garage и Keycloak profiles (P0)
+Действия: добавить Garage S3 API и Keycloak с realm import; разделить profiles так, чтобы базовые зависимости можно было запускать без всех сервисов; хранить dev credentials локально.
 Результат: object storage и IdP конфигурации.
 Приёмка: оба сервиса стартуют повторяемо из конфигурации в Git; production secrets не в репозитории.
 
@@ -1498,7 +1498,7 @@ agentflow/
 Результат: lifecycle diagram.
 Приёмка: каждый переход явно описан и проверяется.
 
-### S10-02 — создать MinIO bucket и key convention (P0)
+### S10-02 — создать Garage bucket и key convention (P0)
 Действия: создать bucket; генерировать object key из серверного document ID; не использовать filename как путь; выдать worker только нужные credentials.
 Результат: storage config.
 Приёмка: объект доступен через internal API, но не через публичный URL без авторизации.
@@ -2029,7 +2029,7 @@ agentflow/
 Приёмка: параллельный rollout не приводит к конкурентным миграциям.
 
 ### S15-11 — открыть наружу только API (P0)
-Действия: публиковать API через ingress; DB/Kafka/Redis/MinIO и worker endpoints оставить internal; определить TLS handling для local/prod-like profiles.
+Действия: публиковать API через ingress; DB/Kafka/Redis/Garage и worker endpoints оставить internal; определить TLS handling для local/prod-like profiles.
 Результат: service/ingress configuration.
 Приёмка: infrastructure services не доступны через внешний ingress.
 

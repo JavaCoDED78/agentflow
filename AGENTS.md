@@ -12,7 +12,7 @@ When implementing any task from the plan (`S##-##` in `DEVELOPMENT_PLAN.md`), He
 
 - Java 25 LTS, Spring Boot 4.1.x, Spring AI 2.0.x (via the official BOM), Spring Modulith 2.1.x (fallback — ArchUnit).
 - Gradle Wrapper + Kotlin DSL + `gradle/libs.versions.toml`, dependency locking. Versions change only through a PR.
-- PostgreSQL 18 (+ pgvector, FTS), Kafka 4.x (KRaft), Redis 8 (cache/rate-limit only), MinIO (S3), Keycloak 26.x, Tika + PDFBox.
+- PostgreSQL 18 (+ pgvector, FTS), Kafka 4.x (KRaft), Redis 8 (cache/rate-limit only), Garage (S3), Keycloak 26.x, Tika + PDFBox.
 - Micrometer + OpenTelemetry (OTLP) → Collector → Prometheus / Loki / Tempo → Grafana.
 - JUnit 6 (BOM-managed by Spring Boot 4.1.1; the Sprint 1 plan's "JUnit 5" is superseded — see `CHANGELOG.md`), AssertJ, Mockito, Testcontainers 2.x, k6.
 - Spring MVC + **one** persistence approach (S03-08) + **one** migration tool (Flyway by default). Do not introduce WebFlux, R2DBC, JPA and jOOQ side by side; virtual threads only after measurements.
@@ -88,7 +88,7 @@ Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, 
 7. **AI is an untrusted planner.** Model output → typed plan → server-side validation gate → executor. Documents and RAG fragments are untrusted content. Permissions and allowlists are decided by the backend. eval, shell, SQL shell, filesystem shell and unrestricted HTTP fetch are forbidden. Unknown tool or risk class → deny.
 8. **Secrets** — not in Git, build args, logs, metrics, traces, Kafka, prompts or Actuator. `.env` stays out of the repository.
 9. **Metrics:** no `tenantId`, `userId`, `runId`, `documentId` or prompt in labels. Identifiers live only in traces/logs.
-10. **Data:** forward-only migrations (never edit an applied one); `timestamptz`; UUID; money is `NUMERIC`/Decimal, not float; time and randomness via injectable `Clock`/source; large payloads go to MinIO, the DB keeps ref + checksum.
+10. **Data:** forward-only migrations (never edit an applied one); `timestamptz`; UUID; money is `NUMERIC`/Decimal, not float; time and randomness via injectable `Clock`/source; large payloads go to Garage, the DB keeps ref + checksum.
 11. **API:** `/api/v1` prefix, OpenAPI in CI, RFC 9457 errors, pagination with a max size, `Idempotency-Key` for create-run / upload-finalize / approval, `202` for starting a workflow, tenant never from body.
 12. **Errors** are classified by the error taxonomy; retry only for transient ones. Do not add retries/timeouts blindly.
 13. **Immutability:** an activated workflow version, an active agent profile version and a published event contract never change — only a new version.

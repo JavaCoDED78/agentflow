@@ -37,7 +37,7 @@ temp/
 
 # ---- Local runtime / compose volumes ----
 # Local data volumes and Compose overrides created by docker-compose services
-# (PostgreSQL, Kafka, Redis, MinIO, ...). Keep them out of Git; provision from
+# (PostgreSQL, Kafka, Redis, Garage, ...). Keep them out of Git; provision from
 # Git only.
 docker-data/
 docker-compose*.override.yml
