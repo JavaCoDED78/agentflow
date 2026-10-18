@@ -59,6 +59,13 @@ spacing and import order — and combined with
 final newline) it standardizes indentation, imports, whitespace and line
 endings. The target is every Java source under `src/` (main + test).
 
+## Local environment
+
+Copy `.env.example` to `.env` for local development. `.env` is ignored by Git;
+this file contains only `CHANGEME` placeholders and localhost defaults, and real
+secrets are read from the environment or a secret store — never from Git
+(`S01-11`).
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

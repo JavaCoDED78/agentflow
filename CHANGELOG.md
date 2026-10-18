@@ -54,6 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/`. Line endings, trailing whitespace and final newlines follow
   `.editorconfig` (LF). Existing skeleton files were reformatted to the standard.
 
+- **Repository secret hygiene (`S01-11`).** Real credentials and local env files
+  are not tracked. `.gitignore` excludes `.env`/`.env.*` (only `!.env.example`
+  is committed), Java keytool artifacts (`*.keystore`, `*.p12`, `*.jks`) and
+  local Compose data volumes / `docker-compose*.override.yml`. `.editorconfig`
+  already enforces LF endings, UTF-8, trailing-whitespace trimming and final
+  newlines. A `.env.example` template with `CHANGEME` placeholders and localhost
+  defaults is committed for local use (real secrets stay in the environment or a
+  secret store). A scan of every text blob in the commit history (43 files)
+  against AWS / GitHub / Google / Stripe / Slack key patterns, PEM private keys
+  and `key`/`token`/`password` assignments found no secret-like values.
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit

@@ -35,6 +35,13 @@ temp/
 *.p12
 *.jks
 
+# ---- Local runtime / compose volumes ----
+# Local data volumes and Compose overrides created by docker-compose services
+# (PostgreSQL, Kafka, Redis, MinIO, ...). Keep them out of Git; provision from
+# Git only.
+docker-data/
+docker-compose*.override.yml
+
 # ---- Editor/OS generated ----
 *.swp
 *~
