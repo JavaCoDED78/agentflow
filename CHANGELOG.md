@@ -124,6 +124,21 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   a container restart with the same credentials. The trade-off is recorded in
   `docs/adr/s3-object-storage-garage.md`.
 
+- **Compose profiles (S01-16).** `infra/compose/docker-compose.yml` now groups
+  every service into six profiles — `core`, `messaging`, `identity`, `ai-local`,
+  `observability`, `full` — so the minimum viable stack (`core`) starts without
+  the rest. `full` reuses each service's definition by listing `full` in that
+  service's `profiles` array (Compose cannot nest profiles). The observability
+  profile runs `grafana/otel-lgtm` (the all-in-one OpenTelemetry Collector /
+  Prometheus / Loki / Tempo / Grafana backend) instead of a five-container stack:
+  the Loki exporter is absent from `otel/opentelemetry-collector-contrib` and
+  `grafana/loki` exposes no OTLP ingest, so the all-in-one image keeps all three
+  stores working (Grafana exposes all three as datasources). The image is pinned
+  by digest; data persists on the `agentflow-observability` named volume; the
+  Grafana admin password is local-only by default. Verified: `docker compose
+  --profile X config` passes for all six profiles and the observability profile
+  comes up `healthy` with all component endpoints responding.
+
 ### Fixed
 
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit

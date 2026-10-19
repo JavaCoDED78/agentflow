@@ -1,19 +1,40 @@
 # Local infrastructure as code — runtime stack.
 #
-# Docker Compose for the AgentFlow runtime: PostgreSQL (+ pgvector, FTS),
-# Kafka (KRaft), Redis, Garage and Keycloak. Services are grouped into Compose
-# profiles so the minimum viable stack (`core`) starts without the rest.
-# Profiles are fully defined in S01-16.
+# Docker Compose for the AgentFlow runtime: PostgreSQL (+ pgvector, FTS), Kafka
+# (KRaft), Redis, Garage, Keycloak, Ollama and the observability stack
+# (grafana/otel-lgtm, the all-in-one OpenTelemetry-Collector/Prometheus/Loki/
+# Tempo/Grafana backend). Services are grouped into
+# Compose profiles so the minimum viable stack (`core`) starts without the rest.
+#
+# Profiles (fully defined in S01-16):
+#   core          PostgreSQL, Redis, Garage            — the data store layer
+#   messaging     Kafka (KRaft)                        — durable event transport
+#   identity      Keycloak                             — OIDC identity provider
+#   ai-local      Ollama                               — local LLM (OpenAI-compatible API)
+#   observability grafana/otel-lgtm (OTel Collector, Prometheus, Loki, Tempo,
+#                     Grafana in one image)
+#   full          every service above
+#
+# The `full` profile reuses each service's definition by listing `full` in that
+# service's `profiles` array (Compose cannot nest profiles), so
+# `docker compose --profile full up` brings the whole stack and every narrower
+# profile brings only its own subset.
 #
 # Rules (see infra/AGENTS.md):
 #   - Images are pinned to immutable tags, never `latest`.
 #   - Secrets are never committed. Defaults below are local-only and clearly
 #     marked; override them through a local `.env` (git-ignored).
-#   - A healthcheck is present on every service.
+#   - A healthcheck is present on every service that ships a shell.
 #   - The PostgreSQL image with pgvector is the same one Testcontainers uses.
 #
 # Load a `.env` (local, git-ignored) for real values; the defaults make the
-# service runnable without one.
+# services runnable without one.
+
+x-shared-logging: &shared-logging
+  driver: json-file
+  options:
+    max-size: "25m"
+    max-file: "3"
 
 services:
 
@@ -49,7 +70,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-    profiles: ["core"]
+    logging: *shared-logging
+    networks: [agentflow]
+    profiles: ["core", "full"]
 
   # ---------------------------------------------------------------------------
   # Redis 8 (Open Source) — cache and short-lived coordination (S01-13).
@@ -78,60 +101,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
-    profiles: ["core"]
-
-  # ---------------------------------------------------------------------------
-  # Kafka 4.3.1 (KRaft) — durable event transport (S01-14).
-  # Single combined node (broker + controller) on the pinned apache/kafka:4.3.1
-  # image, which runs KRaft by default — no ZooKeeper. A dedicated CONTROLLER
-  # listener is required by KRaft; INTERNAL carries inter-broker traffic and is
-  # advertised as kafka:9092 so compose peers resolve the broker by name. The
-  # cluster id is generated once (see README) and referenced through KAFKA_CLUSTER_ID;
-  # the wrapper formats the Raft log on the first start. replication-factor 1 is
-  # consistent with the broker's min.insync.replicas default.
-  # ---------------------------------------------------------------------------
-  kafka:
-    image: apache/kafka:4.3.1
-    container_name: agentflow-kafka
-    restart: unless-stopped
-    environment:
-      # KRaft cluster id — generated once; required for first start.
-      CLUSTER_ID: "${KAFKA_CLUSTER_ID:?set KAFKA_CLUSTER_ID in .env — run: /opt/kafka/bin/kafka-storage.sh random-uuid}"
-      KAFKA_NODE_ID: "1"
-      KAFKA_PROCESS_ROLES: "broker,controller"
-      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
-      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092"
-      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
-      KAFKA_TRANSACTION_STATE_TOPIC_REPLICATION_FACTOR: "1"
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
-      KAFKA_LOG_DIRS: /var/lib/kafka/data
-    ports:
-      - "${KAFKA_PORT:-9092}:9092"
-    # Named volume keeps the Raft log across restarts; nothing lands in Git.
-    volumes:
-      - agentflow-kafka:/var/lib/kafka/data
-    # The messaging network + `kafka` alias is how peers resolve the advertised
-    # listener INTERNAL://kafka:9092.
-    networks:
-      messaging:
-        aliases:
-          - kafka
-    # Broker-level readiness: the broker must answer the API/versions request on
-    # its own INTERNAL listener (localhost, so it does not depend on compose DNS
-    # resolving its advertised alias) and have the KRaft metadata loaded. The
-    # console tool exits non-zero before the broker is ready, so Compose gates
-    # dependents on it.
-    healthcheck:
-      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
-      interval: 10s
-      timeout: 10s
-      retries: 20
-      start_period: 30s
-    profiles: ["messaging"]
+    logging: *shared-logging
+    networks: [agentflow]
+    profiles: ["core", "full"]
 
   # ---------------------------------------------------------------------------
   # Garage (S3-compatible object storage) — large documents / artifacts kept
@@ -178,7 +150,64 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
-    profiles: ["core"]
+    logging: *shared-logging
+    networks: [agentflow]
+    profiles: ["core", "full"]
+
+  # ---------------------------------------------------------------------------
+  # Kafka 4.3.1 (KRaft) — durable event transport (S01-14).
+  # Single combined node (broker + controller) on the pinned apache/kafka:4.3.1
+  # image, which runs KRaft by default — no ZooKeeper. A dedicated CONTROLLER
+  # listener is required by KRaft; INTERNAL carries inter-broker traffic and is
+  # advertised as kafka:9092 so compose peers resolve the broker by name. The
+  # cluster id is generated once (see README) and referenced through KAFKA_CLUSTER_ID;
+  # the wrapper formats the Raft log on the first start. replication-factor 1 is
+  # consistent with the broker's min.insync.replicas default.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: agentflow-kafka
+    restart: unless-stopped
+    environment:
+      # KRaft cluster id — generated once; required for first start.
+      CLUSTER_ID: "${KAFKA_CLUSTER_ID:?set KAFKA_CLUSTER_ID in .env — run: /opt/kafka/bin/kafka-storage.sh random-uuid}"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    # Named volume keeps the Raft log across restarts; nothing lands in Git.
+    volumes:
+      - agentflow-kafka:/var/lib/kafka/data
+    # The shared `agentflow` network lets peers resolve the broker by name; the
+    # `messaging` network carries the advertised alias kafka:9092 (S01-14).
+    networks:
+      agentflow: null
+      messaging:
+        aliases:
+          - kafka
+    # Broker-level readiness: the broker must answer the API/versions request on
+    # its own INTERNAL listener (localhost, so it does not depend on compose DNS
+    # resolving its advertised alias) and have the KRaft metadata loaded. The
+    # console tool exits non-zero before the broker is ready, so Compose gates
+    # dependents on it.
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    logging: *shared-logging
+    profiles: ["messaging", "full"]
 
   # ---------------------------------------------------------------------------
   # Keycloak 26.x (OIDC identity provider) — local IdP + declarative realm
@@ -221,7 +250,68 @@ services:
       timeout: 5s
       retries: 30
       start_period: 20s
-    profiles: ["identity"]
+    logging: *shared-logging
+    networks: [agentflow]
+    profiles: ["identity", "full"]
+
+  # ---------------------------------------------------------------------------
+  # Ollama 0.40.x (local LLM, OpenAI-compatible API) — local model option for
+  # the `ai-local` profile (S01-16). Never required for CI: the app selects the
+  # Ollama provider through its own `ollama` Spring profile, and CI uses a fake
+  # provider. Models persist on a named volume so they survive restarts.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:0.40.6
+    container_name: agentflow-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - agentflow-ollama:/models
+    # Ubuntu base ships no curl/wget; a bash /dev/tcp probe against the port
+    # serves as readiness (bash is at /bin/bash; /bin/sh is dash).
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/11434 && printf \"GET /api/tags HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && timeout 3 head -c 200 <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    logging: *shared-logging
+    networks: [agentflow]
+    profiles: ["ai-local", "full"]
+
+  # ---------------------------------------------------------------------------
+  # Observability stack (S01-16): grafana/otel-lgtm bundles the OpenTelemetry
+  # Collector, Prometheus (metrics), Loki (logs), Tempo (traces) and Grafana in a
+  # single, pinned image — the officially recommended backend for local dev/demo.
+  # It accepts OTLP on :4317 (gRPC) / :4318 (HTTP) and fans it out to the three
+  # stores; Grafana (:3000) exposes all three as datasources. The Loki exporter
+  # is absent from the standard contrib collector and Loki exposes no OTLP
+  # ingest, so the all-in-one lgtm image keeps the stack fully working; a
+  # production deployment would run these as separate services (deployment
+  # sprint). Data lives on one named volume under /data (Prometheus, Loki,
+  # Grafana, Tempo all persist there).
+  # ---------------------------------------------------------------------------
+  observability:
+    image: grafana/otel-lgtm@sha256:57b5ab1ca6619beb180174e2fccce04762470750669d043f544b4726d0582d07
+    container_name: agentflow-observability
+    restart: unless-stopped
+    environment:
+      # Grafana admin password; anonymous access is on by default in lgtm, so
+      # this adds a layer of defense-in-depth for the local stack.
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+    ports:
+      - "3000:3000"   # Grafana UI (datasources for metrics/logs/traces)
+      - "4317:4317"   # OTLP/gRPC ingress (application instrumentation)
+      - "4318:4318"   # OTLP/HTTP ingress (application instrumentation)
+      - "9090:9090"   # Prometheus direct access (debug)
+      - "3100:3100"   # Loki direct access (debug)
+      - "3200:3200"   # Tempo direct access (debug)
+    volumes:
+      - agentflow-observability:/data
+    logging: *shared-logging
+    networks: [observability]
+    profiles: ["observability", "full"]
 
 volumes:
   agentflow-pgdata:
@@ -236,8 +326,28 @@ volumes:
     name: agentflow-garage-data
   agentflow-keycloak-data:
     name: agentflow-keycloak-data
+  agentflow-ollama:
+    name: agentflow-ollama
+  agentflow-observability:
+    name: agentflow-observability
 
 networks:
+  # Shared app/data network — every service joins this so `full`-profile services
+  # resolve each other by name (app <-> postgres/kafka/redis/garage/keycloak/ollama
+  # and the collector <-> scrape targets).
+  agentflow:
+    name: agentflow
+    driver: bridge
+  # Kafka KRaft peer network (S01-14): the broker advertises
+  # INTERNAL://kafka:9092 and the acceptance recipe runs producer/consumer on the
+  # `agentflow-messaging` network, resolving the `kafka` alias.
   messaging:
     name: agentflow-messaging
+    driver: bridge
+  # Observability internal network — isolates the lgtm container. Its collector,
+  # Prometheus, Loki, Tempo and Grafana interconnect inside the single container;
+  # the app sends OTLP to the host-published :4317/:4318 (deployment sprint, when
+  # the app is containerized, can join this network to reach :4317 internally).
+  observability:
+    name: agentflow-observability
     driver: bridge
