@@ -1,0 +1,19 @@
+# Local development environment (S01-17).
+#
+# Activate with:
+#   ./gradlew :apps:agentflow-app:bootRun -Dspring.profiles.active=local
+#
+# Service URLs (datasource, Redis, Kafka, Keycloak, object storage, OTLP) are
+# not hardcoded here; they come from the git-ignored local .env file (environment
+# variables) mapped onto spring.datasource.* and the agentflow.* keys in later
+# sprints. Nothing here points at localhost.
+
+spring:
+  application:
+    name: agentflow-app
+
+agentflow:
+  app-name: agentflow-app
+  http:
+    host: 0.0.0.0
+    port: 8080

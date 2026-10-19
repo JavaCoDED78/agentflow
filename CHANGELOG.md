@@ -141,6 +141,17 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
 
 ### Fixed
 
+- **Typed config binds under the default profile (`S01-17`).** The `agentflow.app.*`
+  configuration was declared with a nested `agentflow.app.name` key, but the Java
+  model is `@ConfigurationProperties(prefix = "agentflow")` with a flat `appName`
+  field, which binds from `agentflow.app-name` / `agentflow.appName` only. The nested
+  key never bound, so `app.name` came back as `null` under the default profile and the
+  Spring context failed to start. All `application*.yml` profiles now use the flat
+  `agentflow.app-name` key; the `@NotBlank` validation message and Javadoc were
+  corrected to match. The startup-failure test now asserts on the real
+  `ConfigurationPropertiesBindException` reported by `ApplicationContextRunner` (a
+  missing required value fails context startup via `@Validated` binding), and
+  `./gradlew clean check` is green.
 - **`apps/agentflow-app` test task runs (S01-07).** The Boot 4.1.1 BOM manages JUnit
   to the 6.0.x line and `spring-boot-test` is compiled against the JUnit Platform
   6.0 `Store` API, so forcing the JUnit 5 line broke Spring context startup

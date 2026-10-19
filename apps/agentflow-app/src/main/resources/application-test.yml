@@ -1,0 +1,17 @@
+# Test environment (S01-17).
+#
+# Loaded by the unit and integration test suites. No hardcoded localhost:
+# integration tests spin up real services with Testcontainers on dynamic ports.
+
+spring:
+  application:
+    name: agentflow-app
+  main:
+    banner-mode: "off"
+
+agentflow:
+  app-name: agentflow-app
+  http:
+    host: 0.0.0.0
+    # Ephemeral port (0) so the test context never binds a fixed port.
+    port: 0

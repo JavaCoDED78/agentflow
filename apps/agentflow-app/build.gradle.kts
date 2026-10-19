@@ -27,6 +27,10 @@ dependencies {
     // Spring Framework 7.0.9, Jackson 3.1.5) — see dependency-management.md.
     implementation(platform(libs.spring.ai.bom))
     implementation("org.springframework.boot:spring-boot-starter-web")
+    // Bean Validation (hibernate-validator) so @Validated on @ConfigurationProperties
+    // actually fails startup on a missing required value (S01-17). Without it the
+    // validation annotations are silently ignored.
+    implementation("org.springframework.boot:spring-boot-starter-validation")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // JUnit Platform launcher is required on the test runtime classpath; the

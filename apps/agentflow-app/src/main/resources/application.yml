@@ -1,12 +1,26 @@
-# Minimal application configuration for the AgentFlow Spring Boot artifact (S01-07).
+# Base configuration for the AgentFlow Spring Boot artifact (S01-07, S01-17).
 #
-# Profile-specific settings (local / test / kubernetes) are added later per
-# DEVELOPMENT_PLAN.md (Sprint 1). No datasource or JPA yet — persistence arrives
-# in Sprint 3 — so the skeleton boots without a database.
+# Shared across every environment. Per-environment overrides live in
+# application-{local,test,kubernetes}.yml. There are no hardcoded localhost
+# addresses here: the HTTP bind comes from the validated typed properties
+# (agentflow.http.*) and secrets arrive from the environment.
+#
+# Persistence, messaging and identity arrive in later sprints (S03+), so the
+# skeleton boots without a database.
 
 spring:
   application:
     name: agentflow-app
 
-server:
-  port: 8080
+# AgentFlow typed configuration (S01-17). Validated at startup through
+# @ConfigurationProperties + @Validated; a missing required value (agentflow.app-name)
+# fails boot with a clear message. The HTTP bind settings drive the embedded
+# server via HttpServerConfiguration.
+agentflow:
+  # Required: no Java default, so a missing value fails startup explicitly.
+  app-name: agentflow-app
+  http:
+    # Bind all interfaces by default so the container is reachable through the
+    # Kubernetes Service. Never hardcode localhost here or in code.
+    host: 0.0.0.0
+    port: 8080

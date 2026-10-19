@@ -1,0 +1,16 @@
+# Kubernetes / production-like environment (S01-17).
+#
+# Bind to all interfaces so the container is reachable through the Service.
+# Secrets (datasource password, Keycloak client secret, AI API key) are injected
+# as environment variables from Kubernetes Secrets, never written into this file.
+# There are no hardcoded localhost addresses.
+
+spring:
+  application:
+    name: agentflow-app
+
+agentflow:
+  app-name: agentflow-app
+  http:
+    host: 0.0.0.0
+    port: 8080
