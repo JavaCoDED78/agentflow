@@ -139,6 +139,15 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   --profile X config` passes for all six profiles and the observability profile
   comes up `healthy` with all component endpoints responding.
 
+- **Safe health endpoints (`S01-18`).** Spring Boot Actuator is wired into
+  `apps/agentflow-app` (`spring-boot-starter-actuator`, BOM-managed, no pinned
+  version) for minimal runtime diagnostics. Only `health` and `info` are exposed
+  over HTTP and `liveness`/`readiness` are defined as dedicated health groups for
+  the orchestrator; every other endpoint (`env`, `configprops`, `beans`,
+  `mappings`, `loggers`, dumps) is outside the exposure allow-list, so it answers
+  `404` anonymously. Authentication over management endpoints is added later
+  (`S04-11`). See `apps/agentflow-app/src/main/resources/application.yml`.
+
 ### Fixed
 
 - **Typed config binds under the default profile (`S01-17`).** The `agentflow.app.*`

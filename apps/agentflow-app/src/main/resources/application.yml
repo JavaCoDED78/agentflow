@@ -24,3 +24,26 @@ agentflow:
     # Kubernetes Service. Never hardcode localhost here or in code.
     host: 0.0.0.0
     port: 8080
+
+# Health endpoints (S01-18).
+#
+# Boot 4.x exposes web endpoints through an allow-list
+# (`management.endpoints.web.exposure.include`). Only `health` and `info` are
+# reachable over HTTP; every other endpoint (`env`, `configprops`, `beans`,
+# `mappings`, `loggers`, dumps) is not exposed, so it answers 404 anonymously.
+# `liveness` and `readiness` are dedicated health probes for the orchestrator
+# (Kubernetes). Role-based access is added later (S04-11); this is least
+# exposure.
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  health:
+    group:
+      liveness:
+        include: []
+      readiness:
+        include: []

@@ -31,6 +31,11 @@ dependencies {
     // actually fails startup on a missing required value (S01-17). Without it the
     // validation annotations are silently ignored.
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    // Actuator (S01-18): health + info endpoints for minimal runtime diagnostics.
+    // Only health and info are exposed over HTTP; the sensitive endpoints (env,
+    // configprops, beans, ...) are closed by the application config. Managed by
+    // the Spring Boot BOM, so no version is pinned here.
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // JUnit Platform launcher is required on the test runtime classpath; the
