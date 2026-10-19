@@ -73,6 +73,16 @@ The minimum runtime stack is one Docker Compose profile (PostgreSQL + pgvector,
 docker compose --file infra/compose/docker-compose.yml --profile core up -d
 ```
 
+Logs are structured JSON on stdout (S01-19). Every event carries
+`@timestamp`, `level`, `message`, `logger_name`, `thread_name` and the `service` /
+`environment` MDC values, and secret-like values (Bearer tokens, API keys,
+passwords, AWS key IDs) are masked to `***` before they are written. Run the API
+locally with the `local` profile for `DEBUG` logging:
+
+```bash
+./gradlew :apps:agentflow-app:bootRun --args='--spring.profiles.active=local'
+```
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

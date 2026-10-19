@@ -12,12 +12,19 @@
 # the official releases in S01-08.
 spring-boot = "4.1.1"
 spring-ai   = "2.0.1"
+# Structured JSON logging for the app (S01-19). 9.0 is compiled against logback
+# 1.5.x and Jackson 3.x (tools.jackson), so it is compatible with the Boot
+# 4.1.1 stack (logback 1.5.38, Jackson 3.1.5). Older 7.x lines still target
+# com.fasterxml.jackson (Jackson 2) and would clash with Boot 4.1's Jackson 3.
+logstash-logback-encoder = "9.0"
 
 [libraries]
 # Bill-of-materials (BOM) artifacts are consumed with platform(...). They carry
 # every Spring-managed transitive version, so nothing is re-pinned elsewhere.
 spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
 spring-ai-bom   = { module = "org.springframework.ai:spring-ai-bom",               version.ref = "spring-ai" }
+# Structured JSON logging (S01-19); version pinned above.
+logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstash-logback-encoder" }
 
 [plugins]
 # Gradle plugin versions live here too, so a module applies the Boot plugin

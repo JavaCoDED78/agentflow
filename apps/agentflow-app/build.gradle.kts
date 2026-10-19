@@ -36,6 +36,11 @@ dependencies {
     // configprops, beans, ...) are closed by the application config. Managed by
     // the Spring Boot BOM, so no version is pinned here.
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Structured JSON logging (S01-19): logstash-logback-encoder renders log
+    // events as JSON on stdout and masks sensitive values before serialization
+    // (see logback-spring.xml). BOM-independent library; the version is pinned in
+    // gradle/libs.versions.toml (logstash-logback-encoder = 9.0).
+    implementation(libs.logstash.logback.encoder)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // JUnit Platform launcher is required on the test runtime classpath; the

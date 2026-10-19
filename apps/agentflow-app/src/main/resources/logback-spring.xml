@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logging configuration for the AgentFlow artifact (S01-19).
+
+  Logs are structured JSON on stdout (consumed by the OpenTelemetry Collector /
+  Loki in later sprints). The logstash-logback-encoder renders each event as a
+  JSON object and masks sensitive values before serialization, so JWTs, API keys
+  and other secrets never reach stdout, disk or the Actuator.
+
+  Named logback-SPRING.xml (not logback.xml) so Spring Boot's <springProperty>
+  and <profile> elements are available. This file is parsed before the Spring
+  context exists: service/environment are seeded into the MDC by the
+  LoggingContextProperties Spring bean (see package com.example.agentflow.logging),
+  and the encoder writes the current thread's MDC by default.
+-->
+<configuration>
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <!-- MDC carries the correlation/trace identifiers (traceId, spanId,
+           correlationId) plus the service/environment seeded by the Spring bean.
+           MDC is written by the encoder's default LogstashProvider; OTel
+           populates traceId/spanId once tracing is wired (S13). -->
+      <decorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
+        <defaultMask>***</defaultMask>
+        <valueMasker class="com.example.agentflow.logging.SecretRedactingValueMasker"/>
+      </decorator>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+
+</configuration>

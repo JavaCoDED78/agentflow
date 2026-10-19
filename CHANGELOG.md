@@ -146,7 +146,30 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   the orchestrator; every other endpoint (`env`, `configprops`, `beans`,
   `mappings`, `loggers`, dumps) is outside the exposure allow-list, so it answers
   `404` anonymously. Authentication over management endpoints is added later
-  (`S04-11`). See `apps/agentflow-app/src/main/resources/application.yml`.
+  `S04-11`). See `apps/agentflow-app/src/main/resources/application.yml`.
+
+- **Standardized JSON logging (`S01-19`).** The app now emits structured JSON on
+  stdout through
+  `apps/agentflow-app/src/main/resources/logback-spring.xml`, satisfying the
+  AGENTS.md requirement that logs carry `traceId`/`spanId` and `service`/`environment`
+  and never leak secrets. Every event is rendered by
+  `net.logstash.logback:logstash-logback-encoder:9.0` (the Jackson 3 / `tools.jackson`
+  line — the only version compatible with the Boot 4.1.1 / Jackson 3.1.5 graph; the
+  previously pinned `8.0` does not run on Jackson 3). The encoder writes the MDC keys
+  (`service`/`environment`, and `traceId`/`spanId`/`correlationId` once S13 wires
+  tracing), and a custom
+  `com.example.agentflow.logging.SecretRedactingValueMasker` (registered through the
+  encoder's `<valueMasker>`) redacts secret-like values before serialization —
+  `Bearer`/`bearer` tokens, `api_key`/`token`/`password`/`secret` pairs and AWS access
+  key IDs — so nothing reaches stdout, Loki, disk or the Actuator. A
+  `com.example.agentflow.logging.LoggingContextProperties` bean seeds `service`/`environment`
+  into the MDC on the main thread at startup. The `local` profile sets
+  `com.example.agentflow` to `DEBUG` (see `application-local.yml`) while the default
+  stays at `INFO`. Verified end-to-end: `LoggingJsonFormatTest` exercises the same
+  encoder/decorator/masker as production and asserts parseable JSON carrying MDC and
+  masked secrets, and a `bootRun` under `local` shows JSON with `service`/`environment`
+  and `secret=***` in the output. Follow-up: `traceId`/`spanId` MDC fields are added
+  when OTel is wired (S13).
 
 ### Fixed
 

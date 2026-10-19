@@ -17,3 +17,14 @@ agentflow:
   http:
     host: 0.0.0.0
     port: 8080
+
+# Log levels for the local profile (S01-19). The JSON layout lives in
+# logback-spring.xml; this only picks the level per logger. Our code runs at
+# DEBUG for local diagnostics, while framework / boot noise is capped at WARN so
+# startup and shutdown stay easy to read.
+logging:
+  level:
+    root: INFO
+    com.example.agentflow: DEBUG
+    org.springframework.boot.autoconfigure: WARN
+
