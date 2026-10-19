@@ -8,7 +8,7 @@ Infrastructure as code: local run, images, Kubernetes, GitOps and the observabil
 - `docker/` — the application Dockerfile and auxiliary images.
 - `helm/` — chart and values (`local`, `staging`/`demo`).
 - `argocd/` — GitOps manifests (P1).
-- `observability/` — `otel-collector/`, `prometheus/`, `grafana/` (datasources, dashboards, alerting), `loki/`, `tempo/`.
+- `observability/` — local observability stack as one `grafana/otel-lgtm` image (OTel Collector + Prometheus + Loki + Tempo + Grafana). The standalone Collector/Prometheus/Loki/Tempo split is the S13 production target; the lgtm rationale is in `observability/README.md`.
 
 ## Rules
 
