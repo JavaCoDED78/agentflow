@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shared domain glossary (`S02-01`).** `docs/domain-glossary.md` is the new
+  single source of truth for terms: it defines the core concepts (tenant, agent /
+  agent profile, tool, workflow definition vs. workflow version, run vs. step /
+  attempt, event/envelope/outbox/inbox, knowledge base/document/chunk, citation,
+  approval, usage record/budget/quota, audit event) and pins canonical
+  identifiers to the target data model (`S03`), `/api/v1` API (`S03-12`),
+  run/step state machine (`S05`), Kafka/event contract (`S06`) and AI
+  orchestration (`S09`). A "do-not-use" alias section keeps the names that drift
+  most easily (run, step, event, agent, tool, workflow, document, chunk,
+  approval, usage) distinct across tables, DTOs and the API, satisfying the
+  S02-01 acceptance criterion of one concept — one name. `docs/README.md` links
+  to the glossary and its `⚠ planned (S02-01)` marker was removed.
+
 - **Contribution and changelog rules (`S01-22`).** `CONTRIBUTING.md` now defines
   the branch, PR, test, documentation and secrets rules for contributors: one
   task per PR (`S##-##`), build through the Gradle wrapper (`./gradlew check`,

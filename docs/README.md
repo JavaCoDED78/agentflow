@@ -29,7 +29,7 @@ docs/
 ├── README.md                          ← you are here (this index)
 ├── AGENTS.md                          ← documentation rules & conventions
 ├── product-scope.md                   ← MVP boundaries, v1 persona, in/out of scope
-├── domain-glossary.md                 ⚠ planned (S02-01) — shared terms, one concept one name
+├── domain-glossary.md                 ← shared terms, one concept one name
 ├── usage-and-costs.md                 ⚠ planned — tokens, prices, budgets, audit catalogue
 ├── adr/                               ← architecture decision records
 │   ├── README.md                      ← ADR register (S02-16)
@@ -76,7 +76,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Project entry point, quickstart, ports, build/run | root `README.md` | `../README.md` |
 | Documentation & code-authoring conventions | `docs/AGENTS.md` | `docs/AGENTS.md` |
 | Product scope / MVP boundaries | `docs/product-scope.md` | `docs/product-scope.md` |
-| Shared domain terms | `docs/domain-glossary.md` | ⚠ planned (`S02-01`) |
+| Shared domain terms | `docs/domain-glossary.md` | `docs/domain-glossary.md` |
 | Architecture decision records | `docs/adr/` | `docs/adr/README.md` |
 | Architecture internals (modules, events, DB, etc.) | `docs/architecture/` | this index |
 | Security & threat model | `docs/security/`, `docs/threat-model/` | ⚠ planned (`S11`) |
