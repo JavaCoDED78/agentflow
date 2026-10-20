@@ -44,6 +44,25 @@ Secret. Stop and remove both with `docker compose ... down` (add `-v` to drop th
 volumes too). Real credentials come from a local `.env` (git-ignored); the
 defaults are local-only and clearly marked.
 
+## Smoke test (S01-20)
+
+[`scripts/smoke-local.sh`](../../scripts/smoke-local.sh) is the Sprint 1 smoke
+test: it starts a Compose profile (default `core`), waits for every service in
+that profile to become `healthy` through its compose healthcheck, prints a
+per-service summary and tears the stack down. Run it from the repo root to prove
+the base stack starts reproducibly from a clean checkout:
+
+```bash
+bash scripts/smoke-local.sh                       # core, then down
+bash scripts/smoke-local.sh --profile full        # all services, then down
+bash scripts/smoke-local.sh --keep                # leave the stack running
+```
+
+It is a smoke gate: the script exits non-zero when any service does not become
+healthy, and it validates `docker compose config` for the chosen profile first.
+`messaging`/`full` need a one-time `KAFKA_CLUSTER_ID`, which the local
+`infra/compose/.env` provides.
+
 ## Running the messaging profile (Kafka, S01-14)
 
 The `kafka` service runs a single combined KRaft node (broker + controller) on

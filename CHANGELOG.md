@@ -171,6 +171,18 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   and `secret=***` in the output. Follow-up: `traceId`/`spanId` MDC fields are added
   when OTel is wired (S13).
 
+- **Quickstart and smoke test (`S01-20`).** The root `README.md` gains a quickstart —
+  prerequisites, starting/stopping the base stack, a ports table, environment
+  variables and troubleshooting — so a developer without verbal instructions can
+  start the stack. `scripts/smoke-local.sh` (S01-20) is the Sprint 1 smoke test:
+  it starts a Compose profile (default `core`: PostgreSQL + pgvector, Redis,
+  Garage), waits for every service to become `healthy` through its compose
+  healthcheck, prints a per-service summary and tears the stack down, exiting
+  non-zero if any service is not healthy. `messaging`/`full` need a one-time
+  `KAFKA_CLUSTER_ID`, which the local `infra/compose/.env` provides. Verified:
+  `docker compose config` passes for all six profiles and the smoke test passes
+  for `core` and `full` (all services reach `healthy`).
+
 ### Fixed
 
 - **Typed config binds under the default profile (`S01-17`).** The `agentflow.app.*`

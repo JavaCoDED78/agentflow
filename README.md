@@ -59,29 +59,99 @@ spacing and import order — and combined with
 final newline) it standardizes indentation, imports, whitespace and line
 endings. The target is every Java source under `src/` (main + test).
 
-## Local environment
+## Quickstart
 
 Copy `.env.example` to `.env` for local development. `.env` is ignored by Git;
 this file contains only `CHANGEME` placeholders and localhost defaults, and real
 secrets are read from the environment or a secret store — never from Git
 (`S01-11`).
 
-The minimum runtime stack is one Docker Compose profile (PostgreSQL + pgvector,
-`S01-12`, and the Redis cache `S01-13`):
+```bash
+cp .env.example .env
+```
+
+### 1. Start the base stack
+
+The minimum runtime stack is the `core` Compose profile: PostgreSQL (+ pgvector,
+FTS), Redis and Garage (S3-compatible object storage). Run it from the repo root:
 
 ```bash
 docker compose --file infra/compose/docker-compose.yml --profile core up -d
 ```
 
-Logs are structured JSON on stdout (S01-19). Every event carries
+Tear it down with `docker compose --file infra/compose/docker-compose.yml --profile core down`
+(add `-v` to drop the volumes). The `full` profile (`--profile full`) starts every
+service — Kafka, Keycloak, Ollama and the observability stack too. The `messaging`
+profile needs a one-time `KAFKA_CLUSTER_ID`; the local `infra/compose/.env`
+provides it, so `messaging`/`full` work out of the box. Per-service detail and the
+remaining profiles are in [`infra/compose/README.md`](infra/compose/README.md).
+
+### 2. Verify with the smoke test
+
+[`scripts/smoke-local.sh`](scripts/smoke-local.sh) (`S01-20`) starts a profile,
+waits for every service to become `healthy` through its compose healthcheck,
+prints a per-service summary and tears the stack down. It is the Sprint 1 smoke
+test — run it from a clean checkout:
+
+```bash
+bash scripts/smoke-local.sh                       # core, then down
+bash scripts/smoke-local.sh --profile full        # all services, then down
+bash scripts/smoke-local.sh --keep                # leave the stack running
+bash scripts/smoke-local.sh --help
+```
+
+### 3. Run the API
+
+Logs are structured JSON on stdout (S01-19): every event carries
 `@timestamp`, `level`, `message`, `logger_name`, `thread_name` and the `service` /
 `environment` MDC values, and secret-like values (Bearer tokens, API keys,
-passwords, AWS key IDs) are masked to `***` before they are written. Run the API
-locally with the `local` profile for `DEBUG` logging:
+passwords, AWS key IDs) are masked to `***`. Run the API locally with the `local`
+profile for `DEBUG` logging:
 
 ```bash
 ./gradlew :apps:agentflow-app:bootRun --args='--spring.profiles.active=local'
 ```
+
+### Ports
+
+| Service | Port | Profile |
+|---|---|---|
+| PostgreSQL (+ pgvector) | 5432 | core |
+| Redis | 6379 | core |
+| Garage (S3 API) | 3900 | core |
+| Kafka | 9092 | messaging |
+| Keycloak (OIDC) | 8083 | identity |
+| Ollama (local LLM) | 11434 | ai-local |
+| Observability (Grafana) | 3000 | observability |
+| Observability (OTLP gRPC / HTTP) | 4317 / 4318 | observability |
+
+Ports are configurable through `POSTGRES_PORT`, `REDIS_PORT`, `GARAGE_S3_API_PORT`,
+`KAFKA_PORT`, `KEYCLOAK_PORT` and `OLLAMA_PORT` in a local `.env` (defaults above).
+The rest of the placeholders are in [`.env.example`](.env.example).
+
+### Environment variables
+
+Spring Boot reads `.env` as environment variables / system properties through
+typed `@ConfigurationProperties` with validation: a missing required value fails
+startup explicitly (`S01-17`). The app connects to the compose services over
+`localhost` (datasource, Redis, Kafka, Garage, Keycloak issuer) and exports
+telemetry to the observability profile's OTLP endpoint. The Kafka KRaft
+`KAFKA_CLUSTER_ID` is the only value that must be generated once; full reference
+and the local-only defaults are in [`.env.example`](.env.example).
+
+### Troubleshooting
+
+- **`docker compose config` fails** — pin Compose images to immutable tags (never
+  `latest`) and check for an unmerged change; the smoke test validates the file.
+- **`KAFKA_CLUSTER_ID` is undefined** — the `messaging`/`full` profiles format a
+  KRaft cluster on first start. Generate a cluster id once into
+  `infra/compose/.env`:
+  ```bash
+  KAFKA_CLUSTER_ID=$(docker run --rm apache/kafka:4.3.1 /opt/kafka/bin/kafka-storage.sh random-uuid)
+  ```
+- **The API fails to start** — it expects the base stack up and the required
+  values in `.env`; start the `core` profile first and read the logs (structured
+  JSON, secrets masked).
 
 ## Documentation map
 
