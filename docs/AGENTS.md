@@ -31,3 +31,48 @@ Documentation as code: current, verifiable, one owner per topic. General rules a
 - `CHANGELOG.md` (`Unreleased`: Added / Changed / Fixed / Security) is kept for notable API, event, security and operational changes; for the rest — `N/A` with a reason in the PR.
 - Diagrams are Mermaid in Markdown so they live in the diff. Links must not be broken (link check in CI, S16-19).
 - Do not leave "planned" markers in the README after implementation, and do not describe as done what is not in the code.
+
+## Conventions
+
+The rules above are the *what*. This section is the *how*.
+
+### Diagrams (Mermaid)
+
+- Write diagrams in fenced ```mermaid blocks inside Markdown so they live in the
+  diff; the index (`docs/README.md`) links to them.
+- Use only diagram types that render in common viewers — `flowchart`,
+  `sequenceDiagram`, `classDiagram`, `stateDiagram`, and the C4 model. Avoid
+  exotic or plugin-only diagram kinds.
+- Keep each diagram small, annotated, and **in sync with the code**. A diagram
+  that lies about the architecture is worse than none; a stale diagram must be
+  updated or removed in the same change that moved the code.
+- Add a plain-language caption above each block. Prefer a real diagram file
+  (for example a context or context map) over an inline one when it grows past a
+  dozen nodes.
+
+### Examples and commands
+
+- Every command in a document must be runnable and verified, or clearly marked
+  as an illustrative example/pseudocode (never silently mistaken for a real
+  command). Prefer the repository's own scripts over ad-hoc `docker`/`kubectl`
+  one-liners.
+- `curl` examples must match the OpenAPI spec; workflow-graph examples must pass
+  the DSL validator; compose examples must pass `docker compose config`.
+- Never put secrets, real credentials, real data, full documents, prompts, or
+  `latest`/snapshot image tags in an example. Pin image versions to immutable
+  tags.
+- A stale example is worse than none: replace it in the same change, or delete
+  it.
+
+### Documentation currency in PR
+
+- **Documentation as code:** code, docs and contracts change in one PR. A new
+  module/package/table/metric/permission/event/tool updates its owning doc, the
+  matching `contracts/`, and the relevant `AGENTS.md`.
+- **One source of truth:** link to a document instead of copying it.
+- **No false markers:** remove the ⚠ `planned` marker once a document is
+  created, and never mark as done what is not in the code.
+- The PR template requires a `Documentation` section (README / CHANGELOG /
+  docs / contracts updated or `N/A`) and a `Verification` section with the
+  real PASS / FAIL / not-run outcome — never a build reported as passing
+  without running it.

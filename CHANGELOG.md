@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Documentation index and conventions (`S01-21`).** `docs/README.md` is now the
+  documentation index: it shows where every topic lives, links the current
+  documents (`docs/AGENTS.md`, `docs/product-scope.md`, `docs/adr/`,
+  `docs/architecture/`, `docs/runbooks/`, `docs/threat-model/`, and the
+  `contracts/` family) and marks future sections with a `⚠ planned` badge so the
+  index stays truthful while the backlog is being filled out. A *document type →
+  location* table tells a new author where each document belongs, and the
+  *One source of truth / Documentation as code / Examples are executable*
+  principles are restated so the index does not duplicate the rulebook in
+  `docs/AGENTS.md`. `docs/AGENTS.md` gains a **Conventions** section that makes
+  the Mermaid diagram rules, the examples-and-commands rules (verifiable
+  commands, `curl` matching OpenAPI, no secrets), and the PR-documentation-currency
+  rules (docs + contracts change with the code, remove `planned` markers, real
+  PASS/FAIL/not-run verification) explicit. The root `README.md` points to the new
+  index and to `contracts/`. No content was copied between documents.
 - **Java 25 toolchain (`S01-05`).** The Gradle build pins the JDK 25 toolchain
   for every subproject, forces UTF-8 source encoding and a fixed compile
   release (`options.release = 25`), so the build never silently uses the
