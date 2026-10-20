@@ -9,7 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Shared domain glossary (`S02-01`).** `docs/domain-glossary.md` is the new
+- **Module public API map (`S02-04`).** `docs/architecture/module-api.md` is the
+  new public-API boundary for every bounded context. For each module it lists the
+  public application services (use cases), the published event types (`agentflow.*
+  .vN`), the permitted DTOs / IDs / enums, and the internal packages
+  (`persistence` / `web` / `worker` / infra) that other modules must not import.
+  It answers the `S02-04` acceptance criterion — another module reaches a target
+  module **only** through an application service, a permitted public type or a
+  published event type, never by importing repositories or entities — and is the
+  "how to reach" counterpart to the module map (`docs/architecture/module-map.md`,
+  `S02-03`) and the canonical identifiers in the domain glossary (`S02-01`). The
+  `docs/README.md` documentation index links to it.
   single source of truth for terms: it defines the core concepts (tenant, agent /
   agent profile, tool, workflow definition vs. workflow version, run vs. step /
   attempt, event/envelope/outbox/inbox, knowledge base/document/chunk, citation,
