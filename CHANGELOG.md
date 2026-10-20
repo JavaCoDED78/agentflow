@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Modular monolith first ADR (`S02-05`).** `docs/adr/ADR-001-modular-monolith.md` records the
+  deployment/topology decision: all twelve bounded contexts live in one Spring Boot artifact
+  (`apps/agentflow-app`) and one repository with explicit public APIs between contexts, enforced
+  by the automated architecture gate (`./gradlew check`, `S02-08` / `S02-09` / `S02-13`); the
+  topology is one image, several roles, split physically only when a measured need (divergent
+  resource profile, independent scaling, a distinct security boundary or an independent failure
+  domain) appears. It captures the Context, Alternatives, Decision and Consequences the `S02-05`
+  acceptance criterion requires, compares microservices-first and a flat monolith, and pins the
+  split triggers plus the "the API Deployment must not run consumers; worker Deployments must not
+  expose controllers as a public entrypoint" constraint from the plan §4.1. The ADR register
+  (`docs/adr/README.md`) and the `adr/` tree in `docs/README.md` now point at it.
 - **Module public API map (`S02-04`).** `docs/architecture/module-api.md` is the
   new public-API boundary for every bounded context. For each module it lists the
   public application services (use cases), the published event types (`agentflow.*

@@ -32,7 +32,8 @@ docs/
 ├── domain-glossary.md                 ← shared terms, one concept one name
 ├── usage-and-costs.md                 ⚠ planned — tokens, prices, budgets, audit catalogue
 ├── adr/                               ← architecture decision records
-│   ├── README.md                      ← ADR register (S02-16)
+│   ├── README.md                      ← ADR register
+│   ├── ADR-001-modular-monolith.md    ← modular monolith first (S02-05)
 │   └── s3-object-storage-garage.md    ← first ADR (S01-15)
 ├── architecture/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
