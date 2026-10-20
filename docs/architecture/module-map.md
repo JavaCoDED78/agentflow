@@ -266,8 +266,12 @@ root `AGENTS.md` dependency rules). The resolution (plan open decision §4.2.3):
 ## How this map is verified
 
 - **Architecture tests (S02-08/S02-09).** An artificial violation of the
-  dependency table or a created cycle fails `./gradlew check` — the test is the
-  enforcement, not a code review note.
+  dependency table (`ArchitectureBoundaryTest`, `S02-08`) or a created cycle
+  (`NoCyclicModuleDependenciesTest`, `S02-09`) fails `./gradlew check` — the test
+  is the enforcement, not a code review note. `S02-08` rejects any compile edge
+  outside the table above; `S02-09` additionally rejects any cycle in the compile
+  graph, so even a newly added (table-allowed) edge that would close a loop is
+  caught.
 - **Table ownership in migrations.** Every table belongs to one module; this is
   obvious from the migration name/comment (`apps/agentflow-app/AGENTS.md`).
 - **Glossary consistency (§13).** The concept → owner table in the domain

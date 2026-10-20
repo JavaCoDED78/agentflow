@@ -30,6 +30,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated `@AnalyzeClasses`; ArchUnit 1.5.x otherwise refuses the class and
   silently runs zero tests (a false pass). This is recorded in the class Javadoc
   so the annotation is never dropped.
+- **No-cycles architecture gate (`S02-09`).** The twelve modules of the modular
+  monolith must compile-depend on each other in one direction only: a compile-time
+  cycle would make the ownership table and the sanctioned feedback path (the
+  execution `StepHandler` SPI) meaningless. The gate has two parts. `PackageDependencyGraph`
+  (a pure, dependency-free utility in `src/test/java/com/example/agentflow/architecture/`)
+  enumerates every elementary cycle in the module graph; `PackageDependencyGraphTest`
+  feeds it a specifically created cycle and asserts it is reported (the `S02-09`
+  acceptance criterion) and that a self-loop is not treated as a cycle.
+  `NoCyclicModuleDependenciesTest` imports the application packages with ArchUnit,
+  derives the real module -> module edges from the bytecode, and asserts the graph
+  is acyclic at `./gradlew check` time. The gate is a plain JUnit test (not an
+  `@ArchTest`) because it has to aggregate the class graph before asserting, and it
+  asserts the analysed class set is non-empty so a failed import cannot pass the
+  gate with zero analysed packages (a false pass). Verified: the clean skeleton
+  passes; a deliberately introduced `config` -> `observability` -> `config` cycle is
+  reported by the detector and fails the test; the cycle is then reverted so the
+  application stays runnable. The allowed direction of dependencies is documented in
+  `docs/architecture/module-map.md` (`docs/README.md` architecture section) and the
+  execution SPI is the only feedback path, which is what keeps the graph acyclic.
+  No production code changed; ArchUnit `1.5.1` (pinned in the version catalog,
+  `S02-08`) is reused, so no dependency is added.
 - **Package-by-feature module skeleton (`S02-07`).** The twelve bounded contexts of the modular
   monolith now each own a package under `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`
   (`identity`, `agentcatalog`, `workflowdefinition`, `workflowexecution`, `toolexecution`,
