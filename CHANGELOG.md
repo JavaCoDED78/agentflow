@@ -224,6 +224,20 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   `docker compose config` passes for all six profiles and the smoke test passes
   for `core` and `full` (all services reach `healthy`).
 
+- **System context diagram (`S02-02`).** `docs/architecture/system-context.md` is
+  the new C4 Level 1 *system context* of AgentFlow. It shows every external actor
+  and system — Client (the domain analyst via browser/CLI), Keycloak (IdP/OIDC),
+  the cloud Model provider (OpenAI-compatible ChatModel), Garage/S3 object
+  storage and allowlisted External tools — around the trusted AgentFlow boundary,
+  plus the direction of trust for each flow and where secrets and documents
+  cross it: Client input is untrusted and the tenant comes only from the verified
+  Keycloak JWT; the Model is an untrusted planner; document payloads leave the
+  DB as a tenant-scoped ref + `SHA-256` checksum; tool secrets come from secret
+  management. The diagram is Mermaid inside Markdown (per
+  `docs/AGENTS.md`), rendered with `flowchart` (a viewer-safe type), and
+  syntax-validated with `mermaid.parse`. `docs/README.md` links to it from the
+  architecture section.
+
 ### Changed
 
 - No breaking or behavior changes yet. This skeleton is established in

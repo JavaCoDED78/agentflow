@@ -35,6 +35,7 @@ docs/
 │   ├── README.md                      ← ADR register (S02-16)
 │   └── s3-object-storage-garage.md    ← first ADR (S01-15)
 ├── architecture/
+│   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
 │   ├── dependency-management.md       ← version catalog / BOM policy (S01-06, S01-08)
 │   ├── dependency-insight.txt         ← resolved dependency graph (S01-08)
 │   ├── module-map.md                  ⚠ planned (S02-03) — bounded contexts & owners
