@@ -88,7 +88,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | HTTP API (`/api/v1`) | `contracts/openapi/` | `../contracts/openapi/README.md` |
 | Event envelope & payloads | `contracts/events/json-schema/` | `../contracts/events/README.md` |
 | Kafka topics & roles | `contracts/asyncapi/` | ⚠ planned |
-| Contribution & changelog rules | `CONTRIBUTING.md` ⚠ (`S01-22`), `CHANGELOG.md` | `../CHANGELOG.md` |
+| Contribution & changelog rules | `CONTRIBUTING.md`, `CHANGELOG.md` | `../CHANGELOG.md` |
 
 > ⚠ = planned. The marker marks a section that does not exist yet; remove it
 > when the document is created. Do not leave ⚠ markers in implemented files.
@@ -122,8 +122,8 @@ version so a new author knows the guardrails before writing.
   one; do not introduce a second document about the same topic.
 - Change documentation in the same PR as the code or contract it describes.
 - After creating a document, remove its ⚠ `planned` marker here.
-- `CONTRIBUTING.md` (branch, PR, test, and doc rules) is created in
-  **S01-22**; this index points to it once it exists.
+- Read [`CONTRIBUTING.md`](../CONTRIBUTING.md) (branch, PR, test, and doc rules)
+  before opening a pull request.
 
 ---
 

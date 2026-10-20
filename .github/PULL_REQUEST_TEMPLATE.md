@@ -21,9 +21,9 @@ and ONE outcome.
 - [ ] ADR needed for cross-module dependency, BOM bypass, persistence/migration, contract or invariant change (yes / no): __________
 
 ## Documentation
-- [ ] README / CHANGELOG updated or `N/A`
-- [ ] Contracts (OpenAPI / JSON Schema / AsyncAPI) updated or `N/A`
 - [ ] Docs (`docs/`) updated or `N/A`
+- [ ] CHANGELOG updated or `N/A`
+- [ ] Contracts (OpenAPI / JSON Schema / AsyncAPI) updated or `N/A`
 
 ## Verification
 <!--

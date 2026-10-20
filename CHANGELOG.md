@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Contribution and changelog rules (`S01-22`).** `CONTRIBUTING.md` now defines
+  the branch, PR, test, documentation and secrets rules for contributors: one
+  task per PR (`S##-##`), build through the Gradle wrapper (`./gradlew check`,
+  `integrationTest`, `bootRun`), Testcontainers for DB/Kafka/Redis (no H2),
+  negative/failure/recovery and tenant-isolation tests, "documentation as code",
+  executable examples, and a hard rule that real credentials, API keys, JWTs and
+  internal tokens never go into the repository or examples. The PR template now
+  checks that `docs/`, `CHANGELOG.md` and `contracts/` are evaluated or marked
+  `N/A`. `CHANGELOG.md` keeps the `[Unreleased]` skeleton with all four categories
+  (`Added` / `Changed` / `Fixed` / `Security`), following Keep a Changelog; a
+  first bootstrap entry is recorded under `Added`. The `⚠ planned` markers for
+  these documents in `docs/README.md` were removed once they existed.
+
 - **Documentation index and conventions (`S01-21`).** `docs/README.md` is now the
   documentation index: it shows where every topic lives, links the current
   documents (`docs/AGENTS.md`, `docs/product-scope.md`, `docs/adr/`,
@@ -198,6 +211,12 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   `docker compose config` passes for all six profiles and the smoke test passes
   for `core` and `full` (all services reach `healthy`).
 
+### Changed
+
+- No breaking or behavior changes yet. This skeleton is established in
+  `S01-22`; add entries here for notable changes that modify existing behavior
+  (see `CONTRIBUTING.md`).
+
 ### Fixed
 
 - **Typed config binds under the default profile (`S01-17`).** The `agentflow.app.*`
@@ -219,3 +238,9 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   the test runtime classpath. The `test` task now compiles and runs the
   `AgentflowApplicationTests` context-load test. `failOnNoDiscoveredTests = true`
   makes a future zero-test discovery fail the build instead of passing silently.
+
+### Security
+
+- No security advisories yet. Security-relevant changes (for example the repo
+  secret hygiene, `S01-11`) are recorded under `Added`; dedicated security
+  entries use this section going forward (see `CONTRIBUTING.md`).
