@@ -46,6 +46,13 @@ dependencies {
     // JUnit Platform launcher is required on the test runtime classpath; the
     // version is managed by the Spring Boot BOM.
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Architecture tests (S02-08): ArchUnit JUnit 5 enforces the module boundary
+    // rules (allowed module->module edges, no cross-package imports) during
+    // ./gradlew check. The aggregator pulls archunit core as a compile
+    // dependency (so the classes() DSL compiles) and the runtime engine that the
+    // JUnit 5 platform needs to discover @ArchTest fields. Consumed through the
+    // version catalog; no version pinned here.
+    testImplementation(libs.archunit.junit5)
 }
 
 // The application plugin provides `run` / `bootRun`; the Boot plugin makes

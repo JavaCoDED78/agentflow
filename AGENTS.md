@@ -120,4 +120,4 @@ The plan fixes the modules but not everything below. These spots in `AGENTS.md` 
 2. Owners of data/logic not named in §4.2: approvals and idempotency keys → `workflowexecution`; DLQ → `messaging.dlq`; `tool_definitions` → `toolexecution`; redaction → `common.redaction`; global Problem Details handler → `common.error`.
 3. How `workflowexecution` calls toolexecution / ai / knowledgebase without creating cycles: proposed an SPI `StepHandler` in `workflowexecution.executor`, with implementations in the respective modules.
 4. Permission catalogue: the list from S04-04 is used; the example scopes in §11.1 (`knowledge:read`, `tenant:admin`) are illustrative.
-5. Choice of persistence approach (S03-08), migration tool (S03-01), Modulith vs ArchUnit (S02-08).
+5. Choice of persistence approach (S03-08), migration tool (S03-01).

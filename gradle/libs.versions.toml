@@ -12,6 +12,9 @@
 # the official releases in S01-08.
 spring-boot = "4.1.1"
 spring-ai   = "2.0.1"
+# Architecture tests (S02-08): ArchUnit enforces the module boundary rules.
+# Pinned here like every other version; it is not part of the Spring Boot BOM.
+archunit = "1.5.1"
 # Structured JSON logging for the app (S01-19). 9.0 is compiled against logback
 # 1.5.x and Jackson 3.x (tools.jackson), so it is compatible with the Boot
 # 4.1.1 stack (logback 1.5.38, Jackson 3.1.5). Older 7.x lines still target
@@ -25,6 +28,11 @@ spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies"
 spring-ai-bom   = { module = "org.springframework.ai:spring-ai-bom",               version.ref = "spring-ai" }
 # Structured JSON logging (S01-19); version pinned above.
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstash-logback-encoder" }
+# Architecture tests (S02-08): ArchUnit JUnit 5 aggregator. It provides the
+# @ArchTest annotation (archunit-junit5-api, which pulls archunit core as a
+# compile dependency so the classes() DSL is on the test compile classpath) and
+# the engine needed by the JUnit 5 platform to discover/run @ArchTest fields.
+archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
 
 [plugins]
 # Gradle plugin versions live here too, so a module applies the Boot plugin

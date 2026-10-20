@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Module boundary architecture gate (`S02-08`).** A JUnit 5 test,
+  `ArchitectureBoundaryTest`, runs `@ArchTest` rules that forbid every compile-time
+  edge in `docs/architecture/module-map.md` that the table does not permit. Each of
+  the twelve modules contributes one sub-rule
+  (`noClasses().that().resideInAPackage(<module>).should().dependOnClassesThat()
+  .resideInAnyPackage(<all other modules minus self minus allowed>)`); they are
+  combined into a single `CompositeArchRule` so one introduced violation anywhere
+  fails `./gradlew check`. External dependencies (Spring, Jackson, `jakarta`, the
+  database, Kafka) are not module edges and are therefore not forbidden. `common`
+  is excluded from the forbidden set the same way it is in the map (shared
+  primitives only). Verified against the acceptance criterion: an artificial
+  `common -> audit` import fails the build with a precise message
+  (`Field <common.X.t> has type <audit.Y> ... module common may only
+  compile-depend on its own package plus []`), and the clean skeleton passes.
+  ArchUnit `1.5.1` is pinned in the version catalog
+  (`gradle/libs.versions.toml`) and pulled through
+  `testImplementation(libs.archunit.junit5)` — it is not part of the Spring Boot
+  4.1.1 BOM, so this does not bypass it. IMPORTANT: every `@ArchTest` class must be
+  annotated `@AnalyzeClasses`; ArchUnit 1.5.x otherwise refuses the class and
+  silently runs zero tests (a false pass). This is recorded in the class Javadoc
+  so the annotation is never dropped.
 - **Package-by-feature module skeleton (`S02-07`).** The twelve bounded contexts of the modular
   monolith now each own a package under `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`
   (`identity`, `agentcatalog`, `workflowdefinition`, `workflowexecution`, `toolexecution`,
