@@ -38,7 +38,7 @@ docs/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
 │   ├── dependency-management.md       ← version catalog / BOM policy (S01-06, S01-08)
 │   ├── dependency-insight.txt         ← resolved dependency graph (S01-08)
-│   ├── module-map.md                  ⚠ planned (S02-03) — bounded contexts & owners
+│   ├── module-map.md                  ← bounded contexts, owners, dependency direction (S02-03)
 │   ├── durable-execution.md           ⚠ planned (S07-17) — state machine, lease, recovery
 │   ├── error-taxonomy.md              ⚠ planned (S02-10) — error classes & retryability
 │   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys

@@ -238,6 +238,21 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   syntax-validated with `mermaid.parse`. `docs/README.md` links to it from the
   architecture section.
 
+- **Bounded-context module map (`S02-03`).** `docs/architecture/module-map.md` is
+  the new C4 Level 2 of AgentFlow. It decomposes the modular monolith into its
+  twelve bounded contexts (`identity`, `agentcatalog`, `workflowdefinition`,
+  `workflowexecution`, `toolexecution`, `knowledgebase`, `ingestion`, `ai`,
+  `usage`, `audit`, `messaging`, `observability`), records each module's
+  responsibility, fixes the **single owner of every table** (anchored to the
+  glossary's concept → owner table, §13) and the **single owner of every
+  invariant** (tenant context, tenant scope, state machine, lease/fencing,
+  allowlist, at-least-once delivery, budget, audit, error taxonomy, metric
+  labels), and locks the **only allowed `module -> module` dependency edges**
+  plus the execution `StepHandler` SPI that keeps the graph acyclic (`S02-09`).
+  The table is the ground truth the architecture test checks and the authority
+  for table ownership in migrations. `docs/README.md` links to it from the
+  architecture section and its `⚠ planned (S02-03)` marker was removed.
+
 ### Changed
 
 - No breaking or behavior changes yet. This skeleton is established in

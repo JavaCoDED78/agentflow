@@ -107,5 +107,5 @@ external dependency of the context diagram.
 - [`product-scope`](../product-scope.md) — MVP boundaries and the one persona that drives them.
 - [`domain-glossary`](../domain-glossary.md) — canonical names for the concepts that cross this boundary.
 - [`threat-model/README.md`](../threat-model/README.md) — assets, attacker goals and mitigations (prompt injection, tenant isolation, SSRF, log leaks).
-- **`architecture/module-map.md`** — the C4 Level 2 that decomposes AgentFlow into its bounded contexts (`⚠ planned`, `S02-03`).
+- **`architecture/module-map.md`** — the C4 Level 2 that decomposes AgentFlow into its bounded contexts, owners and dependency direction (S02-03).
 - [`AGENTFLOW_ARCHITECTURE_AND_PLAN.md`](../../AGENTFLOW_ARCHITECTURE_AND_PLAN.md) — the target backlog (`S02-02`).
