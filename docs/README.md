@@ -34,6 +34,9 @@ docs/
 ├── adr/                               ← architecture decision records
 │   ├── README.md                      ← ADR register
 │   ├── ADR-001-modular-monolith.md    ← modular monolith first (S02-05)
+│   ├── ADR-002-postgresql-source-of-truth.md   ← workflow source of truth (S02-06)
+│   ├── ADR-003-at-least-once-idempotency.md    ← at-least-once + idempotency (S02-06)
+│   ├── ADR-004-transactional-outbox.md         ← transactional outbox (S02-06)
 │   └── s3-object-storage-garage.md    ← first ADR (S01-15)
 ├── architecture/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)

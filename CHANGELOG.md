@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Consistency model ADRs (`S02-06`).** The durable-execution consistency model is documented as three
+  architecture decision records — `docs/adr/ADR-002-postgresql-source-of-truth.md` (PostgreSQL is the
+  single store of record; Kafka delivers and Redis caches, so losing either must not lose a run),
+  `docs/adr/ADR-003-at-least-once-idempotency.md` (at-least-once delivery plus inbox/`event_id`
+  idempotency; an external LLM/tool call is never exactly-once and its ambiguous outcome is marked in
+  usage/history), and `docs/adr/ADR-004-transactional-outbox.md` (state and the `outbox_events` record
+  write in one PostgreSQL transaction, published by a separate idempotent poller, with no shared
+  PostgreSQL/Kafka transaction). Together they satisfy the `S02-06` acceptance criterion: the documents
+  make no unjustified end-to-end exactly-once claim. They expand the plan §3 condensed descriptions of
+  `ADR-002`…`ADR-004` (Context, Decision, Alternatives, Consequences), keep `docs/domain-glossary.md`'s
+  reference to `ADR-003` valid, and the `adr/` register and the `adr/` tree in `docs/README.md` now
+  point at them.
 - **Modular monolith first ADR (`S02-05`).** `docs/adr/ADR-001-modular-monolith.md` records the
   deployment/topology decision: all twelve bounded contexts live in one Spring Boot artifact
   (`apps/agentflow-app`) and one repository with explicit public APIs between contexts, enforced
