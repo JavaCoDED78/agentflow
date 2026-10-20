@@ -1,4 +1,4 @@
-package com.example.agentflow.logging;
+package com.example.agentflow.observability;
 
 import java.util.regex.Pattern;
 import net.logstash.logback.mask.ValueMasker;

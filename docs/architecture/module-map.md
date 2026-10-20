@@ -28,10 +28,10 @@ This document answers two questions the Sprint 2 gate requires:
    of the rule and applied (enforced) everywhere the rule reaches.
 
 Tables and their owners are anchored to the canonical identifiers in the domain
-glossary (`docs/domain-glossary.md`, §13). When the package-by-feature skeleton
-is built (`S02-07`) the tables move into migrations that one module owns; the
-owner recorded here is the authority for the migration name and comment too
-(`apps/agentflow-app/AGENTS.md`).
+glossary (`docs/domain-glossary.md`, §13). The package-by-feature skeleton (`S02-07`) now lives in
+`apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`; each table moves into a
+migration owned by its owner (S03), and the owner recorded here is the authority for the migration
+name and comment too (`apps/agentflow-app/AGENTS.md`).
 
 ---
 

@@ -1,4 +1,4 @@
-package com.example.agentflow.logging;
+package com.example.agentflow.observability;
 
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;

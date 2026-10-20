@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Package-by-feature module skeleton (`S02-07`).** The twelve bounded contexts of the modular
+  monolith now each own a package under `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`
+  (`identity`, `agentcatalog`, `workflowdefinition`, `workflowexecution`, `toolexecution`,
+  `knowledgebase`, `ingestion`, `ai`, `usage`, `audit`, `messaging`, plus the cross-cutting
+  `observability`). Each carries a `package-info.java` declaring the module's public-API boundary
+  (application services and permitted DTO/ID/enum types — everything else per
+  `docs/architecture/module-api.md`) and an `AGENTS.md` naming the single owner, the table it owns,
+  and the internal packages (`persistence` / `web` / `worker` / `domain`) another module must not
+  import. The `common` package is scoped to shared primitives only (IDs, `Clock`, the error taxonomy,
+  redaction) — no business logic, so it is not an escape route for business rules. The S01-19
+  structured-logging code that lived in `com.example.agentflow.logging` is consolidated into
+  `observability` (the `logback-spring.xml` `<valueMasker>` reference is updated accordingly). This
+  satisfies the `S02-07` acceptance criterion — every function has an explicit module owner — and
+  leaves `./gradlew check` green. Boundaries are enforced by the architecture gate (`S02-08` /
+  `S02-09`).
 - **Consistency model ADRs (`S02-06`).** The durable-execution consistency model is documented as three
   architecture decision records — `docs/adr/ADR-002-postgresql-source-of-truth.md` (PostgreSQL is the
   single store of record; Kafka delivers and Redis caches, so losing either must not lose a run),

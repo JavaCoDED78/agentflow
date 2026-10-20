@@ -1,4 +1,4 @@
-package com.example.agentflow.logging;
+package com.example.agentflow.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

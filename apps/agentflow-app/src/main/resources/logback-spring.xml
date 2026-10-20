@@ -10,7 +10,7 @@
   Named logback-SPRING.xml (not logback.xml) so Spring Boot's <springProperty>
   and <profile> elements are available. This file is parsed before the Spring
   context exists: service/environment are seeded into the MDC by the
-  LoggingContextProperties Spring bean (see package com.example.agentflow.logging),
+  LoggingContextProperties Spring bean (see package com.example.agentflow.observability),
   and the encoder writes the current thread's MDC by default.
 -->
 <configuration>
@@ -23,7 +23,7 @@
            populates traceId/spanId once tracing is wired (S13). -->
       <decorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
         <defaultMask>***</defaultMask>
-        <valueMasker class="com.example.agentflow.logging.SecretRedactingValueMasker"/>
+        <valueMasker class="com.example.agentflow.observability.SecretRedactingValueMasker"/>
       </decorator>
     </encoder>
   </appender>
