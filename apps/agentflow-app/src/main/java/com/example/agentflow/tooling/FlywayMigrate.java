@@ -16,6 +16,12 @@ import org.flywaydb.core.api.FlywayException;
  *
  * <p>Migrations run as one explicit step (the Gradle task locally, a controlled Helm Job in
  * Kubernetes), never concurrently from several replicas.
+ *
+ * <p>The default Flyway location is {@code classpath:migration} (singular); the AgentFlow
+ * migrations live under {@code classpath:migrations} (plural), matching {@code
+ * spring.flyway.locations} in {@code application.yml} and the {@code migrations/} folder, so the
+ * location is set explicitly here or the {@code ./gradlew flywayMigrate} task would find zero
+ * migrations.
  */
 public final class FlywayMigrate {
 
@@ -35,7 +41,11 @@ public final class FlywayMigrate {
 
     Flyway flyway;
     try {
-      flyway = Flyway.configure().dataSource(url, username, password).load();
+      flyway =
+          Flyway.configure()
+              .dataSource(url, username, password)
+              .locations("classpath:migrations")
+              .load();
       flyway.migrate();
     } catch (FlywayException e) {
       System.err.println("Flyway migration failed: " + e.getMessage());
