@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Error taxonomy (`S02-10`).** `docs/architecture/error-taxonomy.md` is the new
+  canonical set of error classes every module classifies by; each has a stable
+  `error_class` identifier, an HTTP mapping (RFC 9457 Problem Details), a retry
+  decision, and an example. Classes: `validation` (400), `authentication` (401),
+  `authorization` (403), `conflict` (409), `transient_infra` (503),
+  `provider_rate_limit` (429), `provider_timeout` (504), `tool_policy_denial`
+  (403), `cancellation` (202, not an error), `internal` (500 catch-all), plus the
+  `404`/`code: not_found` mapping for missing and foreign-tenant resources. Retry
+  applies only to the transient classes (bounded exponential backoff + jitter,
+  `S07-10`); permanent classes end as `FAILED` / client error / DLQ and never
+  retry; ambiguous provider-timeout outcomes are recorded, never claimed
+  exactly-once (`ADR-003`). The identifiers are the contract shared by the global
+  error handler, the worker retry classifier (`S07-11`), and the `error_class`
+  metric label; the taxonomy is owned by `common`. `docs/README.md` links to it
+  and its `⚠ planned (S02-10)` marker is removed. Verified by integrity (link
+  resolution, `git diff --check`) — no build gate for a documentation-only task.
 - **Module boundary architecture gate (`S02-08`).** A JUnit 5 test,
   `ArchitectureBoundaryTest`, runs `@ArchTest` rules that forbid every compile-time
   edge in `docs/architecture/module-map.md` that the table does not permit. Each of

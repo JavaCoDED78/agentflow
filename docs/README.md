@@ -45,7 +45,7 @@ docs/
 │   ├── module-map.md                  ← bounded contexts, owners, dependency direction (S02-03)
 │   ├── module-api.md                  ← public API per module: services, event types, permitted DTOs, internal packages (S02-04)
 │   ├── durable-execution.md           ⚠ planned (S07-17) — state machine, lease, recovery
-│   ├── error-taxonomy.md              ⚠ planned (S02-10) — error classes & retryability
+│   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
 │   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
 │   └── database.md                    ⚠ planned (S03-16) — tables, migrations, conventions

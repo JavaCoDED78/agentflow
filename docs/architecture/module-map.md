@@ -289,6 +289,6 @@ root `AGENTS.md` dependency rules). The resolution (plan open decision §4.2.3):
 - [`domain-glossary.md`](../domain-glossary.md) — canonical names; concept → owner (§13) matches this map.
 - [`docs/threat-model/README.md`](../threat-model/README.md) — assets, attacker goals, mitigations (tenant isolation, prompt injection, SSRF).
 - **`durable-execution.md`** — run/step state machine, lease, recovery (`⚠ planned`, `S07-17`).
-- **`error-taxonomy.md`** — error classes and retryability (`⚠ planned`, `S02-10`).
+- [`error-taxonomy.md`](./error-taxonomy.md) — error classes and retryability (S02-10).
 - **`kafka-topics.md` / `events/README.md`** — topics, partition keys, event catalogue (`⚠ planned`, `S06`).
 - `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` — Sprint 2, `S02-03`.
