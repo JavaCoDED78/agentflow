@@ -17,6 +17,6 @@ example `V3_3_0__create_tenants.sql`); repeatable migrations are
   controlled Helm Job), never on application startup and never concurrently
   from several replicas.
 
-> Column and table conventions are planned for
-> `docs/architecture/database.md` (⚠ planned, S03-16); this README links to it
-> as a note only, so it stays complete without that document.
+> Column and table conventions are in
+> [`docs/architecture/database-conventions.md`](../../../../../../docs/architecture/database-conventions.md)
+> (`S03-06`).

@@ -198,8 +198,8 @@ flowchart TD
   — the file layout, naming and `COMMENT` conventions in `classpath:migrations`.
 - [`engineering-conventions.md`](./engineering-conventions.md) — identifiers,
   time (`timestamptz`) and naming that migrations must match.
-- **`database-conventions.md`** — `⚠ planned` (`S03-06`);
-  tables, columns, indexes and optimistic versioning conventions.
+- [`database-conventions.md`](./database-conventions.md) — tables, columns,
+  indexes, and optimistic versioning (`S03-06`).
 - [`ADR-002`](../adr/ADR-002-postgresql-source-of-truth.md),
   [`ADR-003`](../adr/ADR-003-at-least-once-idempotency.md),
   [`ADR-004`](../adr/ADR-004-transactional-outbox.md) — PostgreSQL is the source of

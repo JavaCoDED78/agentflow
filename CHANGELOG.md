@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Database conventions (`S03-06`).**
+  `docs/architecture/database-conventions.md` is the new short reference for how
+  every schema table is written — so the first migration already matches the
+  style and adding a new table needs no new convention. It fixes four things:
+  **`timestamptz`** timestamps (UTC at rest, `Instant` in Java, never
+  `timestamp without time zone`); a **unified audit-timestamp set** — an
+  immutable `created_at` on every table plus `updated_at` only where a row is
+  mutable and tracked, with no ad-hoc timestamp names; **constraint/index
+  naming** — composite business uniques as `<table>_<cols>` (matching the
+  existing `workflow_definitions_tenant_name` /
+  `workflow_definition_versions_workflow_version`), implicit PK/FK/unique
+  defaults, lookups as `<table>_<cols>_idx` (one per real path, not per column);
+  and **optimistic versioning** — an application-managed `version` counter for
+  mutable rows (conditional update → `409 Conflict`) that is explicitly kept
+  distinct from the monotonic business `version` that addresses an immutable
+  workflow version. It also resolves the stale `database.md` / `S03-16`
+  placeholder that `docs/README.md`, the architecture index and the
+  `migrations/README.md` pointed at: that path did not exist (`S03-16` is the
+  OpenAPI gate), so the two markdown trees and the migrations README now link the
+  real `database-conventions.md` (`S03-06`) and its `⚠ planned` markers are
+  removed, and the `Related` sections of `database-migrations.md` and
+  `engineering-conventions.md` point at it as a live link. Anchored to the domain
+  glossary (canonical column names), `engineering-conventions.md` (identifier /
+  time format) and `ADR-002`…`ADR-004`. Documentation-only change — verified by
+  integrity (`git diff --check`, every in-document link resolved against the
+  repo) — no build gate for a documentation-only task.
+
 - **Workflow definition versions table (`S03-05`).**
   `apps/agentflow-app/src/main/resources/migrations/V3_3_2__create_workflow_definition_versions.sql`
   is the third owning-module migration — version `3.3.2`, ordered after

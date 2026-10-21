@@ -200,7 +200,8 @@ not a separate automated gate.
 - [`error-taxonomy.md`](./error-taxonomy.md) — the `snake_case` `error_class`
   naming and Prometheus-safe labels.
 - **`database-migrations.md`** — migration rules and the single process: forward-only, expand/contract, forward-fix, how to add a migration (`S03-02`).
-- **`database-conventions.md`** — tables, columns, indexes and SQL conventions (`⚠ planned`, `S03-06`).
+- [`database-conventions.md`](./database-conventions.md) — tables, columns,
+  indexes and SQL conventions (`S03-06`).
 - this doc covers the time/identifier *format*, not the migration mechanics.
 - `docs/adr/ADR-002`, `ADR-003`, `ADR-004` — PostgreSQL source of truth,
   at-least-once + idempotency, transactional outbox.

@@ -50,7 +50,7 @@ docs/
 │   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
-│   └── database-conventions.md        ⚠ planned (S03-06) — tables, columns, indexes, conventions
+│   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
 ├── security/                          ⚠ planned (S11) — authn/authz, secrets policy
 ├── threat-model/
 │   └── README.md                      ← scaffold (S01-03); full model added S11
