@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Architecture index (`S02-15`).** `docs/architecture/README.md` is the new
+  navigation page for the architecture documentation. It links the documents that
+  exist today (C4 Level 1 *system context*, C4 Level 2 *module map*, public module
+  API, domain glossary, error taxonomy, engineering conventions, dependency
+  management, ADR register, threat model), marks the ones that do not yet exist
+  with a `⚠ planned` badge so the index never carries a broken link, and records
+  the current architectural constraints (ADR-001…004, tenant isolation, untrusted
+  planner, error classification, build integrity) and the list of deferred/open
+  decisions (base package, execution SPI — now resolved in the module map, owners
+  of unnamed data/logic, permission catalogue, persistence approach + migration
+  tool). The module names and external systems in these documents are verified
+  against the build: the twelve modules plus `common` live under
+  `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/` and match the
+  base package `com.example.agentflow` (`AgentflowApplication`). The parent
+  [`docs/README.md`](docs/README.md) index now points at this architecture
+  index instead of `dependency-management.md`. Documentation-only change —
+  verified by integrity (`git diff --check`, link resolution against the repo) —
+  no build gate for a documentation-only task.
 - **PR architecture review checklist (`S02-14`).** The PR template
   (`.github/PULL_REQUEST_TEMPLATE.md`) gains a dedicated **Architecture review**
   section that replaces the previous single `Risks / ADR` block. Every PR now

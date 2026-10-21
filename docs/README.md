@@ -17,7 +17,7 @@ stays truthful while the backlog is being filled out. The documents that exist
 now are: [`docs/AGENTS.md`](AGENTS.md) (conventions),
 [`docs/product-scope.md`](product-scope.md) (MVP boundaries),
 [`adr/`](adr/README.md) (architecture decision records),
-[`architecture/`](architecture/dependency-management.md) (internals),
+[`architecture/`](architecture/README.md) (internals),
 [`runbooks/`](runbooks/README.md) (operational recovery),
 [`threat-model/`](threat-model/README.md) (threat model) and the
 [`contracts/`](../contracts/) family (machine-readable API/event contracts).
