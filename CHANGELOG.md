@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ADR template (`S02-12`).** `docs/adr/000-template.md` is the copy-paste starting
+  point for any new architecture decision record: the header metadata (`Status`,
+  `Date`, `Task`, `Supersedes`/`Superseded by`), the mandatory `Context` →
+  `Decision` → `Alternatives considered` → `Consequences` sections (matching the real
+  ADRs `ADR-001`…`ADR-004`), the rules for *when an ADR is needed* (new module
+  dependency, BOM bypass, persistence/migration change, new node type or risk class,
+  abandoning an invariant), and the register steps (next free `ADR-NNN`, row in
+  `docs/adr/README.md`, link from the architecture index). Statuses follow
+  `docs/adr/README.md`: `Proposed` → `Accepted`; a superseded ADR is kept and linked
+  to its successor. `docs/adr/README.md` points to the template; `000-template.md` is
+  the only file in `docs/adr/` that is not itself an ADR. Verified by integrity (every
+  relative link resolves, `git diff --check`) — no build gate for a documentation-only
+  task.
 - **Error taxonomy (`S02-10`).** `docs/architecture/error-taxonomy.md` is the new
   canonical set of error classes every module classifies by; each has a stable
   `error_class` identifier, an HTTP mapping (RFC 9457 Problem Details), a retry
