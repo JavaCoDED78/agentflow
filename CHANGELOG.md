@@ -104,6 +104,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution SPI is the only feedback path, which is what keeps the graph acyclic.
   No production code changed; ArchUnit `1.5.1` (pinned in the version catalog,
   `S02-08`) is reused, so no dependency is added.
+- **Architecture gate wired into `check` (`S02-13`).** The module-boundary (S02-08) and
+  no-cycles (S02-09) architecture gates now run as part of the standard Gradle `check`
+  lifecycle, so a declared module boundary fails `./gradlew check` on every PR. The gates
+  live in `apps/agentflow-app/src/test/java/com/example/agentflow/`: `ArchitectureBoundaryTest`
+  (`@AnalyzeClasses` + `@ArchTest` — the annotation is mandatory on every ArchUnit 1.5.x
+  class, otherwise the engine silently runs zero tests and the build passes without checking
+  anything) enforces the `module -> module` edges in `docs/architecture/module-map.md`, and
+  `NoCyclicModuleDependenciesTest` (with the dependency-free `PackageDependencyGraph`)
+  verifies the module graph is acyclic. `test` is the fast gate - unit tests plus both
+  architecture gates - and `check` depends on it (plus `spotlessCheck` and `verifyWrapper`),
+  so the gate cannot be skipped; `failOnNoDiscoveredTests = true` turns a future zero-test
+  discovery into a build failure instead of a silent pass. Verified against the acceptance
+  criterion: a temporary `common -> observability` import fails `./gradlew check` with a
+  precise message (`Field <common.TmpBoundaryViolation.properties> has type
+  <observability.LoggingContextProperties>`) and reverting restores a green build. The test
+  task structure is two tiers - the fast `check` (unit + architecture + formatting, no
+  Docker) on every PR and the full `integrationTest` (Testcontainers on the real
+  PostgreSQL/Kafka/Redis images, added in S03+). No new dependency; ArchUnit `1.5.1`
+  (pinned in the version catalog, S02-08) is reused.
 - **Package-by-feature module skeleton (`S02-07`).** The twelve bounded contexts of the modular
   monolith now each own a package under `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`
   (`identity`, `agentcatalog`, `workflowdefinition`, `workflowexecution`, `toolexecution`,

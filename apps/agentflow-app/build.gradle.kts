@@ -70,6 +70,14 @@ application {
 // spring-boot-test (compiled against the JUnit Platform 6.0 Store API) is only
 // compatible with it — forcing the JUnit 5 line causes NoSuchMethodError at
 // Spring context startup. We keep the BOM-managed JUnit; see CHANGELOG.md.
+//
+// Test strategy (S02-13): two tiers. `test` is the fast gate - the unit tests
+// plus the module-boundary (S02-08) and no-cycles (S02-09) architecture gates -
+// and it is the task the standard `check` lifecycle depends on, so a module
+// boundary violation fails ./gradlew check on every PR. The full suite is
+// integrationTest (Testcontainers on the real PostgreSQL/Kafka/Redis images,
+// added in S03+); until it exists it is referenced in AGENTS.md only. Both tiers
+// are JUnit Platform tests.
 tasks.named<Test>("test") {
     useJUnitPlatform()
     // Fail the build (not silently pass) if a future change makes the platform
