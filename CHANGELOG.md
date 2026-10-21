@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PR architecture review checklist (`S02-14`).** The PR template
+  (`.github/PULL_REQUEST_TEMPLATE.md`) gains a dedicated **Architecture review**
+  section that replaces the previous single `Risks / ADR` block. Every PR now
+  self-checks the architectural dimensions that matter for this repo: **Module
+  ownership** (stay within the owning module's tables, repositories and internal
+  packages, use the public API + published events, no new dependency cycle),
+  **Tenant scope** (`(tenant_id, resource_id)` scoped reads/writes/searches, a
+  foreign tenant's resource is indistinguishable from a missing one, tenant from
+  verified context not the request body), **Retries & reliability** (transient vs.
+  permanent classification, bounded exponential backoff/jitter, external calls
+  persisted before the call and treated as at-least-once not exactly-once),
+  **Side effects** (idempotent or lease/epoch-fenced calls, cancellation on a safe
+  boundary, outbox/inbox and dedup respected), **Audit** (append-only actor/action/
+  outcome without secrets), **Telemetry** (no secrets, full prompts/documents or
+  high-cardinality labels in metrics/logs) and an **Integrity** gate, plus an
+  explicit **ADR required?** question for a new module dependency, BOM bypass,
+  persistence/migration change, contract change or invariant change. The checklist
+  applies to code, config, migrations and contract changes, references
+  `docs/architecture/module-map.md` and the sprint gate, and is documented in
+  `CONTRIBUTING.md`'s review-before-PR guidance. Documentation-only change to the
+  contribution workflow — no code, contracts or the `docs/README.md` tree changed.
+  Verified by integrity (`git diff --check`, diff review) — no build gate for a
+  PR-template change.
 - **ADR template (`S02-12`).** `docs/adr/000-template.md` is the copy-paste starting
   point for any new architecture decision record: the header metadata (`Status`,
   `Date`, `Task`, `Supersedes`/`Superseded by`), the mandatory `Context` →
