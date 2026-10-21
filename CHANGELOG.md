@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index instead of `dependency-management.md`. Documentation-only change —
   verified by integrity (`git diff --check`, link resolution against the repo) —
   no build gate for a documentation-only task.
+- **ADR register and decision lifecycle (`S02-16`).** `docs/adr/README.md` is now
+  the navigational ADR register: a table of every decision (ID, title, date, task,
+  status) plus a full description of the four statuses (`Proposed`, `Accepted`,
+  `Superseded`, `Deprecated`), the decision lifecycle (`Proposed` → `Accepted` →
+  `Superseded`/`Deprecated`), and a "marking superseded decisions" procedure
+  (never edit an accepted ADR in place; a successor's `Supersedes` points at the
+  old record, which is kept and marked `Superseded`). The register is the single
+  source of truth for which decisions exist and their status, and it links from /
+  to the architecture index (`docs/architecture/README.md`) where the standing
+  constraints reference `ADR-001` and the consistency ADRs (`ADR-002`…`ADR-004`).
+  Documentation-only change — verified by integrity (`git diff --check`, link
+  resolution against the repo) — no build gate for a documentation-only task.
 - **PR architecture review checklist (`S02-14`).** The PR template
   (`.github/PULL_REQUEST_TEMPLATE.md`) gains a dedicated **Architecture review**
   section that replaces the previous single `Risks / ADR` block. Every PR now
