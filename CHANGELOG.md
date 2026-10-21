@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow definition versions table (`S03-05`).**
+  `apps/agentflow-app/src/main/resources/migrations/V3_3_2__create_workflow_definition_versions.sql`
+  is the third owning-module migration — version `3.3.2`, ordered after
+  `workflow_definitions` (`3.3.1`). It creates the `workflow_definition_versions`
+  table, the `workflowdefinition`-owned store of one immutable row per workflow
+  definition version (glossary §4, plan §8.1): a `UUID` primary key `id`, a
+  `workflow_id` foreign key to `workflow_definitions.id`, the monotonic
+  `version`, the `graph_json` JSONB graph of typed steps, its `checksum`, the
+  `status` activation metadata (`'DRAFT'` until activated, then immutable —
+  `S05-12`), the nullable `created_by` actor and a `timestamptz` `created_at`.
+  `unique (workflow_id, version)` is enforced by PostgreSQL, so every version is
+  addressable unambiguously and is never overwritten by another version; tenant
+  isolation is **not** stored here (`ADR-007`) — it flows through the parent's
+  `tenant_id`, so another tenant's version is indistinguishable from a missing
+  one. (The plan's `S03-05` prose names the parent `definition_id` and lists a
+  separate `schema version`; the canonical column per the domain glossary, plan
+  §8.1 and the module map is `workflow_id` with no separate schema-version
+  column, so this migration follows the canonical model.) The migration is
+  forward-only, idempotent (`IF NOT EXISTS`) and tagged with its owning module
+  (`workflowdefinition`) and task (`S03-05`) in a table `COMMENT`. It applies as
+  the one controlled step (`./gradlew flywayMigrate`, never on startup —
+  `spring.flyway.enabled=false`, `ADR-008`) and is verified in this change
+  against a real local PostgreSQL 18.6: `./gradlew flywayMigrate` brings the
+  schema to `v3.3.2`; a direct inspection confirms the columns, the `UNIQUE
+  (workflow_id, version)` and `workflow_id` → `workflow_definitions` FK
+  constraints, that a duplicate `(workflow_id, version)` is rejected (the
+  `S03-05` acceptance criterion), that a non-existent `workflow_id` is rejected
+  by the FK and that a valid insert succeeds; the two stored versions keep the
+  `DRAFT` default. No Java build gate applies to SQL migrations; verification is
+  the integrity check (`git diff --check`) plus the real `flywayMigrate` apply
+  and the live PostgreSQL inspection above.
+
 - **Workflow definitions table (`S03-04`).**
   `apps/agentflow-app/src/main/resources/migrations/V3_3_1__create_workflow_definitions.sql`
   is the second owning-module migration — version `3.3.1`, ordered after the
