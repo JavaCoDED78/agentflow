@@ -25,6 +25,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metric label; the taxonomy is owned by `common`. `docs/README.md` links to it
   and its `⚠ planned (S02-10)` marker is removed. Verified by integrity (link
   resolution, `git diff --check`) — no build gate for a documentation-only task.
+- **Time and identifier conventions (`S02-11`).**
+  `docs/architecture/engineering-conventions.md` is the new engineering
+  conventions for identifiers and time: **identifiers** are `UUID`, `UUIDv7` by
+  default for generated IDs (time-sortable, index-friendly) and `UUIDv4` only
+  where ordering must be avoided; no sequential/integer business PKs (guessable
+  → enumeration); foreign keys are `<resource>_id` in `snake_case`. **Time** is
+  UTC everywhere, stored as PostgreSQL `timestamptz` (never `timestamp without
+  time zone`), expressed in Java as `Instant`/`OffsetDateTime` (never
+  `java.util.Date`/`Calendar`/`LocalDateTime`, never `System.currentTimeMillis()`),
+  and always produced through the injected `Clock`. The injectable `Clock` is the
+  `S02-11` acceptance criterion: production uses a `Clock.systemUTC()` bean and
+  time-dependent tests override it with `Clock.fixed(Instant, UTC)` (a
+  lease/recovery fencing test is shown), so a lease, retry or recovery boundary
+  is deterministic. **Naming** is layered: `snake_case` plural tables and
+  `snake_case` columns matching the glossary verbatim, `camelCase` API fields
+  (`runId` vs `run_id`), `UPPER_SNAKE_CASE` enums in DB / `snake_case` in JSON,
+  and the Prometheus-safe `snake_case` `error_class` (`S02-10`). Money stays
+  `NUMERIC`/`BigDecimal`. The doc anchors to the glossary (canonical names), the
+  consistency ADRs (`ADR-002`…`ADR-004`) and invariant 10, distinguishes its
+  scope from the planned `docs/architecture/database.md` (tables/migrations,
+  `S03-16`), and links only to documents that exist. `docs/README.md` links to
+  it in the architecture tree and the entry is `N/A` for any behaviour change.
+  Verified by integrity (every relative link resolves, `git diff --check`) — no
+  build gate for a documentation-only task.
 - **Module boundary architecture gate (`S02-08`).** A JUnit 5 test,
   `ArchitectureBoundaryTest`, runs `@ArchTest` rules that forbid every compile-time
   edge in `docs/architecture/module-map.md` that the table does not permit. Each of

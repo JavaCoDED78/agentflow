@@ -46,6 +46,7 @@ docs/
 │   ├── module-api.md                  ← public API per module: services, event types, permitted DTOs, internal packages (S02-04)
 │   ├── durable-execution.md           ⚠ planned (S07-17) — state machine, lease, recovery
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
+│   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
 │   └── database.md                    ⚠ planned (S03-16) — tables, migrations, conventions
