@@ -97,11 +97,10 @@ belongs to another module.
 ```sql
 -- S03-03 · tenants · owner: identity
 CREATE TABLE IF NOT EXISTS tenants (
-    id            UUID        PRIMARY KEY,
-    name          TEXT        NOT NULL,
-    status        TEXT        NOT NULL DEFAULT 'ACTIVE',
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id         UUID        PRIMARY KEY,
+    slug       TEXT        NOT NULL UNIQUE,
+    status     TEXT        NOT NULL DEFAULT 'ACTIVE',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 

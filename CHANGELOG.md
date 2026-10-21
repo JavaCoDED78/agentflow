@@ -9,7 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Schema migrations with Flyway (`S03-01`).** Flyway 12.4.0 (BOM-managed via the
+- **Tenants table (`S03-03`).** `apps/agentflow-app/src/main/resources/migrations/V3_3_0__create_tenants.sql`
+  is the first owning-module migration. It creates the `tenants` table — the single
+  `identity`-owned table (glossary §1, plan §8.1) — with a `UUID` primary key `id`,
+  a unique `slug` (the human-facing tenant identifier), an administrator-only
+  `status` (`'ACTIVE'` by default) and a `timestamptz` `created_at`, matching the
+  glossary's canonical four-column shape exactly (no `name`, no `updated_at`).
+  `slug` uniqueness is enforced by PostgreSQL (`unique slug`, plan §8.1); `status`
+  changes are an administrator-only action (enforced in the application layer). The
+  migration is forward-only, idempotent (`IF NOT EXISTS`) and tagged with its owning
+  module (`identity`) and task (`S03-03`) in a table `COMMENT`. It applies as the one
+  controlled step (`./gradlew flywayMigrate`, never on startup — `spring.flyway.enabled=false`,
+  ADR-008) and is applied to a fresh PostgreSQL with its constraints verified by the
+  migration integration suite (`S03-15`). The illustrative example in
+  [`docs/architecture/database-migrations.md`](docs/architecture/database-migrations.md)
+  (`S03-02`) is corrected to match the glossary: its `name` column becomes the unique
+  `slug`. Documentation and migration change together — verified by integrity
+  (`git diff --check`) and a real `flywayMigrate` apply; SQL migrations have no Java
+  build gate.
+
   version catalog, with `flyway-database-postgresql` for PostgreSQL 18 support) is
   the single migration tool. Migrations live in `classpath:migrations` as
   forward-only SQL, applied by the new `./gradlew flywayMigrate` task (Flyway Java
