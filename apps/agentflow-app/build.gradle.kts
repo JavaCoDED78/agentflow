@@ -36,6 +36,19 @@ dependencies {
     // configprops, beans, ...) are closed by the application config. Managed by
     // the Spring Boot BOM, so no version is pinned here.
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Schema migrations (S03-01): Flyway. flyway-core is on the application
+    // classpath so the migration entry point (FlywayMigrate) compiles and Spring
+    // Boot's Flyway auto-configuration can run when a datasource exists. The
+    // PostgreSQL dialect (flyway-database-postgresql) and the JDBC driver are on
+    // this classpath too: neither of them makes Spring Boot try to auto-create a
+    // DataSource — only spring-boot-starter-jdbc's DataSource auto-configuration
+    // does, and that is intentionally absent until a datasource is configured
+    // (S03). So the skeleton still boots without a database (S01-02). Versions
+    // come from the Spring Boot BOM via the catalog; nothing is pinned inline. See
+    // docs/adr/ADR-008-database-migrations.md.
+    implementation(libs.flyway.core)
+    implementation(libs.flyway.database.postgresql)
+    implementation(libs.postgresql)
     // Structured JSON logging (S01-19): logstash-logback-encoder renders log
     // events as JSON on stdout and masks sensitive values before serialization
     // (see logback-spring.xml). BOM-independent library; the version is pinned in
@@ -60,6 +73,31 @@ dependencies {
 // Boot entry point for this artifact.
 application {
     mainClass.set("com.example.agentflow.AgentflowApplication")
+}
+
+// Schema migration entry point (S03-01). Runs the Flyway Java API (FlywayMigrate)
+// against the database. Connection defaults match the Compose `local` profile
+// (POSTGRES_USER/POSTGRES_DB/POSTGRES_PORT/POSTGRES_PASSWORD) so the task works
+// against the local Postgres out of the box; override via -Dflyway.* or the
+// FLYWAY_* environment variables. The Flyway version on this runtime classpath
+// is the BOM-managed one, shared with the application, so the task and the app
+// can never diverge on the migration line.
+tasks.register<JavaExec>("flywayMigrate") {
+    group = "database"
+    description = "Applies Flyway database migrations (defaults match the compose local profile)."
+    dependsOn(tasks.named("classes"))
+    mainClass.set("com.example.agentflow.tooling.FlywayMigrate")
+    classpath = sourceSets["main"].runtimeClasspath
+    // Connection from the FLYWAY_* environment variables, falling back to the
+    // Compose `local` profile defaults so the task runs against the local
+    // Postgres out of the box. Override FLYWAY_URL / FLYWAY_USERNAME /
+    // FLYWAY_PASSWORD for any other database.
+    systemProperty("flyway.url",
+        providers.environmentVariable("FLYWAY_URL").orElse("jdbc:postgresql://localhost:5432/agentflow").get())
+    systemProperty("flyway.username",
+        providers.environmentVariable("FLYWAY_USERNAME").orElse("agentflow").get())
+    systemProperty("flyway.password",
+        providers.environmentVariable("FLYWAY_PASSWORD").orElse("agentflow-dev").get())
 }
 
 // Run tests through the JUnit Platform. Explicit rather than relying on plugin

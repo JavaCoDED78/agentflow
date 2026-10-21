@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Schema migrations with Flyway (`S03-01`).** Flyway 12.4.0 (BOM-managed via the
+  version catalog, with `flyway-database-postgresql` for PostgreSQL 18 support) is
+  the single migration tool. Migrations live in `classpath:migrations` as
+  forward-only SQL, applied by the new `./gradlew flywayMigrate` task (Flyway Java
+  API, connection from `FLYWAY_*` env vars falling back to the Compose `local`
+  defaults) rather than on application startup — `spring.flyway.enabled=false`.
+  Verified against PostgreSQL 18.6; documented in
+  [`docs/adr/ADR-008`](docs/adr/ADR-008-database-migrations.md).
+
 - **Architecture index (`S02-15`).** `docs/architecture/README.md` is the new
   navigation page for the architecture documentation. It links the documents that
   exist today (C4 Level 1 *system context*, C4 Level 2 *module map*, public module

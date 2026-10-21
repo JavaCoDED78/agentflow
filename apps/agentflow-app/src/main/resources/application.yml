@@ -11,6 +11,14 @@
 spring:
   application:
     name: agentflow-app
+  # Schema migrations (S03-01): apply on an explicit step only
+  # (./gradlew flywayMigrate locally, a controlled Helm Job in Kubernetes),
+  # never on application startup. The service must be able to boot before the
+  # database is reachable, and replicas must not migrate concurrently. Enable
+  # startup migration in a profile only if a later task needs it.
+  flyway:
+    enabled: false
+    locations: classpath:migrations
 
 # AgentFlow typed configuration (S01-17). Validated at startup through
 # @ConfigurationProperties + @Validated; a missing required value (agentflow.app-name)

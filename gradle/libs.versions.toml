@@ -28,6 +28,17 @@ spring-boot-bom = { module = "org.springframework.boot:spring-boot-dependencies"
 spring-ai-bom   = { module = "org.springframework.ai:spring-ai-bom",               version.ref = "spring-ai" }
 # Structured JSON logging (S01-19); version pinned above.
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstash-logback-encoder" }
+# Schema migrations (S03-01): Flyway Core is BOM-managed by the Spring Boot BOM,
+# so no version is pinned here. The PostgreSQL dialect lives in
+# flyway-database-postgresql (required from Flyway 10+ — Flyway Core alone no
+# longer ships a PostgreSQL dialect) and is likewise BOM-managed.
+flyway-core = { module = "org.flywaydb:flyway-core" }
+flyway-database-postgresql = { module = "org.flywaydb:flyway-database-postgresql" }
+# PostgreSQL JDBC driver (S03-01): the Flyway migration task and the app's
+# DataSource both need a driver at runtime; starter-jdbc brings the pool
+# (HikariCP) but not a database driver, so this is added explicitly. Its version
+# is BOM-managed by the Spring Boot BOM.
+postgresql = { module = "org.postgresql:postgresql" }
 # Architecture tests (S02-08): ArchUnit JUnit 5 aggregator. It provides the
 # @ArchTest annotation (archunit-junit5-api, which pulls archunit core as a
 # compile dependency so the classes() DSL is on the test compile classpath) and
