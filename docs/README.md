@@ -49,7 +49,8 @@ docs/
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
-│   └── database.md                    ⚠ planned (S03-16) — tables, migrations, conventions
+│   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
+│   └── database-conventions.md        ⚠ planned (S03-06) — tables, columns, indexes, conventions
 ├── security/                          ⚠ planned (S11) — authn/authz, secrets policy
 ├── threat-model/
 │   └── README.md                      ← scaffold (S01-03); full model added S11

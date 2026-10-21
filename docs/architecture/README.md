@@ -41,6 +41,7 @@ documentation entry point. The **project** entry point is the root
 | **Module public API** | Public application services, published event types, permitted DTOs and internal packages per module (the boundary architecture tests check) | [`module-api.md`](./module-api.md) |
 | **Error taxonomy** | Canonical `error_class` set, HTTP mapping (RFC 9457 Problem Details), retry decision, the `401/403/404` policy | [`error-taxonomy.md`](./error-taxonomy.md) |
 | **Engineering conventions** | `UUID`, UTC `timestamptz`, injectable `Clock`, identifier and naming conventions | [`engineering-conventions.md`](./engineering-conventions.md) |
+| **Database migrations** | Migration rules and the single process: forward-only, expand/contract, forward-fix, adding a migration | [`database-migrations.md`](./database-migrations.md) |
 | **Dependency management** | Version catalog, BOM policy, dependency locking, `check` gate | [`dependency-management.md`](./dependency-management.md) |
 | **Dependency insight** | Resolved dependency graph (S01-08, reference artifact) | [`dependency-insight.txt`](./dependency-insight.txt) |
 | **Domain glossary** | Canonical names, one concept — one name, concept → owner (§13) | [`../domain-glossary.md`](../domain-glossary.md) |
@@ -143,4 +144,4 @@ build and repository, not assumed:
 - `durable-execution.md` — run/step state machine, lease + fencing, recovery (`S07-17`).
 - `kafka-topics.md` — topics, partition keys (`S06`).
 - `events/README.md` — event catalogue (`S06`).
-- `database.md` — tables, migrations, conventions (`S03-16`).
+- `database-conventions.md` — tables, columns, indexes, optimistic versioning (`S03-06`).

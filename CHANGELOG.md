@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified against PostgreSQL 18.6; documented in
   [`docs/adr/ADR-008`](docs/adr/ADR-008-database-migrations.md).
 
+- **Database migration rules (`S03-02`).** `docs/architecture/database-migrations.md`
+  is the new rules and single process for changing the PostgreSQL schema. It fixes
+  how every migration is authored, versioned, verified and applied: **forward-only**
+  (never edit, reorder or delete an applied migration — Flyway's checksum check
+  enforces this), **expand / contract** for any incompatible change so a running
+  service is not broken by one step, **forward-fix** for a defect in an applied
+  migration instead of editing it, **one owning module per migration** (name + SQL
+  `COMMENT`), idempotent `IF NOT EXISTS` guards, `V<ver>__<desc>.sql` versioning and
+  the one controlled apply step (`./gradlew flywayMigrate`, later a Helm Job —
+  never on startup, never concurrently). Rollback is a new forward migration or a
+  backup restore, not `flyway rollback`. It complements
+  [`ADR-008`](docs/adr/ADR-008-database-migrations.md) (the Flyway tool choice) and
+  precedes `database-conventions.md` (`S03-06`). The `⚠ planned (S03-16)`
+  `database.md` placeholder in `docs/README.md` and `docs/architecture/README.md` is
+  replaced by the two plan-named files (`database-migrations.md` now,
+  `database-conventions.md` planned) — the index pointed at a merged file under the
+  wrong task (S03-16 is the OpenAPI gate). Documentation-only change — verified by
+  integrity (`git diff --check`, link resolution against the repo) — no build gate
+  for a documentation-only task.
+
 - **Architecture index (`S02-15`).** `docs/architecture/README.md` is the new
   navigation page for the architecture documentation. It links the documents that
   exist today (C4 Level 1 *system context*, C4 Level 2 *module map*, public module
