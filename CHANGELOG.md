@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow definitions table (`S03-04`).**
+  `apps/agentflow-app/src/main/resources/migrations/V3_3_1__create_workflow_definitions.sql`
+  is the second owning-module migration — version `3.3.1`, ordered after the
+  `tenants` table (`3.3.0`). It creates the `workflow_definitions` table, the
+  `workflowdefinition`-owned tenant-scoped container of a workflow definition
+  (glossary §4, plan §8.1): a `UUID` primary key `id` that is the definition's
+  stable identity across its versions, a `tenant_id` foreign key to `tenants`
+  that scopes every row to one isolated organization (tenant isolation,
+  `ADR-007`), the tenant-scoped business `name`, free-text `description`, a
+  lifecycle `status` (`'ACTIVE'` by default) and `created_by` actor that the
+  application layer manages, and a `timestamptz` `created_at`. `unique
+  (tenant_id, name)` is enforced by PostgreSQL, so a tenant cannot register two
+  definitions with the same name; versions live in a separate
+  `workflow_definition_versions` table. The migration is forward-only,
+  idempotent (`IF NOT EXISTS`) and tagged with its owning module (`workflowdefinition`)
+  and task (`S03-04`) in a table `COMMENT`. It applies as the one controlled step
+  (`./gradlew flywayMigrate`, never on startup — `spring.flyway.enabled=false`,
+  `ADR-008`) and is verified in this change the same way as `tenants`: a real
+  `./gradlew flywayMigrate` brings the schema to `v3.3.1` on the local
+  PostgreSQL 18.6, and a direct inspection confirms the columns, the `UNIQUE
+  (tenant_id, name)` and `tenant_id` → `tenants` FK constraints, that a
+  definition cannot be inserted without `tenant_id`/`name`/a valid `tenant_id`
+  (the `S03-04` acceptance criterion), and that a valid insert succeeds.
+  `docs/domain-glossary.md` is updated to list the fuller column set so the
+  canonical reference matches the schema. Verified by integrity (`git diff --check`),
+  a real `flywayMigrate` apply and a live-PG inspection — SQL migrations have no
+  Java build gate.
+
 - **Tenants table (`S03-03`).** `apps/agentflow-app/src/main/resources/migrations/V3_3_0__create_tenants.sql`
   is the first owning-module migration. It creates the `tenants` table — the single
   `identity`-owned table (glossary §1, plan §8.1) — with a `UUID` primary key `id`,

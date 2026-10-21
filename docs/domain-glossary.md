@@ -79,7 +79,7 @@ add or enable one.
 
 | Concept | Shape | Meaning |
 |---|---|---|
-| **Workflow (workflow definition)** | table `workflow_definitions` (`id`, `tenant_id`, `name`, `description`, `created_at`) | A tenant-scoped, versioned definition. `unique (tenant_id, name)`. |
+| **Workflow (workflow definition)** | table `workflow_definitions` (`id`, `tenant_id`, `name`, `description`, `status`, `created_by`, `created_at`) | A tenant-scoped, versioned definition with a stable `id`; `unique (tenant_id, name)`. The `id` is the definition's persistent identity (its versions live in `workflow_definition_versions`); `status` (default `'ACTIVE'`) and `created_by` are application-managed lifecycle fields, not set directly. |
 | **Workflow version** | table `workflow_definition_versions` (`id`, `workflow_id`, `version`, `graph_json`, `checksum`, `status`, `created_by`, `created_at`); `unique (workflow_id, version)` | A single immutable version of a workflow definition. The `graph_json` is a declarative graph of typed steps plus a checksum; an activated version never changes. |
 | **Workflow DSL / graph** | `graph_json` | A validated, typed DAG of allowed node types: `RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`, `FINALIZE`. Cycles are not permitted in the MVP; arbitrary user code is forbidden (`ADR-005`). |
 | **Node / step type** | `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_PLAN`, etc. | A single unit of work in the graph; not the same as a run. |
