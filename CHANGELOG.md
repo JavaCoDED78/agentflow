@@ -623,10 +623,30 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   list for free. The expected query set and this before/after are recorded in
   `docs/architecture/database-conventions.md` (the "Verified index set"
   subsection, `S03-07`). Applies as the one controlled step
-  (`./gradlew flywayMigrate`, never on startup — `ADR-008`); the Gradle task
-  itself is not yet runnable because `spring.datasource` is wired later
-  (`S03-08`), so the live verification above applies the migration directly to
-  a throwaway container of the Compose/CI image.
+  (`./gradlew flywayMigrate`, never on startup — `ADR-008`).
+
+- **Single persistence approach — Spring Data JDBC (`S03-08`).** ADR-009 fixes
+  `spring-boot-starter-jdbc` as the one persistence approach for the whole
+  monolith (explicit, tenant-filtered SQL through `JdbcTemplate`, conditional
+  update → `409`, lease/fencing, JSONB/pgvector). Wiring the starter in exposed a
+  boot-time gotcha: Spring Boot's DataSource auto-configuration does **not**
+  no-op when no `spring.datasource.*` is set — it eagerly builds a `HikariDataSource`
+  and fails with *"Failed to determine a suitable driver class"*, which broke the
+  "boots without a database" guarantee (`S01-02`) for every non-`local` profile. The
+  fix is to exclude `DataSourceAutoConfiguration` in the base
+  (`application.yml`, `spring.autoconfigure.exclude`) so the skeleton still boots
+  without a database, and re-enable it in the `local` profile
+  (`spring.autoconfigure.exclude: []`) where the `DataSource` is wired from
+  `spring.datasource.*` supplied by the environment (git-ignored `.env`) — nothing
+  here points at a database. The first owning-module store is the
+  `workflowdefinition` layer: an immutable `WorkflowDefinition` record, a
+  `WorkflowDefinitionMapper`, and a tenant-scoped `WorkflowDefinitionRepository`
+  whose reads are always `(tenant_id, id)`-filtered and whose conditional update
+  surfaces a zero-rows change as a conflict. Verified: `./gradlew check` green
+  (unit + architecture + formatting), and both directions at runtime — `base`
+  boots without a database; `local` boots with a real `DataSource` (HikariCP
+  connects lazily, so no live Postgres is needed for the smoke boot) and fails
+  fast with the driver-class error when the env datasource is absent.
 
 ### Changed
 

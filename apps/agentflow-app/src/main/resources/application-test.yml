@@ -1,7 +1,10 @@
 # Test environment (S01-17).
 #
 # Loaded by the unit and integration test suites. No hardcoded localhost:
-# integration tests spin up real services with Testcontainers on dynamic ports.
+# integration tests spin up real services with Testcontainers on dynamic ports and
+# configure their own DataSource there. The context-load suites here inherit the
+# DataSource auto-configuration exclusion from the base profile (application.yml),
+# so they boot without a database; the local profile re-enables it for real runs.
 
 spring:
   application:

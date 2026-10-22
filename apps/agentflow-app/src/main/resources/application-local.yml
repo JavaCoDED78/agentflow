@@ -5,12 +5,20 @@
 #
 # Service URLs (datasource, Redis, Kafka, Keycloak, object storage, OTLP) are
 # not hardcoded here; they come from the git-ignored local .env file (environment
-# variables) mapped onto spring.datasource.* and the agentflow.* keys in later
-# sprints. Nothing here points at localhost.
+# variables) mapped onto spring.datasource.* and the agentflow.* keys. The
+# datasource is wired by spring-boot-starter-jdbc (S03-08): without it the app
+# boots without a database (S01-02). Nothing here points at localhost.
 
 spring:
   application:
     name: agentflow-app
+  # Re-enable the DataSource auto-configuration that the base profile excludes
+  # (application.yml). The empty list replaces the inherited
+  # [DataSourceAutoConfiguration] exclusion. The DataSource itself is wired from
+  # spring.datasource.* supplied by the environment (git-ignored .env), not from
+  # here: nothing here points at a database.
+  autoconfigure:
+    exclude: []
 
 agentflow:
   app-name: agentflow-app

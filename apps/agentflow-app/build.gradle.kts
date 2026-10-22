@@ -49,6 +49,15 @@ dependencies {
     implementation(libs.flyway.core)
     implementation(libs.flyway.database.postgresql)
     implementation(libs.postgresql)
+    // Persistence approach (S03-08): Spring Data JDBC is the single approach for the whole
+    // monolith (ADR-009). starter-jdbc brings spring-jdbc, spring-tx and HikariCP, and — unlike
+    // flyway-core alone — it auto-configures a DataSource. That auto-configuration is NOT a
+    // no-op when no datasource is configured: it eagerly tries to build a HikariDataSource and
+    // FAILS ("Failed to determine a suitable driver class"). It is therefore excluded in the base
+    // profile (application.yml, spring.autoconfigure.exclude) so the skeleton still boots without a
+    // database (S01-02), and re-enabled in the local profile once spring.datasource.* is supplied
+    // from the environment.
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
     // Structured JSON logging (S01-19): logstash-logback-encoder renders log
     // events as JSON on stdout and masks sensitive values before serialization
     // (see logback-spring.xml). BOM-independent library; the version is pinned in

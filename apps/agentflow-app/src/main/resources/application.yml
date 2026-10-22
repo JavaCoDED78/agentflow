@@ -19,6 +19,17 @@ spring:
   flyway:
     enabled: false
     locations: classpath:migrations
+  # The one thing that would stop the skeleton from booting without a database
+  # is spring-boot-starter-jdbc's DataSource auto-configuration (S03-08): it
+  # creates a HikariDataSource eagerly and FAILS ("Failed to determine a suitable
+  # driver class") when no spring.datasource.* is configured. Exclude it here so
+  # the default profile still boots without a database (S01-02). The local profile
+  # re-enables it (spring.autoconfigure.exclude: []) once spring.datasource.* is
+  # supplied from the environment, and the integration suites that need a real
+  # database configure their own DataSource (Testcontainers) later.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
 
 # AgentFlow typed configuration (S01-17). Validated at startup through
 # @ConfigurationProperties + @Validated; a missing required value (agentflow.app-name)
