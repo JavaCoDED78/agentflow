@@ -24,6 +24,7 @@ public class WorkflowDefinitionMapper implements RowMapper<WorkflowDefinition> {
         rs.getString("name"),
         rs.getString("description"),
         rs.getString("status"),
+        rs.getInt("version"),
         rs.getString("created_by"),
         rs.getTimestamp("created_at").toInstant());
   }

@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Optimistic locking on workflow definitions (`S03-10`).** The mutable `workflow_definitions`
+  row (migration `V3_3_4`, `workflowdefinition`-owned) now carries an application-managed
+  `version INTEGER NOT NULL DEFAULT 0` optimistic-lock counter — kept distinct from the monotonic
+  business `version` that addresses an immutable `workflow_definition_versions` row
+  (`database-conventions.md`, *Optimistic versioning*). The single `workflowdefinition` store
+  (`WorkflowDefinitionRepository`, ADR-009) turns `updateMetadata` into a conditional update that
+  also checks `AND version = :expectedVersion` and bumps `version = version + 1` in the same
+  statement; a zero-rows outcome (missing, cross-tenant, wrong status, or stale version — another
+  writer changed the row since it was read) is mapped to `409 Conflict` via `ConflictException`, so
+  one of two competing updates never silently overwrites the other (the S03-10 acceptance
+  criterion). The `WorkflowDefinition` value model gains the `version` field (a fresh draft starts
+  at 0, matching the `DEFAULT 0`), and `WorkflowDefinitionMapper` reads it back. Tests are
+  DB-free (mocked `JdbcTemplate` / `ResultSet`), matching the current suite: the mapper round-trips
+  `version`, the happy path bumps it, and a stale version is rejected as a conflict. A
+  real-PostgreSQL integration test for the optimistic-lock round-trip (and the `V3_3_4` migration)
+  is added in `S03-15` (the migration-test sprint, which owns the real-PostgreSQL suite); no H2 is
+  used as a stand-in (`AGENTS.md`). `docs/domain-glossary.md` records the new `version` column.
+  Verified with `./gradlew check` on JDK 25 and by applying `V3_3_4` against a live PostgreSQL.
+
 - **JSONB graph mapping (`S03-09`).** The JSONB `graph_json` column of
   `workflow_definition_versions` (migration `V3_3_2`, `workflowdefinition`-owned)
   now round-trips through Spring Data JDBC as a declarative typed DAG. New domain

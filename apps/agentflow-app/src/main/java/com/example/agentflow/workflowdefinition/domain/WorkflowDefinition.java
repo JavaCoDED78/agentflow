@@ -20,6 +20,7 @@ public record WorkflowDefinition(
     String name,
     String description,
     String status,
+    int version,
     String createdBy,
     Instant createdAt) {
 
@@ -30,6 +31,6 @@ public record WorkflowDefinition(
   public static WorkflowDefinition draft(
       UUID tenantId, String name, String description, String createdBy) {
     return new WorkflowDefinition(
-        UUID.randomUUID(), tenantId, name, description, DRAFT, createdBy, Instant.now());
+        UUID.randomUUID(), tenantId, name, description, DRAFT, 0, createdBy, Instant.now());
   }
 }
