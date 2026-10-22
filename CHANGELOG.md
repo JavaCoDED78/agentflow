@@ -602,6 +602,32 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   for table ownership in migrations. `docs/README.md` links to it from the
   architecture section and its `⚠ planned (S02-03)` marker was removed.
 
+- **Tenant-query indexes (`S03-07`).**
+  `apps/agentflow-app/src/main/resources/migrations/V3_3_3__index_tenant_queries.sql`
+  (version `3.3.3`, after `workflow_definition_versions` `3.3.2`) adds a single
+  forward-only, idempotent (`IF NOT EXISTS`) index —
+  `workflow_definitions_tenant_created_at_idx (tenant_id, created_at)` — on the
+  `workflowdefinition`-owned `workflow_definitions` table. It is the *only*
+  secondary index in the minimal `S03` set: every other real lookup path is
+  already served by a primary key or a unique-constraint index
+  (glossary §4, plan §8.1). Verified with `EXPLAIN (ANALYZE, BUFFERS)` on
+  representative data (`pgvector/pgvector:0.8.6-pg18`, the same image as
+  Compose/Testcontainers): without the index the tenant-list
+  `WHERE tenant_id = ? ORDER BY created_at LIMIT ?` is a `Seq Scan` (filter on
+  `tenant_id`) followed by an explicit `Sort` (cost ≈ 63.7, ~0.31 ms); with it
+  the planner does an ordered `Index Scan Backward` with no Sort node
+  (~7× fewer buffers), and the 20 returned rows are confirmed strictly
+  descending by `created_at`. `workflow_definition_versions` needs no separate
+  index — its `unique (workflow_id, version)` index has `workflow_id` as its
+  leading column, so it backs both the point lookup and the version-ordered
+  list for free. The expected query set and this before/after are recorded in
+  `docs/architecture/database-conventions.md` (the "Verified index set"
+  subsection, `S03-07`). Applies as the one controlled step
+  (`./gradlew flywayMigrate`, never on startup — `ADR-008`); the Gradle task
+  itself is not yet runnable because `spring.datasource` is wired later
+  (`S03-08`), so the live verification above applies the migration directly to
+  a throwaway container of the Compose/CI image.
+
 ### Changed
 
 - No breaking or behavior changes yet. This skeleton is established in
