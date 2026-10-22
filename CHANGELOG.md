@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **JSONB graph mapping (`S03-09`).** The JSONB `graph_json` column of
+  `workflow_definition_versions` (migration `V3_3_2`, `workflowdefinition`-owned)
+  now round-trips through Spring Data JDBC as a declarative typed DAG. New domain
+  value objects `WorkflowGraph` / `WorkflowNode` and `InvalidGraphException`;
+  `WorkflowGraphValidator` is the structural gate that rejects an invalid payload
+  *before* it is serialized or an active version is saved — the graph must hold
+  at least one node, every node a non-blank id and type, and every type must be
+  one of the glossary's allowed node types
+  (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`,
+  `FINALIZE`), anchored verbatim to the domain glossary. Deep DAG validation
+  (cycles, connectivity) stays with the DSL validator (`S09`).
+  `WorkflowGraphCodec` is the single owner of the JSONB round-trip and enforces
+  payload-size bounds: `serializeForStorage(graph, maxBytes)` rejects an
+  oversized or misconfigured (`< 1`) graph with `InvalidGraphException`. The
+  limit is configured through `AgentFlowProperties.Graph.maxBytes`
+  (`agentflow.workflow.graph.max-bytes`, env `AGENTFLOW_WORKFLOW_GRAPH_MAX_BYTES`,
+  default 1 MiB, `@Min(1)`), registered via `@EnableConfigurationProperties` —
+  never hard-coded. The `WorkflowVersionRowMapper` reads the `graph_json` text
+  inline and parses it through the codec; `org.springframework.jdbc.core.ColumnMapper`
+  was removed in Spring Framework 7, so the graph column is parsed here rather
+  than via a `ColumnMapper` (the codec owns the round-trip). Tests are DB-free
+  (mocked `ResultSet` / `JdbcTemplate`), matching the current suite: the codec
+  round-trip preserves meaningful fields (node id/type/config), oversized payloads
+  are rejected, the validator rejects unknown/blank graph shapes, and the
+  config is validated. A full Testcontainers integration test for this mapper's
+  JSONB round-trip is added in `S03-15` (the migration test sprint), which owns
+  the real-PostgreSQL suite; no H2 is used as a stand-in (`AGENTS.md`).
+  Verified with `./gradlew check` on JDK 25.
+
 - **Database conventions (`S03-06`).**
   `docs/architecture/database-conventions.md` is the new short reference for how
   every schema table is written — so the first migration already matches the
