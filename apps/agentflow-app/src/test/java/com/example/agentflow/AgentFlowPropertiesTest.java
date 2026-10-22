@@ -40,4 +40,21 @@ class AgentFlowPropertiesTest {
 
     assertThat(validator.validate(properties)).isNotEmpty();
   }
+
+  @Test
+  void graphMaxBytesDefaultsToOneMebibyte() {
+    AgentFlowProperties properties = new AgentFlowProperties();
+
+    assertThat(properties.getGraph().getMaxBytes()).isEqualTo(1_000_000);
+  }
+
+  @Test
+  void rejectsNonPositiveGraphMaxBytes() throws ReflectiveOperationException {
+    AgentFlowProperties properties = new AgentFlowProperties();
+    var maxBytesField = AgentFlowProperties.Graph.class.getDeclaredField("maxBytes");
+    maxBytesField.setAccessible(true);
+    maxBytesField.set(properties.getGraph(), 0);
+
+    assertThat(validator.validate(properties)).isNotEmpty();
+  }
 }

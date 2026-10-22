@@ -29,6 +29,7 @@ public class AgentFlowProperties {
   private String appName;
 
   @Valid private final Http http = new Http();
+  @Valid private final Graph graph = new Graph();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -49,6 +50,13 @@ public class AgentFlowProperties {
    */
   public Http getHttp() {
     return http;
+  }
+
+  /**
+   * @return the validated workflow graph settings
+   */
+  public Graph getGraph() {
+    return graph;
   }
 
   /** HTTP server bind settings for this role. */
@@ -95,6 +103,25 @@ public class AgentFlowProperties {
      */
     public String getHost() {
       return host;
+    }
+  }
+
+  /** Workflow-graph settings. */
+  public static class Graph {
+
+    /**
+     * Maximum serialized size, in bytes, of a workflow graph ({@code graph_json} payload) before
+     * the persistence layer rejects it. Defaults to 1 MiB; a value below 1 fails startup. Set from
+     * the environment (never hardcoded) so a runaway graph can never fill the database.
+     */
+    @Min(value = 1, message = "agentflow.workflow.graph.max-bytes must be at least 1")
+    private int maxBytes = 1_000_000;
+
+    /**
+     * @return the maximum serialized graph size in bytes (default {@code 1000000}, 1 MiB)
+     */
+    public int getMaxBytes() {
+      return maxBytes;
     }
   }
 }
