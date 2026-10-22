@@ -22,6 +22,7 @@ class WorkflowDefinitionMapperTest {
     UUID id = UUID.randomUUID();
     UUID tenant = UUID.randomUUID();
     Instant createdAt = Instant.parse("2026-10-22T00:00:00Z");
+    int version = 3;
 
     ResultSet rs = Mockito.mock(ResultSet.class);
     Mockito.when(rs.getObject("id", UUID.class)).thenReturn(id);
@@ -29,6 +30,7 @@ class WorkflowDefinitionMapperTest {
     Mockito.when(rs.getString("name")).thenReturn("deploy");
     Mockito.when(rs.getString("description")).thenReturn("prod deploy");
     Mockito.when(rs.getString("status")).thenReturn(WorkflowDefinition.DRAFT);
+    Mockito.when(rs.getInt("version")).thenReturn(version);
     Mockito.when(rs.getString("created_by")).thenReturn("alice");
     Mockito.when(rs.getTimestamp("created_at")).thenReturn(Timestamp.from(createdAt));
 
@@ -39,6 +41,7 @@ class WorkflowDefinitionMapperTest {
     assertThat(wf.name()).isEqualTo("deploy");
     assertThat(wf.description()).isEqualTo("prod deploy");
     assertThat(wf.status()).isEqualTo(WorkflowDefinition.DRAFT);
+    assertThat(wf.version()).isEqualTo(version);
     assertThat(wf.createdBy()).isEqualTo("alice");
     assertThat(wf.createdAt()).isEqualTo(createdAt);
   }

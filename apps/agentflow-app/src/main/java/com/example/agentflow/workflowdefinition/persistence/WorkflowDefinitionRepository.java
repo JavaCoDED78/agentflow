@@ -79,28 +79,48 @@ public class WorkflowDefinitionRepository {
   }
 
   /**
-   * Update a definition's mutable attributes in place, guarded by the current status so the call is
-   * a conditional update (invariant 4). A zero-rows update — the row is gone, the tenant is wrong,
-   * or the status no longer matches — is mapped to a conflict (409), as is an optimistic version or
-   * lease mismatch that will be layered on with the same WHERE shape (S03-10).
+   * Update a definition's mutable attributes in place, guarded by the current status AND the
+   * optimistic version so the call is a conditional update (invariant 4). A zero-rows update — the
+   * row is gone, the tenant is wrong, the status no longer matches, or the optimistic version is
+   * stale (another writer changed the row since it was read) — is mapped to a conflict (409): one
+   * of two competing updates never silently overwrites the other (S03-10). The version is bumped
+   * inside the same statement.
+   *
+   * <p>The expected {@code tenantId} and {@code version} come from {@code current} exactly as it
+   * was read by a tenant-scoped lookup (invariant 1), and are re-checked in the {@code WHERE}, so a
+   * cross-tenant or stale update is indistinguishable from a missing row.
+   *
+   * @param current the definition as read from a tenant-scoped {@link #findByTenantAndId} lookup
+   * @param expectedStatus the status the row must still be in for the update to apply
+   * @param description the new free-text description
+   * @throws ConflictException if zero rows match (missing / cross-tenant / wrong status / stale
+   *     version)
    */
-  public void updateMetadata(UUID tenantId, UUID id, String expectedStatus, String description) {
+  public void updateMetadata(
+      WorkflowDefinition current, String expectedStatus, String description) {
     int affected =
         jdbc.update(
             "UPDATE "
                 + TABLE
-                + " SET description = ?, status = ?"
-                + " WHERE id = ? AND tenant_id = ? AND status = ?",
+                + " SET description = ?, status = ?, version = version + 1"
+                + " WHERE id = ? AND tenant_id = ? AND status = ? AND version = ?",
             ps -> {
               ps.setString(1, description);
               ps.setString(2, expectedStatus);
-              ps.setObject(3, id);
-              ps.setObject(4, tenantId);
+              ps.setObject(3, current.id());
+              ps.setObject(4, current.tenantId());
               ps.setString(5, expectedStatus);
+              ps.setInt(6, current.version());
             });
     if (affected == 0) {
       throw new ConflictException(
-          "Workflow definition " + id + " is not in status '" + expectedStatus + "'");
+          "Workflow definition "
+              + current.id()
+              + " is out of date (optimistic version "
+              + current.version()
+              + ") or no longer in status '"
+              + expectedStatus
+              + "'");
     }
   }
 }

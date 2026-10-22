@@ -214,7 +214,7 @@ their meaning is different:
 
 | Kind | Where | Meaning | Mutated? |
 |---|---|---|---|
-| **Optimistic-lock counter** | `workflow_runs.version`, `documents.version`, `agent_profiles.version` | concurrency control; bumps on every successful update | yes |
+| **Optimistic-lock counter** | `workflow_definitions.version`, `workflow_runs.version`, `documents.version`, `agent_profiles.version` | concurrency control; bumps on every successful update | yes |
 | **Monotonic business version** | `workflow_definition_versions.version` | a stable identifier in the composite `unique (workflow_id, version)` key; each row is one immutable version | no — part of the address, never rewritten |
 
 The monotonic business version is an addressable identity, not a lock counter, so
