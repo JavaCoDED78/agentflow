@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Global error handler (`S03-11`).** The twelve modules now route every thrown
+  exception through one cross-cutting `@RestControllerAdvice`,
+  `com.example.agentflow.common.error.GlobalExceptionHandler`, so a client always
+  gets a stable RFC 9457 `ProblemDetails` envelope (`type`, `title`, `status`,
+  `error_class`, `detail`, `instance`, `correlation_id`, `retryable`) with no
+  stack trace or internals leaked. It classifies by the `common`-owned
+  `ErrorClass` taxonomy: field/parameter validation and an unreadable JSON body
+  become `400 validation`; a `ResponseStatusException` is re-classified to its
+  canonical class (a `404` is the permanent `not_found` problem, a bare `403`
+  resolves to `authorization`, a `409` to `conflict`); a request that matched no
+  route (`NoResourceFoundException`, or its `NoHandlerFoundException` superclass)
+  is likewise a permanent `404 not_found`, never misreported as a 500 by the
+  catch-all; and anything else is a `500 internal` catch-all — the full stack
+  trace goes to the structured log (with the correlation id in the MDC) but the
+  client sees a static message. Domain exceptions (`ConflictException`,
+  `InvalidGraphException`, …) stay in their owning modules; the owning
+  application layer maps them to a `ResponseStatusException` with the right
+  status, which the handler renders here — keeping the handler in `common`
+  (cross-cutting packages own only shared primitives) instead of importing every
+  module's domain exceptions. The `correlation_id` reuses the trace id when
+  tracing is wired (S13) and otherwise allocates a fresh UUID. Verification is a
+  real-server test, `GlobalExceptionHandlerTest`, exercised over an
+  `@SpringBootTest(RANDOM_PORT)` with a throwaway stub controller that only
+  throws Spring types (no domain import, so the `common` architecture gate stays
+  green): it asserts the raw JSON envelope for validation, not-found, conflict
+  and internal — the correct `error_class`, `status`, `retryable=false`,
+  `type=about:blank`, the request `instance`, a UUID `correlation_id`, that a
+  blank-field validation lists the field, that malformed JSON maps to validation,
+  and that the internal error never leaks its raw message. Confirmed the
+  Jackson 3.x / `tools.jackson` serialization emits the taxonomy's `snake_case`
+  keys. All 53 tests and `./gradlew check` (unit + architecture + formatting)
+  are green.
+
 - **Optimistic locking on workflow definitions (`S03-10`).** The mutable `workflow_definitions`
   row (migration `V3_3_4`, `workflowdefinition`-owned) now carries an application-managed
   `version INTEGER NOT NULL DEFAULT 0` optimistic-lock counter — kept distinct from the monotonic
