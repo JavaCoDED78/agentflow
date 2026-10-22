@@ -150,6 +150,36 @@ Consequences:
   column and the method (these are `S03-07` / `S08` scope; only the naming
   convention lives here).
 
+## Verified index set (`S03-07`)
+
+`S03-07` recorded the **minimal** index set for the tables that exist and proved
+each real lookup path uses it with `EXPLAIN (ANALYZE, BUFFERS)` on representative
+data (`pgvector/pgvector:0.8.6-pg18`, the same image as Compose and
+Testcontainers). The rule above — index the lookup path, not every column — is
+why a single index is added: every other lookup is already covered by a primary
+key or a unique-constraint index.
+
+| Lookup path | Table | Index used | Added? |
+|---|---|---|---|
+| Get by `id` | all three | primary key (`*_pkey`) | no |
+| Get tenant by `slug` | `tenants` | `tenants_slug_key` (unique) | no |
+| Get definition by `(tenant_id, name)` | `workflow_definitions` | `workflow_definitions_tenant_name` (unique) | no |
+| Tenant list `WHERE tenant_id = ? ORDER BY created_at (ASC or DESC) LIMIT ?` | `workflow_definitions` | `workflow_definitions_tenant_created_at_idx (tenant_id, created_at)` | **yes (`S03-07`)** |
+| Get version by `(workflow_id, version)` | `workflow_definition_versions` | `workflow_definition_versions_workflow_version` (unique) | no |
+| List versions `WHERE workflow_id = ? ORDER BY version` | `workflow_definition_versions` | same `(workflow_id, version)` index (ordered prefix) | no |
+
+Before/after for the tenant list (`EXPLAIN`, 1000 definitions across 15 tenants):
+*without* `(tenant_id, created_at)` the planner does a `Seq Scan` (filter on
+`tenant_id`) → `Sort (created_at)` → `Limit` (cost ≈ 63.7, ~0.31 ms, a Sort over
+all rows); *with* the index it does an ordered `Index Scan Backward`, no Sort
+node, ~7× fewer buffers, and the 20 returned rows are confirmed strictly
+descending by `created_at`. `workflow_definition_versions` needs no separate
+index — its `unique (workflow_id, version)` index has `workflow_id` as its
+leading column and so backs the point lookup and the version-ordered list for
+free. The migration (`V3_3_3__index_tenant_queries.sql`) is the only artifact;
+later sprints (`S05-08` … `S06`) add the `workflow_runs`, `outbox_events` and
+other indexes the same way — one per real lookup path.
+
 ---
 
 ## Optimistic versioning
