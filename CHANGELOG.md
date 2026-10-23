@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **List / get workflow definition endpoints (S03-14).** Two read endpoints round out the
+  {@code workflowdefinition} API: {@code GET /api/v1/workflows} returns a tenant's definitions as
+  one paginated page ({@code page}, {@code size} query params; the response carries {@code page},
+  {@code size}, {@code totalElements}, {@code totalPages}, {@code hasNext}) and {@code GET
+  /api/v1/workflows/{workflowId}} returns a single definition (a cross-tenant id is a {@code 404}
+  {@code not_found}, never a {@code 403}). Both read the {@code tenantId} from the trusted security
+  context (the S03-13 local-skeleton {@code @Value} default, removed in S04-10) and filter by
+  {@code tenant_id} in the SQL itself (invariant 1). {@code WorkflowDefinitionService} gains
+  {@code listDefinitions(tenantId, page, requestedSize)} — clamps {@code size} to a configured
+  maximum ({@code MAX_PAGE_SIZE = 100}) so one call cannot pull the whole collection, rejects a
+  negative page or a non-positive size with {@code 400}, and reports a missing database as
+  {@code 503} — and {@code getDefinition(tenantId, workflowId)}. The list is ordered by a *total*
+  order, {@code created_at DESC, id DESC} (the {@code (tenant_id, created_at)} index,
+  {@code id} as the unique tie-breaker) so every page is stable; the repository gains
+  {@code WorkflowDefinitionRepository.listByTenant} and {@code countByTenant}. The page is a new
+  module public type, {@code WorkflowDefinitionPageDto} ({@code items[]}, {@code page}, {@code
+  size}, {@code totalElements}, {@code totalPages}, {@code hasNext}, {@code hasPrevious}). Tests are
+  DB-free, matching the existing suite's mock conventions: {@code WorkflowDefinitionRepositoryTest}
+  asserts the tenant-bound, ordered, `LIMIT/OFFSET` SQL; {@code WorkflowDefinitionServiceTest}
+  covers the effective/clamped size, the {@code 400}/{@code 503} boundaries and the cross-tenant
+  {@code 404}; {@code WorkflowDefinitionControllerTest} covers the {@code 200} list/get paths and a
+  {@code 400} for a non-UUID id. All green with {@code ./gradlew check} (unit + architecture +
+  formatting).
+  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is regenerated to include the
+  new paths and the {@code WorkflowDefinitionPageDto} schema (generated deterministically from the
+  running application; never edited by hand). {@code docs/architecture/module-api.md},
+  {@code docs/domain-glossary.md} and {@code docs/architecture/engineering-conventions.md} are
+  updated for the new list endpoint and its pagination/tenant-isolation convention.
+
 - **Create workflow definition endpoint (S03-13).** `POST /api/v1/workflows` builds a
   DRAFT definition and returns {@code 201 Created} with the {@code workflowdefinition} DTO; a
   blank {@code name} fails bean validation and is rendered as a {@code 400} validation Problem

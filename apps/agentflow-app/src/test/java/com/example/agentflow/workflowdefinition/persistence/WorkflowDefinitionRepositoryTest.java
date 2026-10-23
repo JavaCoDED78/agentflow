@@ -131,4 +131,59 @@ class WorkflowDefinitionRepositoryTest {
         .isInstanceOf(ConflictException.class)
         .hasMessageContaining("optimistic version");
   }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void listByTenant_binds_the_tenant_orders_by_created_at_id_and_bounds_the_page()
+      throws SQLException {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
+    UUID tenant = UUID.randomUUID();
+    int limit = 25;
+    int offset = 50;
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.query(anyString(), any(PreparedStatementSetter.class), any(RowMapper.class)))
+        .thenReturn(Collections.emptyList());
+
+    repo.listByTenant(tenant, limit, offset);
+
+    verify(jdbc).query(sql.capture(), setter.capture(), any(RowMapper.class));
+    // tenant isolation: tenant_id is in the WHERE clause; stable total order created_at, id;
+    // and the page bounds are in the SQL
+    assertThat(sql.getValue())
+        .contains("WHERE tenant_id = ?")
+        .contains("ORDER BY created_at DESC, id DESC")
+        .contains("LIMIT ?")
+        .contains("OFFSET ?");
+    setter.getValue().setValues(ps);
+    verify(ps).setObject(1, tenant);
+    verify(ps).setInt(2, limit);
+    verify(ps).setInt(3, offset);
+  }
+
+  @Test
+  void countByTenant_binds_the_tenant_and_reads_the_count_as_a_long() throws SQLException {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
+    UUID tenant = UUID.randomUUID();
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    // the mock returns the pre-built rows directly (the mapper lambda is never invoked in this
+    // DB-free test — only the SQL string and the tenant bind are asserted)
+    when(jdbc.query(anyString(), any(PreparedStatementSetter.class), any(RowMapper.class)))
+        .thenReturn(Collections.singletonList(42L));
+
+    long count = repo.countByTenant(tenant);
+
+    verify(jdbc).query(sql.capture(), setter.capture(), any(RowMapper.class));
+    assertThat(sql.getValue()).contains("COUNT(*)").contains("WHERE tenant_id = ?");
+    setter.getValue().setValues(ps);
+    verify(ps).setObject(1, tenant);
+    assertThat(count).isEqualTo(42L);
+  }
 }

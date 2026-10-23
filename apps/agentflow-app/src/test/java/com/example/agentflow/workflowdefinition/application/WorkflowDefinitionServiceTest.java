@@ -3,11 +3,16 @@ package com.example.agentflow.workflowdefinition.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowDefinitionRepository;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -70,5 +75,110 @@ class WorkflowDefinitionServiceTest {
             e ->
                 assertThat(((ResponseStatusException) e).getStatusCode())
                     .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+  }
+
+  @Test
+  void listDefinitions_returns_tenant_scoped_page_with_pagination_metadata() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
+    WorkflowDefinition a = WorkflowDefinition.draft(tenant, "A", null, "local");
+    WorkflowDefinition b = WorkflowDefinition.draft(tenant, "B", null, "local");
+    when(repository.listByTenant(eq(tenant), anyInt(), anyInt())).thenReturn(List.of(a, b));
+    when(repository.countByTenant(eq(tenant))).thenReturn(2L);
+
+    WorkflowDefinitionPageDto page = service.listDefinitions(tenant, 0, 50);
+
+    assertThat(page.items()).extracting(WorkflowDefinitionDto::name).containsExactly("A", "B");
+    assertThat(page.page()).isEqualTo(0);
+    assertThat(page.size()).isEqualTo(50);
+    assertThat(page.totalElements()).isEqualTo(2L);
+    assertThat(page.totalPages()).isEqualTo(1);
+    assertThat(page.hasNext()).isFalse();
+    assertThat(page.hasPrevious()).isFalse();
+  }
+
+  @Test
+  void listDefinitions_clamps_oversized_size_to_max_page_size() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
+    when(repository.listByTenant(any(UUID.class), anyInt(), anyInt()))
+        .thenReturn(Collections.emptyList());
+    when(repository.countByTenant(any(UUID.class))).thenReturn(0L);
+
+    WorkflowDefinitionPageDto page = service.listDefinitions(tenant, 0, 10_000);
+
+    assertThat(page.size()).isEqualTo(100);
+    ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
+    verify(repository).listByTenant(any(UUID.class), captor.capture(), anyInt());
+    assertThat(captor.getValue()).isEqualTo(100);
+  }
+
+  @Test
+  void listDefinitions_rejects_non_positive_size() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
+
+    assertThatThrownBy(() -> service.listDefinitions(tenant, 0, 0))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST));
+  }
+
+  @Test
+  void listDefinitions_rejects_negative_page() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
+
+    assertThatThrownBy(() -> service.listDefinitions(tenant, -1, 10))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST));
+  }
+
+  @Test
+  void listDefinitions_withoutDatabaseIsUnavailable() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(null);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
+
+    assertThatThrownBy(() -> service.listDefinitions(tenant, 0, 10))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+  }
+
+  @Test
+  void getDefinition_returns_tenant_scoped_definition() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+    UUID id = UUID.randomUUID();
+    WorkflowDefinition def = WorkflowDefinition.draft(tenant, "Report", null, "local");
+    when(repository.findByTenantAndId(eq(tenant), eq(id))).thenReturn(Optional.of(def));
+
+    WorkflowDefinition result = service.getDefinition(tenant, id);
+
+    assertThat(result).isSameAs(def);
+  }
+
+  @Test
+  void getDefinition_crossTenantIdReturnsNotFound() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+    UUID id = UUID.randomUUID();
+    // another tenant's id: the tenant-scoped lookup returns empty, so this is a 404, not a 403
+    when(repository.findByTenantAndId(any(UUID.class), any(UUID.class)))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.getDefinition(tenant, id))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.NOT_FOUND));
   }
 }
