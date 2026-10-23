@@ -14,6 +14,51 @@
       { "name": "tenant:admin", "composite": false }
     ]
   },
+  "clientScopes": [
+    {
+      "name": "agentflow",
+      "displayName": "AgentFlow default claims",
+      "protocol": "openid-connect",
+      "protocolMappers": [
+        {
+          "name": "preferred-username",
+          "protocol": "openid-connect",
+          "consentRequired": false,
+          "protocolMapper": "oidc-usermodel-protocol-mapper",
+          "config": {
+            "user.model.property": "username",
+            "oidc.claim.name": "preferred_username",
+            "full.body.value": "true",
+            "multivalued": "false"
+          }
+        },
+        {
+          "name": "email",
+          "protocol": "openid-connect",
+          "consentRequired": false,
+          "protocolMapper": "oidc-usermodel-protocol-mapper",
+          "config": {
+            "user.model.property": "email",
+            "oidc.claim.name": "email",
+            "full.body.value": "true",
+            "multivalued": "false"
+          }
+        },
+        {
+          "name": "full-name",
+          "protocol": "openid-connect",
+          "consentRequired": false,
+          "protocolMapper": "oidc-usermodel-protocol-mapper",
+          "config": {
+            "user.model.property": "fullName",
+            "oidc.claim.name": "name",
+            "full.body.value": "true",
+            "multivalued": "false"
+          }
+        }
+      ]
+    }
+  ],
   "clients": [
     {
       "clientId": "agentflow-api",
@@ -24,6 +69,7 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
+      "defaultClientScopes": ["agentflow"],
       "redirectUris": ["http://localhost/*"],
       "webOrigins": ["*"],
       "protocol": "openid-connect"
