@@ -84,7 +84,10 @@ add or enable one.
 | **Workflow DSL / graph** | `graph_json` | A validated, typed DAG of allowed node types: `RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`, `FINALIZE`. Cycles are not permitted in the MVP; arbitrary user code is forbidden (`ADR-005`). |
 | **Node / step type** | `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_PLAN`, etc. | A single unit of work in the graph; not the same as a run. |
 
-API: `POST /api/v1/workflows`, `POST /api/v1/workflows/{workflowId}/versions`,
+API: `POST /api/v1/workflows`, `GET /api/v1/workflows` (list: paginated —
+`page`, `size` query params; the response carries `page`, `size`,
+`totalElements`, `totalPages`, `hasNext`; another tenant's definitions never
+appear — tenant isolation), `POST /api/v1/workflows/{workflowId}/versions`,
 `POST .../versions/{version}/validate`, `POST .../versions/{version}/activate`,
 `GET /api/v1/workflows/{workflowId}`.
 

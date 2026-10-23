@@ -79,6 +79,45 @@ public class WorkflowDefinitionRepository {
   }
 
   /**
+   * List a tenant's definitions, ordered by {@code created_at DESC, id DESC} (a total order: {@code
+   * created_at} is backed by the {@code (tenant_id, created_at)} index, {@code id} is the unique
+   * tie-breaker so the same page always returns the same rows — the S03-14 "predictable order"
+   * criterion). The {@code tenant_id} predicate is part of the {@code WHERE} clause, so another
+   * tenant's rows can never leak into a page (invariant 1).
+   *
+   * @param tenantId the owning tenant
+   * @param limit the maximum number of rows (the page size)
+   * @param offset the row offset within the tenant's ordered set
+   */
+  public List<WorkflowDefinition> listByTenant(UUID tenantId, int limit, int offset) {
+    return jdbc.query(
+        "SELECT id, tenant_id, name, description, status, created_by, created_at "
+            + "FROM "
+            + TABLE
+            + " WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        ps -> {
+          ps.setObject(1, tenantId);
+          ps.setInt(2, limit);
+          ps.setInt(3, offset);
+        },
+        mapper);
+  }
+
+  /**
+   * Count a tenant's definitions for pagination metadata. Tenant-filtered in the {@code WHERE}
+   * clause (invariant 1); {@code rs.getLong} reads the {@code bigint} count regardless of whether
+   * the driver reports it as {@code Long} or {@code Integer}.
+   */
+  public long countByTenant(UUID tenantId) {
+    List<Long> counts =
+        jdbc.query(
+            "SELECT COUNT(*) FROM " + TABLE + " WHERE tenant_id = ?",
+            ps -> ps.setObject(1, tenantId),
+            (rs, rowNum) -> rs.getLong(1));
+    return counts.isEmpty() ? 0L : counts.get(0);
+  }
+
+  /**
    * Update a definition's mutable attributes in place, guarded by the current status AND the
    * optimistic version so the call is a conditional update (invariant 4). A zero-rows update — the
    * row is gone, the tenant is wrong, the status no longer matches, or the optimistic version is

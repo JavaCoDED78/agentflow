@@ -184,6 +184,11 @@ Consequences:
 - **New API field:** `camelCase`, consistent with the field's DB column.
 - **New timestamp field:** `timestamptz` at rest, `Instant` in Java, written via
   the injected `Clock`.
+- **New paginated list endpoint** (S03-14): `page`/`size` query params; clamp
+  `size` to a configured maximum so one call cannot pull the whole collection;
+  return the metadata a client needs to page (`page`, `size`, `totalElements`,
+  `totalPages`, `hasNext`); order by a *total* order (`created_at DESC, id
+  DESC`) so every page is stable; filter by `tenant_id` in the SQL itself.
 - **The `common` package** owns no business logic; the `Clock` bean and any shared
   time/identifier helpers live there as primitives every module depends on.
 
