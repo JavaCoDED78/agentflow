@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **API and persistence conventions — developer guide (`S03-17`).**
+  `docs/architecture/api-conventions.md` is the new developer reference for the
+  `/api/v1` REST API and the PostgreSQL it reads from. It documents the
+  workflow-definition endpoints (`POST` and `GET /api/v1/workflows`,
+  `GET /api/v1/workflows/{workflowId}`), pagination (`page`/`size` query params,
+  a clamped page size, the total-order `created_at DESC, id DESC` stable ordering
+  and the `WorkflowDefinitionPageDto` page shape), RFC 9457 Problem Details
+  through the global error handler (`S03-11`), the optimistic-lock `version` →
+  `409 Conflict` round-trip (`S03-10`) and the tenant-scoped `(tenant_id, id)`
+  lookup that reports a foreign-tenant id as a permanent `404 not_found`
+  (invariant 1), and the procedure for changing the OpenAPI contract (regenerate
+  via `./gradlew generateOpenApiContract`, the `OpenApiContractCheckTest` gate
+  that fails on breaking changes, and the baseline-approval flow). Anonymized
+  create/list/get/error request-response examples match
+  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json). The
+  migration process is already covered by
+  [`docs/architecture/database-migrations.md`](docs/architecture/database-migrations.md)
+  (`S03-02`), so this guide links it instead of duplicating it. The root
+  `README.md` gains `API`, `Database`, `Migrations` and `Tests` sections pointing
+  at the reference. Both index trees (`docs/README.md`,
+  `docs/architecture/README.md`) list the new file and stay clear of a stale
+  `⚠ planned` marker. Documentation-only change — verified by integrity
+  (`git diff --check`, every relative in-document link resolved against the
+  repo) — no build gate for a documentation-only task.
+
 - **OpenAPI contract gate (S03-16).** A committed baseline
   [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is now compared against the
   live spec on every `./gradlew check`, so a contract drift fails the build instead of slipping

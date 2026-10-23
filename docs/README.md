@@ -47,6 +47,7 @@ docs/
 │   ├── durable-execution.md           ⚠ planned (S07-17) — state machine, lease, recovery
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
+│   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
 │   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)

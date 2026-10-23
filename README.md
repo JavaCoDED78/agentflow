@@ -153,6 +153,40 @@ and the local-only defaults are in [`.env.example`](.env.example).
   values in `.env`; start the `core` profile first and read the logs (structured
   JSON, secrets masked).
 
+## API
+
+The `/api/v1` REST API is documented in full in
+[`docs/architecture/api-conventions.md`](docs/architecture/api-conventions.md):
+endpoints, pagination, RFC 9457 Problem Details, optimistic locking, the
+tenant-scoped lookup policy and the procedure for changing the contract. The
+machine-readable contract is generated deterministically and checked in CI — see
+[`contracts/openapi/README.md`](contracts/openapi/README.md).
+
+## Database
+
+AgentFlow runs on PostgreSQL 18 (+ pgvector). The single persistence approach is
+Spring Data JDBC with explicit, tenant-filtered SQL (no JPA + jOOQ side by
+side); column, table, index and versioning conventions are in
+[`docs/architecture/database-conventions.md`](docs/architecture/database-conventions.md).
+
+## Migrations
+
+Schema changes are forward-only Flyway SQL under `classpath:migrations`, applied
+as one controlled step — never on startup (`spring.flyway.enabled=false`):
+
+```bash
+./gradlew flywayMigrate          # apply classpath:migrations to the configured DB
+```
+
+The rules and the single process (forward-only, expand/contract, one owning
+module per migration) are in
+[`docs/architecture/database-migrations.md`](docs/architecture/database-migrations.md).
+
+## Tests
+
+- `./gradlew check` — unit tests, the module-boundary and no-cycles architecture gates, the formatting gate (`spotlessCheck`) and the OpenAPI contract gate. Runs without Docker.
+- `./gradlew integrationTest` — Testcontainers suites on the real PostgreSQL/pgvector, Kafka, Redis and Keycloak images (the same images the Compose profiles pin).
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)
