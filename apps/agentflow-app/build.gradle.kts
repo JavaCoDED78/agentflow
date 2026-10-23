@@ -73,6 +73,15 @@ dependencies {
     // JUnit Platform launcher is required on the test runtime classpath; the
     // version is managed by the Spring Boot BOM.
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // Testcontainers (S03-15): a real PostgreSQL (pgvector/pgvector:0.8.6-pg18, the same image as
+    // Compose) for the migration integration suite. The version is BOM-managed by the Spring Boot
+    // BOM's Testcontainers import; nothing is pinned inline and no H2 is used as a stand-in for
+    // PostgreSQL-specific behaviour (AGENTS.md). The 2.0.5 module coordinate is
+    //   `testcontainers-postgresql` (the 1.x `postgresql` name no longer resolves).
+    testImplementation("org.testcontainers:testcontainers-postgresql")
+    // JUnit 5 integration (@Container / @Testcontainers) is a separate module in
+    // Testcontainers 2.0.5 (the 1.x bundle is gone); managed by the Spring Boot BOM.
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     // Architecture tests (S02-08): ArchUnit JUnit 5 enforces the module boundary
     // rules (allowed module->module edges, no cross-package imports) during
     // ./gradlew check. The aggregator pulls archunit core as a compile
@@ -123,16 +132,45 @@ tasks.register<JavaExec>("flywayMigrate") {
 // compatible with it — forcing the JUnit 5 line causes NoSuchMethodError at
 // Spring context startup. We keep the BOM-managed JUnit; see CHANGELOG.md.
 //
-// Test strategy (S02-13): two tiers. `test` is the fast gate - the unit tests
-// plus the module-boundary (S02-08) and no-cycles (S02-09) architecture gates -
-// and it is the task the standard `check` lifecycle depends on, so a module
-// boundary violation fails ./gradlew check on every PR. The full suite is
-// integrationTest (Testcontainers on the real PostgreSQL/Kafka/Redis images,
-// added in S03+); until it exists it is referenced in AGENTS.md only. Both tiers
-// are JUnit Platform tests.
+// Test strategy (S02-13): two tiers, both JUnit Platform tests.
+//
+// `test` is the fast gate - the unit tests plus the module-boundary (S02-08)
+// and no-cycles (S02-09) architecture gates - and it is the task the standard
+// `check` lifecycle depends on, so a module boundary violation fails
+// ./gradlew check on every PR.
+//
+// `integrationTest` (S03-15) is the full suite: real PostgreSQL/Kafka/Redis
+// via Testcontainers instead of H2 (AGENTS.md). It is a separate task, run with
+// `./gradlew integrationTest`, so the Docker-backed suite does not slow the fast
+// `check` gate. It shares the unit-test classpath (integrationTestImplementation
+// extends testImplementation) so the Testcontainers / JUnit dependencies are
+// declared once, not duplicated.
 tasks.named<Test>("test") {
     useJUnitPlatform()
     // Fail the build (not silently pass) if a future change makes the platform
     // discover zero tests. This caught the silent "0 tests discovered" pass.
+    failOnNoDiscoveredTests = true
+}
+
+// The integration-test source set (S03-15). Created explicitly so Gradle makes
+// its own configurations; the main output is on the classpath so
+// @SpringBootTest-style suites can start the application, and the unit-test
+// configurations are inherited so the Testcontainers / JUnit stack is shared.
+val integrationTest: SourceSet = sourceSets.create("integrationTest") {
+    compileClasspath += sourceSets["main"].output
+    runtimeClasspath += sourceSets["main"].output
+}
+configurations.named("integrationTestImplementation") {
+    extendsFrom(configurations["testImplementation"])
+}
+configurations.named("integrationTestRuntimeOnly") {
+    extendsFrom(configurations["testRuntimeOnly"])
+}
+
+tasks.register<Test>("integrationTest") {
+    testClassesDirs = integrationTest.output.classesDirs
+    classpath = integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    // Fail loudly if the suite is ever emptied instead of silently passing.
     failOnNoDiscoveredTests = true
 }

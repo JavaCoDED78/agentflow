@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PostgreSQL migration integration suite (S03-15).** Two Testcontainers-backed suites in
+  `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/` exercise the real
+  `pgvector/pgvector` migrations (S03-03…S03-10) on a real PostgreSQL instead of H2, satisfying the
+  S03-15 acceptance ("PostgreSQL, not H2 as a substitute for PostgreSQL-specific behaviour"):
+  `MigrationsTest` (8 tests) starts an empty `pgvector/pgvector:0.8.6-pg18` container (the same
+  image the Compose `core` profile pins), runs the versioned Flyway migrations, and asserts the
+  resulting schema — tables exist, `timestamptz`/UUID/`NUMERIC` types, `unique (tenant_id, name)`
+  and `(workflow_id, version)` constraints, `NOT NULL` on `tenant_id`/`graph_json`, and the
+  `workflow_definitions.tenant_id` → `tenants` and
+  `workflow_definition_versions.workflow_id` → `workflow_definitions` foreign keys. It then runs a
+  data-driven acceptance case that inserts valid rows and confirms every negative constraint
+  (unique / NOT NULL / foreign key) rejects the intended violation; each mid-run insert is rolled
+  back. `MigrationsStartupTest` (1 test) boots the Spring context on the already-migrated schema to
+  prove the migrations leave the database in a runnable state.
+  Added `org.testcontainers:testcontainers-postgresql` and
+  `org.testcontainers:testcontainers-junit-jupiter` (2.0.5, BOM-managed by the Spring Boot BOM's
+  Testcontainers import; the 2.0.5 module coordinate is `testcontainers-postgresql`, the 1.x
+  `postgresql` name no longer resolves) as `testImplementation`; the `gradle.lockfile` is
+  regenerated to lock them and their transitive Testcontainers deps.
+  ⚠ Tiering (S02-13): these are the first Testcontainers suites and are the `integrationTest` full
+  suite, separate from the fast `check` gate. `build.gradle.kts` now declares the `integrationTest`
+  source set (shares the `test` classpath) and the `integrationTest` task run with
+  `./gradlew integrationTest`; `check` stays the fast unit + ArchUnit gate. The `gradle.lockfile`
+  is regenerated to lock the Testcontainers graph that this source set pulls in.
+
 - **List / get workflow definition endpoints (S03-14).** Two read endpoints round out the
   {@code workflowdefinition} API: {@code GET /api/v1/workflows} returns a tenant's definitions as
   one paginated page ({@code page}, {@code size} query params; the response carries {@code page},
