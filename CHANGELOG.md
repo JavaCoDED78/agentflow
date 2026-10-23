@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Create workflow definition endpoint (S03-13).** `POST /api/v1/workflows` builds a
+  DRAFT definition and returns {@code 201 Created} with the {@code workflowdefinition} DTO; a
+  blank {@code name} fails bean validation and is rendered as a {@code 400} validation Problem
+  Details by the global error handler.
+  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is regenerated to include the
+  new path (generated deterministically from the running application; never edited by hand).
+
+- **Create workflow definition endpoint (S03-13).** `WorkflowDefinitionController`
+  (`com.example.agentflow.workflowdefinition.web`, `@RestController` on `/api/v1/workflows`)
+  validates the {@code CreateWorkflowDefinitionRequest} ({@code name} {@code @NotBlank}, optional
+  {@code description}) with {@code @Valid}, builds the draft through the application service, and
+  returns {@code 201 Created} with a {@code WorkflowDefinitionDto} (camelCase: {@code id},
+  {@code tenantId}, {@code name}, {@code description}, {@code status}, {@code version},
+  {@code createdBy}, {@code createdAt}). The {@code tenantId} is read from application
+  configuration (`@Value("${agentflow.local.tenant-id:...}")`, defaulting to the zero UUID), not
+  from the request body (invariant 1 — the tenant is never derived from input); this is a
+  temporary local-skeleton bypass removed in S04-10 when the tenant comes from the verified
+  security context. `WorkflowDefinitionService.createDefinition(tenantId, actor, name,
+  description)` owns the use case: it builds the {@code WorkflowDefinition.draft} with the
+  caller-supplied tenant and records it through the tenant-scoped {@code WorkflowDefinitionRepository}.
+  The repository bean is only present when a {@code DataSource} exists, so the dependency is
+  {@code @Autowired(required = false)} to keep the application bootable without a database (S01-02);
+  a missing database yields {@code 503}, and a duplicate {@code name} (the {@code (tenant_id, name)}
+  unique constraint, ADR-009) yields {@code 409 conflict}. The DTO is a module public type
+  (`WorkflowDefinitionDto`, `com.example.agentflow.workflowdefinition.application`); the controller
+  compiles-dependency-only on {@code workflowdefinition} + {@code agentcatalog}, so the architecture
+  gate stays green. Tests: {@code WorkflowDefinitionServiceTest} (Mockito — draft build with the
+  correct tenant/version/status, {@code 409} on the unique constraint, {@code 503} without a
+  database) and {@code WorkflowDefinitionControllerTest} (MockMvc `standaloneSetup` with a mocked
+  service, the real {@code GlobalExceptionHandler} via `setControllerAdvice`, and a real Jakarta
+  validator via `setValidator` — {@code 201} with the draft DTO and {@code 400 validation} for a
+  blank {@code name}). All green with `./gradlew check` (unit + architecture + formatting).
+  `application.yml` / the profile configs do not yet set {@code agentflow.local.*}; the defaults are
+  sufficient for the skeleton until S04-10.
+
 - **OpenAPI contract (S03-12).** The `apps/agentflow-app` artifact now ships a machine-readable
   OpenAPI description for the REST API. The `springdoc-openapi-starter-webmvc-ui` starter is added to
   `apps/agentflow-app/build.gradle.kts` (`implementation(libs.springdoc.openapi.starter.webmvc.ui)`;
