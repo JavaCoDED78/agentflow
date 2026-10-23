@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAPI contract gate (S03-16).** A committed baseline
+  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is now compared against the
+  live spec on every `./gradlew check`, so a contract drift fails the build instead of slipping
+  through. The classifier `OpenApiCompatibility`
+  (`apps/agentflow-app/src/test/java/com/example/agentflow/openapi/OpenApiCompatibility.java`)
+  classifies every change as *breaking* or *compatible*: breaking changes are a removed path or
+  HTTP method, a removed required property, a property `type` change, or a removed `enum` value;
+  everything else (added path/method, added property, added response) is reported but does not fail.
+  `OpenApiContractCheckTest`
+  (`apps/agentflow-app/src/test/java/com/example/agentflow/openapi/OpenApiContractCheckTest.java`)
+  boots the app, fetches the freshly generated `/api/v1/v3/api-docs`, and fails when
+  `report.breakingChanges()` is non-empty — this is the acceptance criterion ("unintentional
+  removal of a required field breaks CI"): the unit test `removingARequiredPropertyIsBreaking`
+  proves a removed required property is flagged, and a live end-to-end removal of the `name`
+  request field is caught by the gate. Regeneration stays a deliberate, deterministic action:
+  `./gradlew generateOpenApiContract` runs
+  `OpenApiContractTool` (`apps/agentflow-app/src/main/java/com/example/agentflow/tooling/OpenApiContractTool.java`)
+  on the default profile (no database required — the DataSource is excluded in `application.yml`),
+  waits for the live `/api/v1/v3/api-docs`, fetches the description and writes a *normalized* copy
+  (the volatile ephemeral-port `servers` entry is dropped, so the committed baseline is byte-for-byte
+  reproducible and a diff ever shows only a real change). `build.gradle.kts` passes
+  `-Dopenapi.contract.baseline=<contracts/openapi/openapi.json>` to the `test` task, so `check` runs
+  the gate; `contracts/openapi/README.md` documents generation and the baseline-approval flow.
+  Verified: `./gradlew check` is green (formatting, unit, integration, architecture, gate); all
+  7 `OpenApiCompatibility` unit tests pass.
+
 - **PostgreSQL migration integration suite (S03-15).** Two Testcontainers-backed suites in
   `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/` exercise the real
   `pgvector/pgvector` migrations (S03-03…S03-10) on a real PostgreSQL instead of H2, satisfying the

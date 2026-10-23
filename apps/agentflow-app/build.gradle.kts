@@ -123,6 +123,22 @@ tasks.register<JavaExec>("flywayMigrate") {
         providers.environmentVariable("FLYWAY_PASSWORD").orElse("agentflow-dev").get())
 }
 
+// Regenerate the checked-in OpenAPI contract (S03-16). Boots the app on the
+// default profile (no database needed), normalizes the generated description and
+// writes it to contracts/openapi/openapi.json. Never edit that file by hand:
+// the CI compatibility gate compares the running app against this baseline.
+tasks.register<JavaExec>("generateOpenApiContract") {
+    group = "verification"
+    description = "Regenerates the checked-in OpenAPI contract (contracts/openapi/openapi.json)."
+    dependsOn(tasks.named("classes"))
+    mainClass.set("com.example.agentflow.tooling.OpenApiContractTool")
+    classpath = sourceSets["main"].runtimeClasspath
+    // Quiet the Spring banner/logs so the normalized JSON is the only thing printed.
+    systemProperty("logging.level.root", "WARN")
+    systemProperty("logging.level.org.springframework.boot.autoconfigure", "WARN")
+    args("--output", File(rootProject.projectDir, "contracts/openapi/openapi.json").absolutePath)
+}
+
 // Run tests through the JUnit Platform. Explicit rather than relying on plugin
 // defaults, so framework selection is self-documenting and robust across
 // Gradle / Spring Boot versions.
@@ -150,6 +166,10 @@ tasks.named<Test>("test") {
     // Fail the build (not silently pass) if a future change makes the platform
     // discover zero tests. This caught the silent "0 tests discovered" pass.
     failOnNoDiscoveredTests = true
+    // OpenAPI contract gate (S03-16): hand the integration test the path to the
+    // checked-in baseline so it can compare the live app against it.
+    val contractBaseline = File(rootProject.projectDir, "contracts/openapi/openapi.json")
+    systemProperty("openapi.contract.baseline", contractBaseline.absolutePath)
 }
 
 // The integration-test source set (S03-15). Created explicitly so Gradle makes
