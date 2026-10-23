@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAPI contract (S03-12).** The `apps/agentflow-app` artifact now ships a machine-readable
+  OpenAPI description for the REST API. The `springdoc-openapi-starter-webmvc-ui` starter is added to
+  `apps/agentflow-app/build.gradle.kts` (`implementation(libs.springdoc.openapi.starter.webmvc.ui)`;
+  version from the catalog) — compatible with the Boot 4.1.1 / Spring Framework 7 / Jackson 3 stack
+  (no BOM override). `OpenApiConfig` (package-private, `com.example.agentflow.config`) exposes an
+  `OpenAPI` bean `agentFlowOpenApi` that builds the description deterministically: `AgentFlow API` /
+  `v1`, the tenant-only-from-verified-security-context note, and the `bearerAuth` HTTP bearer (JWT)
+  scheme (`type: http`, `scheme: bearer`, `bearerFormat: JWT`) that stands in for the OIDC resource
+  server added in S04. swagger-core `2.2.55` relocated the model classes into subpackages
+  (`io.swagger.v3.oas.models.info.Info`,
+  `io.swagger.v3.oas.models.security.SecurityScheme` / `SecurityRequirement`), so the config imports
+  the relocated types and the fluent setters are unchanged. springdoc serves the description at
+  `/api/v1/v3/api-docs` (Swagger UI enabled per profile) and the spec is regenerated and checked in
+  under [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json);
+  [`contracts/openapi/README.md`](contracts/openapi/README.md) documents that it is generated
+  deterministically and that breaking changes need a baseline update (the CI gate is `S03-16`).
+  `OpenApiContractTest` (a `@SpringBootTest` context-load test) asserts the model is generated, the
+  metadata is documented (`v1`), the `bearerAuth` scheme is an HTTP bearer and the global security
+  requirement references it — all green with `./gradlew check` (unit + architecture + formatting).
+  `application.yml` records the springdoc config and the DataSource exclusion; `application-kubernetes.yml`
+  disables Swagger UI in production; `docs/architecture/module-api.md` drops its `⚠ planned (S03-12)`
+  marker for `contracts/openapi/`.
+
 - **Global error handler (`S03-11`).** The twelve modules now route every thrown
   exception through one cross-cutting `@RestControllerAdvice`,
   `com.example.agentflow.common.error.GlobalExceptionHandler`, so a client always

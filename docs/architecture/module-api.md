@@ -259,5 +259,8 @@ check` gate to point to. It is verified by:
   tenant/ownership check).
 - **`events/README.md`** — event catalogue, topics, partition keys, envelope
   fields, retry/DLQ (`⚠ planned`, `S06`).
-- `contracts/openapi/` — machine-readable `/api/v1` DTOs (`⚠ planned`, `S03-12`).
+- `contracts/openapi/` — machine-readable `/api/v1` OpenAPI contract (S03-12),
+  generated deterministically from the running application and checked in;
+  request/response schemas are added per endpoint as it is implemented
+  (S03-13+), and the scheme for the secured endpoints is declared now.
 - `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` — Sprint 2, `S02-04`.

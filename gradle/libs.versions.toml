@@ -15,6 +15,11 @@ spring-ai   = "2.0.1"
 # Architecture tests (S02-08): ArchUnit enforces the module boundary rules.
 # Pinned here like every other version; it is not part of the Spring Boot BOM.
 archunit = "1.5.1"
+# OpenAPI contract generation (S03-12): springdoc-openapi v3 targets Spring Boot
+# 4 (Java 17+, Jakarta EE 9), so it is compatible with the Boot 4.1.1 / Spring
+# Framework 7 / Jackson 3 stack used here. The v3 line is the Spring Boot 4
+# successor of the v2 (Spring Boot 3) line.
+springdoc = "3.1.1"
 # Structured JSON logging for the app (S01-19). 9.0 is compiled against logback
 # 1.5.x and Jackson 3.x (tools.jackson), so it is compatible with the Boot
 # 4.1.1 stack (logback 1.5.38, Jackson 3.1.5). Older 7.x lines still target
@@ -44,6 +49,10 @@ postgresql = { module = "org.postgresql:postgresql" }
 # compile dependency so the classes() DSL is on the test compile classpath) and
 # the engine needed by the JUnit 5 platform to discover/run @ArchTest fields.
 archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+# OpenAPI contract (S03-12): the Spring WebMvc starter (description + Swagger UI).
+# Consumed through the version catalog so the version is pinned in one place; it
+# is not part of the Spring Boot BOM.
+springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
 
 [plugins]
 # Gradle plugin versions live here too, so a module applies the Boot plugin

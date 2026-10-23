@@ -66,3 +66,13 @@ management:
         include: []
       readiness:
         include: []
+
+# OpenAPI contract (S03-12). The description is generated deterministically from the running
+# application and checked in under contracts/openapi/; the generation order is stable, so a diff
+# shows only real changes. It is served under the /api/v1 REST prefix and Swagger UI (local
+# exploration) is toggled per profile (disabled in the kubernetes profile).
+springdoc:
+  api-docs:
+    path: /api/v1/v3/api-docs
+  swagger-ui:
+    enabled: true

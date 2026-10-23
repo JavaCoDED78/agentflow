@@ -14,3 +14,9 @@ agentflow:
   http:
     host: 0.0.0.0
     port: 8080
+
+# Swagger UI is a development aid for local API exploration and must not be reachable from the
+# cluster. Only the interactive UI is disabled here; the OpenAPI description can stay enabled.
+springdoc:
+  swagger-ui:
+    enabled: false

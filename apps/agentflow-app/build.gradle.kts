@@ -63,6 +63,11 @@ dependencies {
     // (see logback-spring.xml). BOM-independent library; the version is pinned in
     // gradle/libs.versions.toml (logstash-logback-encoder = 9.0).
     implementation(libs.logstash.logback.encoder)
+    // OpenAPI contract generation (S03-12): springdoc-openapi v3 is compatible with the
+    // Boot 4.1.1 / Spring Framework 7 / Jackson 3 stack. Provides the OpenAPI description
+    // (JSON/YAML) and Swagger UI for local exploration; the generated spec is checked in under
+    // contracts/openapi/. Version comes from the catalog; nothing pinned inline.
+    implementation(libs.springdoc.openapi.starter.webmvc.ui)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // JUnit Platform launcher is required on the test runtime classpath; the
