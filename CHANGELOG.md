@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Keycloak realm: client scope and OIDC mappers (S04-01).** The declarative
+  realm in [`infra/compose/keycloak/realm-agentflow.json`](infra/compose/keycloak/realm-agentflow.json)
+  is now a complete, import-ready model instead of just a realm with clients
+  and roles. It defines a single default client scope, `agentflow`, attached to
+  the `agentflow-api` client via
+  `defaultClientScopes: ["agentflow"]`, carrying three `oidc-usermodel-protocol-mapper`
+  protocol mappers — `preferred-username` (claim `preferred_username`), `email`
+  (claim `email`) and `full-name` (claim `name`). Realm roles remain the Sprint
+  1 set (`workflow:read`, `workflow:write`, `workflow:approve`, `knowledge:read`,
+  `tenant:admin`); the permission catalogue for Sprint 4 is a separate task
+  (`S04-04`). Idempotency was verified empirically: two clean Keycloak 26.8.1
+  runs with `--import-realm` (fresh volumes) produced an identical declarative
+  model — same client scope, same three mappers, same `agentflow-api` client and
+  same five roles — confirmed by diffing the admin API response for both runs
+  (`diff` empty). The realm already imports cleanly on every start; this change
+  only adds the scope/mapper model on top of it.
+
 - **API and persistence conventions — developer guide (`S03-17`).**
   `docs/architecture/api-conventions.md` is the new developer reference for the
   `/api/v1` REST API and the PostgreSQL it reads from. It documents the
