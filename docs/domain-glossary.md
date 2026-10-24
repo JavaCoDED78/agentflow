@@ -35,7 +35,7 @@ map (`docs/architecture/module-map.md`) and the architecture internals, but does
 |---|---|---|
 | **Tenant** | table `tenants` (`id`, `slug`, `status`, `created_at`); field `tenant_id` | An isolated organization/team; the unit of data separation. The tenant is derived **only** from the verified security context (HTTP SecurityContext, or a stored event re-checked against PostgreSQL), never from the request body, query or Kafka headers. A resource is read by the pair `(tenant_id, resource_id)`. |
 | **Tenant scope** | `tenant_id` on business records + a tenant filter that is part of the query, not a post-filter | All reads/writes/search/events are scoped to the tenant. Another tenant's resource is indistinguishable from a missing one (`404`/`403`). |
-| **Permission scope** | claim scopes such as `workflow:read`, `workflow:write`, `workflow:approve`, `knowledge:read`, `tenant:admin`, `ops:dlq` | The coarse capability a JWT grants; it never replaces the per-resource tenant/ownership check (`ADR-007`). |
+| **Permission scope** | the id of a `Permission` entry, e.g. `workflow:read`, `workflow:write`, `workflow:activate`, `document:read`, `document:write`, `run:execute`, `run:approve`, `ops:dlq` (S04-04) | The coarse capability a JWT grants. The ids live in the `identity` module's `Permission` catalogue, are mapped from JWT role claims by `ClaimsToAuthoritiesMapper` (deny-by-default) and are the single source of truth for the S04-08 endpoint access matrix. A permission scope never replaces the per-resource tenant/ownership check (`ADR-007`). |
 
 **Alias to avoid:** a "tenant" is not an "org", "organization", "project" or
 "customer" elsewhere in the code. `tenant_id` is the column everywhere.

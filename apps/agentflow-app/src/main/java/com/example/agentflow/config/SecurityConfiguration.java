@@ -1,5 +1,6 @@
 package com.example.agentflow.config;
 
+import com.example.agentflow.identity.application.ClaimsToAuthoritiesMapper;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
@@ -20,6 +21,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
 /**
@@ -50,8 +52,12 @@ class SecurityConfiguration {
 
   private final AgentFlowProperties properties;
 
-  SecurityConfiguration(AgentFlowProperties properties) {
+  private final ClaimsToAuthoritiesMapper claimsToAuthoritiesMapper;
+
+  SecurityConfiguration(
+      AgentFlowProperties properties, ClaimsToAuthoritiesMapper claimsToAuthoritiesMapper) {
     this.properties = properties;
+    this.claimsToAuthoritiesMapper = claimsToAuthoritiesMapper;
   }
 
   /**
@@ -83,6 +89,26 @@ class SecurityConfiguration {
         JwtValidators.createDefaultWithValidators(
             new JwtIssuerValidator(issuer), new JwtAudienceValidator(audience)));
     return decoder;
+  }
+
+  /**
+   * The JWT authentication converter (S04-04): the single place that maps a verified token's role
+   * claims into Spring Security authorities via {@link ClaimsToAuthoritiesMapper}. The secured
+   * chain registers it as the {@link JwtAuthenticationConverter}, so every entry point — HTTP
+   * controllers, Kafka listeners, scheduled jobs — derives the principal's {@code
+   * workflow:read}/{@code run:execute}/… authorities from the same catalogue; controllers never
+   * parse the JWT themselves. The permissive {@code test} chain leaves the default converter in
+   * place.
+   *
+   * @param mapper the claims-to-authorities converter
+   * @return the {@link JwtAuthenticationConverter}
+   */
+  @Bean
+  JwtAuthenticationConverter jwtAuthenticationConverter(ClaimsToAuthoritiesMapper mapper) {
+    JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+    // One place, deny-by-default, idempotent.
+    converter.setJwtGrantedAuthoritiesConverter(mapper::map);
+    return converter;
   }
 
   /**
@@ -148,7 +174,9 @@ class SecurityConfiguration {
    */
   @Bean
   @Profile("!test")
-  SecurityFilterChain securityFilterChain(HttpSecurity http, JwtDecoder decoder) throws Exception {
+  SecurityFilterChain securityFilterChain(
+      HttpSecurity http, JwtDecoder decoder, JwtAuthenticationConverter jwtAuthenticationConverter)
+      throws Exception {
     http.csrf(AbstractHttpConfigurer::disable)
         .authorizeHttpRequests(
             auth ->
@@ -156,7 +184,12 @@ class SecurityConfiguration {
                     .permitAll()
                     .anyRequest()
                     .authenticated())
-        .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.decoder(decoder)));
+        .oauth2ResourceServer(
+            oauth ->
+                oauth.jwt(
+                    jwt ->
+                        jwt.decoder(decoder)
+                            .jwtAuthenticationConverter(jwtAuthenticationConverter)));
     return http.build();
   }
 
