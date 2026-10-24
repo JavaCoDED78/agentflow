@@ -30,6 +30,7 @@ public class AgentFlowProperties {
 
   @Valid private final Http http = new Http();
   @Valid private final Graph graph = new Graph();
+  @Valid private final Security security = new Security();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -57,6 +58,13 @@ public class AgentFlowProperties {
    */
   public Graph getGraph() {
     return graph;
+  }
+
+  /**
+   * @return the validated OAuth 2.0 resource server (JWT) settings
+   */
+  public Security getSecurity() {
+    return security;
   }
 
   /** HTTP server bind settings for this role. */
@@ -122,6 +130,54 @@ public class AgentFlowProperties {
      */
     public int getMaxBytes() {
       return maxBytes;
+    }
+  }
+
+  /**
+   * OAuth 2.0 resource server (JWT) settings (S04-03). Bound from {@code agentflow.security.*}. The
+   * issuer is the trusted Keycloak realm that issues and signs the access tokens; the audience is
+   * the {@code aud} the API expects (the {@code agentflow-api} OIDC client). Both are required: a
+   * missing value fails boot explicitly. They are supplied per profile (see {@code
+   * application-*.yml}) and come from the environment in the local and Kubernetes profiles.
+   */
+  public static class Security {
+
+    /**
+     * The trusted issuer (Keycloak realm URL) that signs the tokens. No default: must be supplied.
+     */
+    @NotBlank(message = "agentflow.security.issuer-uri is required and must not be blank")
+    private String issuerUri;
+
+    /** The expected audience ({@code aud}) claim of the tokens. No default: must be supplied. */
+    @NotBlank(message = "agentflow.security.audience is required and must not be blank")
+    private String audience;
+
+    /**
+     * @param issuerUri the trusted issuer (Keycloak realm URL) that signs the tokens
+     */
+    public void setIssuerUri(String issuerUri) {
+      this.issuerUri = issuerUri;
+    }
+
+    /**
+     * @return the trusted issuer (Keycloak realm URL)
+     */
+    public String getIssuerUri() {
+      return issuerUri;
+    }
+
+    /**
+     * @param audience the expected audience ({@code aud}) claim
+     */
+    public void setAudience(String audience) {
+      this.audience = audience;
+    }
+
+    /**
+     * @return the expected audience ({@code aud}) claim
+     */
+    public String getAudience() {
+      return audience;
     }
   }
 }

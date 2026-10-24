@@ -44,7 +44,9 @@ class AgentFlowPropertiesStartupTest {
         .withPropertyValues(
             "agentflow.app-name=agentflow-app",
             "agentflow.http.port=8080",
-            "agentflow.http.host=0.0.0.0")
+            "agentflow.http.host=0.0.0.0",
+            "agentflow.security.issuer-uri=https://keycloak.test/realms/agentflow",
+            "agentflow.security.audience=agentflow-api")
         .run(
             context -> {
               assertThat(context.getBean(AgentFlowProperties.class)).isNotNull();

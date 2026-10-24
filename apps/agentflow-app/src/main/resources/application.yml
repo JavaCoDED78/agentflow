@@ -43,6 +43,15 @@ agentflow:
     # Kubernetes Service. Never hardcode localhost here or in code.
     host: 0.0.0.0
     port: 8080
+  security:
+    # OAuth 2.0 resource server (S04-03). The issuer is the Keycloak realm URL that
+    # issues and signs the access tokens; the audience is the `aud` the API expects
+    # (the agentflow-api OIDC client). Both come from the environment (AGENTFLOW_KEYCLOAK_ISSUER_URI);
+    # the defaults below are non-production placeholders so the skeleton still boots
+    # without a reachable Keycloak. They MUST be overridden for a real deployment
+    # (see application-kubernetes.yml and the local .env).
+    issuer-uri: ${AGENTFLOW_KEYCLOAK_ISSUER_URI:https://keycloak.example/realms/agentflow}
+    audience: agentflow-api
 
 # Health endpoints (S01-18).
 #
