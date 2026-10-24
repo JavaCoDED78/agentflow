@@ -6,6 +6,7 @@ import com.example.agentflow.config.AgentFlowProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
@@ -26,8 +27,22 @@ class ConfigurationLocalProfileTest {
 
   @Autowired private AgentFlowProperties properties;
 
+  @Autowired private JwtDecoder jwtDecoder;
+
   @Test
   void localContextLoads() {
     assertThat(properties.getAppName()).isEqualTo("agentflow-app");
+  }
+
+  /**
+   * The secured Resource Server runs on the local profile, so its production {@link JwtDecoder}
+   * (the {@link NimbusJwtDecoder} built from the configured issuer location, S04-03) must build.
+   * OIDC discovery is lazy (the bean is {@code @Lazy}), so this does not require a reachable
+   * Keycloak.
+   */
+  @Test
+  void productionJwtDecoderBuildsWithLocalIssuer() {
+    assertThat(jwtDecoder).isNotNull();
+    assertThat(jwtDecoder).isInstanceOf(JwtDecoder.class);
   }
 }

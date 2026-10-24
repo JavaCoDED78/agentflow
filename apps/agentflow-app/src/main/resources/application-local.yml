@@ -25,6 +25,12 @@ agentflow:
   http:
     host: 0.0.0.0
     port: 8080
+  security:
+    # Local Keycloak issuer (from the git-ignored .env, AGENTFLOW_KEYCLOAK_ISSUER_URI). The
+    # localhost default below is for local development only and is never shipped to a real
+    # profile.
+    issuer-uri: ${AGENTFLOW_KEYCLOAK_ISSUER_URI:http://localhost:8443/realms/agentflow}
+    audience: agentflow-api
 
 # Log levels for the local profile (S01-19). The JSON layout lives in
 # logback-spring.xml; this only picks the level per logger. Our code runs at

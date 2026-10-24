@@ -18,3 +18,9 @@ agentflow:
     host: 0.0.0.0
     # Ephemeral port (0) so the test context never binds a fixed port.
     port: 0
+  security:
+    # Test issuer/audience for the typed AgentFlowProperties (S04-03). The permissive security
+    # chain on the test profile does not validate tokens, but the @Validated properties are bound
+    # on every context load, so these mandatory values are supplied here.
+    issuer-uri: https://keycloak.test/realms/agentflow
+    audience: agentflow-api

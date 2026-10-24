@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Spring Security Resource Server (S04-03).** The `/api/v1` surface is now
+  secured by an OAuth 2.0 Resource Server that validates the JWT access token
+  before any controller runs: signature (via the standard `NimbusJwtDecoder`,
+  built from the issuer's OIDC `jwk_set_uri`, resolved lazily on first decode so
+  the context still boots without a reachable Keycloak), issuer, audience and
+  expiry. A missing, expired, tampered or mis-issued token, or a wrong
+  issuer/audience, is rejected with `401 Unauthorized` at the security layer. Two
+  `SecurityFilterChain`s are split by profile: the **secured** chain on every
+  non-test profile (default, local, kubernetes) plus the `secured-test` profile,
+  requiring a bearer JWT for everything except `/actuator/health` and
+  `/actuator/info` (so liveness/readiness probes keep working); a **permissive**
+  chain on the `test` profile, so the many existing tests that exercise
+  controllers without authenticating keep working — it never runs on the
+  kubernetes/production profile (S04-10). The `bearerAuth` (JWT) security scheme
+  is documented in the OpenAPI contract (`OpenApiConfig` → `contracts/openapi/`),
+  which stays compatible (`OpenApiContractCheckTest`). The trusted issuer/audience
+  come from typed, validated `@ConfigurationProperties` (`AgentFlowProperties.security`)
+  bound from `agentflow.security.*`: `issuer-uri` has no default and is mandatory
+  in the kubernetes profile (a missing `AGENTFLOW_KEYCLOAK_ISSUER_URI` fails boot
+  loudly instead of validating against the base placeholder), supplied from the
+  environment (`AGENTFLOW_KEYCLOAK_ISSUER_URI` in the local `.env`) for local and
+  kubernetes. Verification: the acceptance criterion is proved through the HTTP
+  boundary by `SecurityFilterChainTest` (`missingTokenIsRejected`,
+  `expiredTokenIsRejected`, `tokenSignedByAnotherKeyIsRejected`,
+  `wrongIssuerIsRejected`, `wrongAudienceIsRejected` all assert `401`;
+  `validTokenPassesTheSecurityLayer` proves a valid token reaches the dispatcher
+  as a `404` for the missing route); `AgentFlowPropertiesStartupTest` asserts the
+  mandatory security values. `./gradlew :apps:agentflow-app:check` is green (unit
+  + architecture gates + formatting + OpenAPI contract gate).
+
 - **Split user and machine-to-machine clients (S04-02).** The single
   `agentflow-api` client (S04-01), which mixed user login, service accounts and the
   password grant, is split into three purpose-built clients in
@@ -943,6 +973,22 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
 
 ### Fixed
 
+- **`jwtDecoder` no longer uses the deprecated Nimbus `RemoteJWKSet` (S04-03).** The
+  original S04-03 implementation built the standard `NimbusJwtDecoder` with the deprecated
+  Nimbus `RemoteJWKSet` (class-level `@Deprecated`), which triggered `[deprecation]`
+  warnings under `-Xlint:deprecation` and was scheduled for removal. The decoder is now
+  built with the non-deprecated `NimbusJwtDecoder.withJwkSource(...)` API: a small
+  `JWKSource<SecurityContext>` resolves the issuer's OIDC discovery document and fetches
+  `jwk_set_uri` only on the first `select(...)` (never at startup), so the context still
+  boots without a reachable Keycloak — the lazy-OIDC property is preserved — and the bean
+  is still a `NimbusJwtDecoder`. `RemoteJWKSet` is gone from the codebase (zero
+  `[deprecation]` warnings remain from this file; the only remaining deprecation warnings
+  are `JsonNode.asText()` in `GlobalExceptionHandlerTest` and `OpenApiCompatibility`,
+  outside this task). Verification: `./gradlew :apps:agentflow-app:check` is green
+  (unit + architecture gates + formatting + OpenAPI); `RemoteJWKSet` produces no
+  deprecation warnings; and the context-startup tests on the `default`/`kubernetes`/`local`
+  profiles (which boot without Keycloak) pass — `productionJwtDecoderBuildsWithLocalIssuer`
+  additionally asserts the production bean is a `NimbusJwtDecoder`.
 - **Typed config binds under the default profile (`S01-17`).** The `agentflow.app.*`
   configuration was declared with a nested `agentflow.app.name` key, but the Java
   model is `@ConfigurationProperties(prefix = "agentflow")` with a flat `appName`

@@ -15,8 +15,9 @@ import org.springframework.context.annotation.Configuration;
  * for those endpoints. The model is generated deterministically and checked in under {@code
  * contracts/openapi/}; it is never edited by hand (see {@code contracts/openapi/README.md}).
  *
- * <p>The security scheme below is the HTTP bearer (JWT) placeholder for the OIDC resource server
- * added in Sprint 4. It declares the contract now; the actual issuer/audience validation follows.
+ * <p>The security scheme below is the HTTP bearer (JWT) scheme for the secured {@code /api/v1}
+ * endpoints. The issuer and audience are enforced by the OAuth 2.0 Resource Server added in S04-03:
+ * every request must present a valid Keycloak access token.
  */
 @Configuration
 class OpenApiConfig {

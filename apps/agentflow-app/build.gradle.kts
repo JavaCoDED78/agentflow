@@ -36,6 +36,12 @@ dependencies {
     // configprops, beans, ...) are closed by the application config. Managed by
     // the Spring Boot BOM, so no version is pinned here.
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // OAuth 2.0 Resource Server (S04-03): validates the JWT access token (signature, issuer,
+    // audience, expiry) and backs the bearer/JWT security scheme. Managed by the Spring Boot BOM,
+    // so no version is pinned here. It is transitive on the Nimbus JOSE library
+    // (com.nimbusds:nimbus-jose-jwt, which backs NimbusJwtDecoder); the jose4j library
+    // (org.jose4j, used by the test JWT decoder) is added explicitly under testImplementation.
+    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
     // Schema migrations (S03-01): Flyway. flyway-core is on the application
     // classpath so the migration entry point (FlywayMigrate) compiles and Spring
     // Boot's Flyway auto-configuration can run when a datasource exists. The
@@ -70,6 +76,10 @@ dependencies {
     implementation(libs.springdoc.openapi.starter.webmvc.ui)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Nimbus JOSE (com.nimbusds) is already on the test classpath transitively via the
+    // resource-server starter (nimbus-jose-jwt). The security acceptance test uses it to sign the
+    // test JWTs and to build the in-memory JWKSource the test decoder validates against.
+    // No extra dependency is needed - it is only on the test classpath (S04-03).
     // JUnit Platform launcher is required on the test runtime classpath; the
     // version is managed by the Spring Boot BOM.
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

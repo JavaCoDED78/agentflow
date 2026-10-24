@@ -14,6 +14,13 @@ agentflow:
   http:
     host: 0.0.0.0
     port: 8080
+  security:
+    # REQUIRED in Kubernetes: the Keycloak issuer URI (the realm URL) that signs the access
+    # tokens. No default is given on purpose — a missing AGENTFLOW_KEYCLOAK_ISSUER_URI fails boot
+    # loudly instead of silently validating against the base-profile placeholder. The audience is
+    # the `aud` the API expects (the agentflow-api OIDC client).
+    issuer-uri: ${AGENTFLOW_KEYCLOAK_ISSUER_URI}
+    audience: agentflow-api
 
 # Swagger UI is a development aid for local API exploration and must not be reachable from the
 # cluster. Only the interactive UI is disabled here; the OpenAPI description can stay enabled.
