@@ -982,13 +982,22 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   `jwk_set_uri` only on the first `select(...)` (never at startup), so the context still
   boots without a reachable Keycloak — the lazy-OIDC property is preserved — and the bean
   is still a `NimbusJwtDecoder`. `RemoteJWKSet` is gone from the codebase (zero
-  `[deprecation]` warnings remain from this file; the only remaining deprecation warnings
-  are `JsonNode.asText()` in `GlobalExceptionHandlerTest` and `OpenApiCompatibility`,
-  outside this task). Verification: `./gradlew :apps:agentflow-app:check` is green
+  `[deprecation]` warnings remain from this file). Verification: `./gradlew :apps:agentflow-app:check` is green
   (unit + architecture gates + formatting + OpenAPI); `RemoteJWKSet` produces no
   deprecation warnings; and the context-startup tests on the `default`/`kubernetes`/`local`
   profiles (which boot without Keycloak) pass — `productionJwtDecoderBuildsWithLocalIssuer`
-  additionally asserts the production bean is a `NimbusJwtDecoder`.
+  additionally asserts the production bean is a `NimbusJwtDecoder`. The `JsonNode.asText()`
+  deprecations noted here were removed later in the S04-03 follow-up (see the entry above).
+- **No deprecated `JsonNode.asText()` in the build (S04-03 follow-up).** The standard
+  Jackson 3.1.5 `JsonNode.asText()` is a deprecated alias — its Javadoc says `@deprecated
+  Use asString() instead`, and `asText()` is implemented as `return asString()` — which left
+  18 `[deprecation]` warnings under `-Xlint:deprecation`: 13 in `GlobalExceptionHandlerTest`
+  and 5 in `OpenApiCompatibility`. All calls were replaced with the non-deprecated
+  `asString()` (the method `asText()` already delegates to), so there is no behavior change:
+  the RFC 9457 envelope assertions and the breaking/compatible classification read the same
+  string values. Verification: a fresh `compileJava`/`compileTestJava` under `-Xlint:deprecation`
+  reports zero `[deprecation]` warnings, `GlobalExceptionHandlerTest` passes 5/5, and
+  `OpenApiContractCheckTest` passes — no semantic change to either.
 - **Typed config binds under the default profile (`S01-17`).** The `agentflow.app.*`
   configuration was declared with a nested `agentflow.app.name` key, but the Java
   model is `@ConfigurationProperties(prefix = "agentflow")` with a flat `appName`

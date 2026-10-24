@@ -52,12 +52,12 @@ class GlobalExceptionHandlerTest {
     JsonNode json = objectMapper.readTree(body);
 
     assertThat(json.get("status").asInt()).isEqualTo(400);
-    assertThat(json.get("error_class").asText()).isEqualTo("validation");
+    assertThat(json.get("error_class").asString()).isEqualTo("validation");
     assertThat(json.get("retryable").asBoolean()).isFalse();
-    assertThat(json.get("type").asText()).isEqualTo("about:blank");
-    assertThat(json.get("instance").asText()).isEqualTo("/api/v1/test/valid");
-    assertThat(json.get("detail").asText()).contains("name");
-    assertThat(json.get("correlation_id").asText()).matches("[0-9a-f-]{36}");
+    assertThat(json.get("type").asString()).isEqualTo("about:blank");
+    assertThat(json.get("instance").asString()).isEqualTo("/api/v1/test/valid");
+    assertThat(json.get("detail").asString()).contains("name");
+    assertThat(json.get("correlation_id").asString()).matches("[0-9a-f-]{36}");
   }
 
   @Test
@@ -66,7 +66,7 @@ class GlobalExceptionHandlerTest {
     JsonNode json = objectMapper.readTree(body);
 
     assertThat(json.get("status").asInt()).isEqualTo(400);
-    assertThat(json.get("error_class").asText()).isEqualTo("validation");
+    assertThat(json.get("error_class").asString()).isEqualTo("validation");
     assertThat(json.get("retryable").asBoolean()).isFalse();
   }
 
@@ -76,7 +76,7 @@ class GlobalExceptionHandlerTest {
     JsonNode json = objectMapper.readTree(body);
 
     assertThat(json.get("status").asInt()).isEqualTo(404);
-    assertThat(json.get("error_class").asText()).isEqualTo("not_found");
+    assertThat(json.get("error_class").asString()).isEqualTo("not_found");
     assertThat(json.get("retryable").asBoolean()).isFalse();
   }
 
@@ -86,10 +86,10 @@ class GlobalExceptionHandlerTest {
     JsonNode json = objectMapper.readTree(body);
 
     assertThat(json.get("status").asInt()).isEqualTo(409);
-    assertThat(json.get("error_class").asText()).isEqualTo("conflict");
+    assertThat(json.get("error_class").asString()).isEqualTo("conflict");
     assertThat(json.get("retryable").asBoolean()).isFalse();
-    assertThat(json.get("detail").asText()).isEqualTo("resource already exists");
-    assertThat(json.get("instance").asText()).isEqualTo("/api/v1/test/conflict");
+    assertThat(json.get("detail").asString()).isEqualTo("resource already exists");
+    assertThat(json.get("instance").asString()).isEqualTo("/api/v1/test/conflict");
   }
 
   @Test
@@ -98,9 +98,9 @@ class GlobalExceptionHandlerTest {
     JsonNode json = objectMapper.readTree(body);
 
     assertThat(json.get("status").asInt()).isEqualTo(500);
-    assertThat(json.get("error_class").asText()).isEqualTo("internal");
-    assertThat(json.get("detail").asText()).isEqualTo("The request is invalid");
-    assertThat(json.get("correlation_id").asText()).matches("[0-9a-f-]{36}");
+    assertThat(json.get("error_class").asString()).isEqualTo("internal");
+    assertThat(json.get("detail").asString()).isEqualTo("The request is invalid");
+    assertThat(json.get("correlation_id").asString()).matches("[0-9a-f-]{36}");
     assertThat(body).doesNotContain("postgres");
     assertThat(body).doesNotContain("connection failed");
   }

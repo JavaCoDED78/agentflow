@@ -234,13 +234,13 @@ public final class OpenApiCompatibility {
     for (JsonNode value : baselineEnum) {
       boolean stillPresent = false;
       for (JsonNode candidate : currentEnum) {
-        if (candidate.asText().equals(value.asText())) {
+        if (candidate.asString().equals(value.asString())) {
           stillPresent = true;
           break;
         }
       }
       if (!stillPresent) {
-        report.addBreaking("removed enum value \"" + value.asText() + "\" from " + path);
+        report.addBreaking("removed enum value \"" + value.asString() + "\" from " + path);
       }
     }
   }
@@ -251,7 +251,7 @@ public final class OpenApiCompatibility {
       return false;
     }
     for (JsonNode value : required) {
-      if (value.asText().equals(property)) {
+      if (value.asString().equals(property)) {
         return true;
       }
     }
@@ -263,7 +263,7 @@ public final class OpenApiCompatibility {
       return "undefined";
     }
     if (node.has("type")) {
-      return node.get("type").asText();
+      return node.get("type").asString();
     }
     return node.has("$ref") ? "$ref" : "undefined";
   }
