@@ -61,17 +61,43 @@
   ],
   "clients": [
     {
-      "clientId": "agentflow-api",
+      "clientId": "agentflow-web",
+      "enabled": true,
+      "publicClient": true,
+      "description": "User-facing browser client (S04-02). Public SPA: Authorization Code flow + PKCE, no client secret. The resource server / audience is agentflow-api.",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "defaultClientScopes": ["agentflow"],
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "agentflow-service",
       "enabled": true,
       "publicClient": false,
-      "secret": "agentflow-api-secret",
-      "clientAuthenticatorType": "client-secret",
-      "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": true,
+      "description": "Machine-to-machine client (S04-02). Confidential, Client Credentials grant (service accounts) only. Secret is injected from the container environment (${AGENTFLOW_SERVICE_CLIENT_SECRET}), never committed to Git.",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${AGENTFLOW_SERVICE_CLIENT_SECRET}",
       "defaultClientScopes": ["agentflow"],
-      "redirectUris": ["http://localhost/*"],
-      "webOrigins": ["*"],
+      "webOrigins": [],
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "agentflow-api",
+      "enabled": true,
+      "publicClient": true,
+      "description": "Resource server / OIDC audience (S04-02). Validates incoming user tokens; aud = agentflow-api (see .env.example). It does not issue tokens, so it needs no login flow, no service accounts and no client secret.",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "defaultClientScopes": [],
+      "redirectUris": [],
+      "webOrigins": [],
       "protocol": "openid-connect"
     }
   ]

@@ -133,3 +133,14 @@ Note: the console **producer** run as the container's PID 1 (i.e.
 silently writes nothing while the **consumer** works the same way — wrap the
 producer in `sh -c` so it runs as a child of `sh`. This is a console-tool
 artifact only; the Spring Kafka client is unaffected.
+
+## Keycloak (identity profile)
+
+The `identity` profile starts Keycloak (`quay.io/keycloak/keycloak:26.8.1`,
+`start-dev --import-realm`) and imports the declarative realm from
+[`keycloak/realm-agentflow.json`](keycloak/realm-agentflow.json) on startup. The
+client model — the S04-02 split into a public user client (`agentflow-web`,
+Authorization Code + PKCE), a confidential machine-to-machine client
+(`agentflow-service`, Client Credentials, secret injected from the environment and
+never in Git) and a resource-server audience (`agentflow-api`) — is documented in
+[`keycloak/README.md`](keycloak/README.md).

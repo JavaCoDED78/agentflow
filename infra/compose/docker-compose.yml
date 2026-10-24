@@ -229,6 +229,12 @@ services:
       # Local-development defaults; a real `.env` overrides these.
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Machine-to-machine client secret (S04-02). The realm import uses the
+      # ${AGENTFLOW_SERVICE_CLIENT_SECRET} placeholder; Keycloak resolves it from
+      # this container environment at --import-realm time, so the secret never
+      # lives in Git. A real value comes from the git-ignored local `.env`; the
+      # default below is local-only and clearly not a production secret.
+      AGENTFLOW_SERVICE_CLIENT_SECRET: "${AGENTFLOW_SERVICE_CLIENT_SECRET:-local-dev-m2m-secret-rotate-me}"
       # Allow HTTP for localhost (issuer is http://localhost:8083/realms/agentflow).
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_PORT: "8083"

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Split user and machine-to-machine clients (S04-02).** The single
+  `agentflow-api` client (S04-01), which mixed user login, service accounts and the
+  password grant, is split into three purpose-built clients in
+  [`infra/compose/keycloak/realm-agentflow.json`](infra/compose/keycloak/realm-agentflow.json):
+  **`agentflow-web`** — a *public* SPA client using only the Authorization Code flow
+  + PKCE (`publicClient`, `standardFlowEnabled`, no secret); **`agentflow-service`** —
+  a *confidential* machine-to-machine client using only Client Credentials
+  (`serviceAccountsEnabled`, no standard flow) whose secret is the
+  `${AGENTFLOW_SERVICE_CLIENT_SECRET}` placeholder, resolved from the container
+  environment at `--import-realm` time so it never lives in Git; and
+  **`agentflow-api`** — the resource server / OIDC audience (`aud=agentflow-api`, the
+  `cloak.audience` value in the root `.env.example`), which issues no tokens and so
+  needs no login flow, service accounts or secret. `directAccessGrantsEnabled`
+  (password grant) is disabled on all three AgentFlow clients. `agentflow-web`'s
+  `redirectUris`/`webOrigins` are limited to `http://localhost:3000` (update for the
+  production SPA); `agentflow-service`'s audience/claims wiring is a later task
+  (S04-03). The secret is injected by Compose
+  (`infra/compose/docker-compose.yml`) from a local `.env`, with a clearly local-only
+  default. Verified: `docker compose --profile identity config` passes; Keycloak
+  (`quay.io/keycloak/keycloak:26.8.1`) imported the realm and reached `healthy`; the
+  Admin API shows the three clients with the correct grant flags; a Client Credentials
+  request for `agentflow-service` issues a token, a wrong secret returns `401`, and
+  no client carries a committed secret (the old hardcoded secret was removed). Realm import is declarative from Git (Keycloak assigns client ids at
+  import time). New reference [`infra/compose/keycloak/README.md`](infra/compose/keycloak/README.md)
+  documents the model; `infra/compose/README.md` links to it.
+
 - **Keycloak realm: client scope and OIDC mappers (S04-01).** The declarative
   realm in [`infra/compose/keycloak/realm-agentflow.json`](infra/compose/keycloak/realm-agentflow.json)
   is now a complete, import-ready model instead of just a realm with clients
