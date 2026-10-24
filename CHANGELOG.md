@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Permission catalogue (S04-04).** The AgentFlow permission catalogue is now a
+  single, closed enum — `com.example.agentflow.identity.domain.Permission` — the one source
+  of truth for the `authorization` capability string a verified caller must hold. Each
+  constant is one permission; its `id()` is the shared token so three consumers agree
+  on what a permission *is*: the claims-to-authorities mapper grants an authority only
+  when its value is a catalogue id (deny by default), the endpoint access matrix (S04-08)
+  maps every `/api/v1` action to the id(s) it requires, and the Keycloak realm (S04-01)
+  assigns these ids as client roles. S04-04 canonical set: `workflow:read`,
+  `workflow:write`, `workflow:activate`, `document:read`, `document:write`,
+  `run:execute`, `run:approve`, `ops:dlq`. The catalogue is intentionally **closed**:
+  a role claim that is not one of these ids is ignored by the mapper and denied by the
+  matrix, so an issued role outside the catalogue cannot silently grant a capability;
+  extend it here only (`Permission#all()`), never with an ad-hoc string. The lookup
+  API (`ids()`, `fromId()`, `exists()`, `all()`) backs the mapper and the matrix. The
+  central claims-to-authorities mapping is `ClaimsToAuthoritiesMapper` (the `identity`
+  module's owner of "claims → permissions mapping", per AGENTS.md and the plan): it is
+  the **single** place that turns the verified JWT's role claims into Spring Security
+  `GrantedAuthority` values, wired as a `@Component` bean into the `JwtAuthenticationConverter`
+  that the secured `SecurityFilterChain` (S04-03) uses — so every entry point (HTTP
+  controllers, Kafka listeners, scheduled jobs) derives the principal's authorities from
+  the same catalogue and controllers never parse the JWT themselves (S04-04 acceptance).
+  The mapping is deny-by-default (only a catalogue id is granted), idempotent (the same
+  id always maps to the same authority string, duplicates collapse) and reads the token
+  only after the Resource Server has verified it; it never derives the **tenant** (that
+  comes from the trusted security context only, S04-05/06). It handles both Keycloak
+  role-claim shapes — client-scoped roles under `resource_access → clientId → {roles:
+  [...]}` and a flat top-level realm `roles` claim — decoding the arrays via `Iterable`
+  (gson `JsonArray`, not `List`). Verification: `PermissionTest` (unit) asserts the
+  catalogue ids, `fromId`/`exists`, idempotency and that the ids are stable/unique;
+  `ClaimsToAuthoritiesMapperTest` (unit) asserts that verified role claims map to the
+  matching authorities, unknown claims are dropped, the Keycloak `resource_access` and
+  realm `roles` shapes both resolve, and duplicate claims collapse. `./gradlew
+  :apps:agentflow-app:test --tests "com.example.agentflow.identity.*"` is green
+  (5/5 for the mapper); the `SecurityFilterChainTest` context-load suite passes (the
+  mapper is now a real bean the secured chain wires in). Documentation: the new focused
+  catalogue at [`docs/security/permissions.md`](docs/security/permissions.md);
+  `docs/architecture/module-api.md` and `docs/domain-glossary.md` updated to the
+  implemented `Permission` catalogue (they previously named a different `PermissionScope`
+  id set — aligned here with the plan's S04-04 list). `./gradlew :apps:agentflow-app:check`
+  is green (unit + architecture gates + formatting + OpenAPI contract gate).
+
 - **Spring Security Resource Server (S04-03).** The `/api/v1` surface is now
   secured by an OAuth 2.0 Resource Server that validates the JWT access token
   before any controller runs: signature (via the standard `NimbusJwtDecoder`,
