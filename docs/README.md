@@ -52,7 +52,7 @@ docs/
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
 │   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
-├── security/                          permissions/permissions.md ← S04-04 catalogue; rest ⚠ planned (S11) — authn/authz, secrets policy
+├── security/                          permissions/permissions.md ← S04-04 catalogue; tenant-claim.md ← S04-05 tenant claim contract; rest ⚠ planned (S11) — authn/authz, secrets policy
 ├── threat-model/
 │   └── README.md                      ← scaffold (S01-03); full model added S11
 ├── workflows/
@@ -88,7 +88,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Shared domain terms | `docs/domain-glossary.md` | `docs/domain-glossary.md` |
 | Architecture decision records | `docs/adr/` | `docs/adr/README.md` |
 | Architecture internals (modules, events, DB, etc.) | `docs/architecture/` | this index |
-| Security & threat model | `docs/security/`, `docs/threat-model/` | `permissions.md` (S04-04 catalogue); rest ⚠ planned (`S11`) |
+| Security & threat model | `docs/security/`, `docs/threat-model/` | `permissions.md` (S04-04 catalogue), `tenant-claim.md` (S04-05 tenant claim); rest ⚠ planned (`S11`) |
 | Workflow DSL & examples | `docs/workflows/` | ⚠ planned (`S05`) |
 | Tools, AI, RAG, evaluation | `docs/tools/`, `docs/ai/`, `docs/rag/`, `docs/evaluation/` | ⚠ planned |
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |

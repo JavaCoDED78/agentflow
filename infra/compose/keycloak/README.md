@@ -54,9 +54,12 @@ never used.
 
 The single default scope `agentflow` (added in S04-01) carries three
 `oidc-usermodel-protocol-mapper` mappers — `preferred_username`, `email` and
-`name` — attached to the user (`agentflow-web`) and service (`agentflow-service`)
-clients. The `agentflow-api` resource server carries no scopes: it only validates
-tokens. The audience mapper that stamps `aud=agentflow-api` is a later task (S04-03).
+`name` — plus a `oidc-usermodel-attribute-mapper` for the trusted `tenant_id`
+claim (S04-05, present only for users with a tenant membership). They are
+attached to the user (`agentflow-web`) and service (`agentflow-service`) clients.
+The `agentflow-api` resource server carries no scopes: it only validates
+tokens. The audience mapper that stamps `aud=agentflow-api` is a later task
+(S04-03).
 
 ## Realm roles
 
