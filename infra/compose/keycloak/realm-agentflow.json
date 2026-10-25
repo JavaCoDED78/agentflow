@@ -55,6 +55,19 @@
             "full.body.value": "true",
             "multivalued": "false"
           }
+        },
+        {
+          "name": "tenant-id",
+          "description": "S04-05 trusted tenant claim. Present only when the user has a tenant membership (the tenant_id user attribute is set for members, absent for non-members), so a non-member gets no tenant_id claim and the extractor denies the request.",
+          "protocol": "openid-connect",
+          "consentRequired": false,
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenant_id",
+            "oidc.claim.name": "tenant_id",
+            "full.body.value": "true",
+            "multivalued": "false"
+          }
         }
       ]
     }

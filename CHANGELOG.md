@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Trusted tenant claim (S04-05).** The tenant in an authenticated request is carried by the
+  `tenant_id` Keycloak claim — a mapped claim present only when the user has a tenant membership —
+  and is read **only** from the OAuth 2.0 JWT the Resource Server (S04-03) has already verified
+  (signature, issuer, audience, expiry). `TenantClaimExtractor`
+  (`identity/application/TenantClaimExtractor`) returns `Optional<UUID>`: a verified token without a
+  well-formed `tenant_id` claim (no membership, or a non-UUID id) resolves to **no tenant** and is
+  denied, never defaulted to a fallback. `tenant_id` is **never** taken from the request body,
+  query or Kafka header (invariant 1 / `ADR-007`); the temporary `${agentflow.local.tenant-id}`
+  local-skeleton default (S03-13/S03-14) stays until `S04-10` removes it. The extraction primitive
+  seeds the `TenantContext` (S04-06) that threads the tenant through the application and re-checks
+  it against PostgreSQL for async workers. Acceptance ("substituting another tenant's id does not
+  change the access scope") is enforced by construction; the `S04-13` HTTP-boundary suite is the
+  HTTP-level proof, and the primitive is unit-tested in `TenantClaimExtractorTest`. Documentation: the tenant
+  claim contract at [`docs/security/tenant-claim.md`](docs/security/tenant-claim.md); the
+  `Tenant claim` term added to [`docs/domain-glossary.md`](docs/domain-glossary.md).
+  `./gradlew :apps:agentflow-app:test` is green (see below).
+
 - **Permission catalogue (S04-04).** The AgentFlow permission catalogue is now a
   single, closed enum — `com.example.agentflow.identity.domain.Permission` — the one source
   of truth for the `authorization` capability string a verified caller must hold. Each
