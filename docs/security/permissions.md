@@ -75,6 +75,49 @@ Rules:
   [...] }`; the inner `roles` array is read for **every** client, not a fixed name.
 - **Realm roles** — a flat top-level `roles` claim (a single string or a list).
 
+## Endpoint access matrix (S04-08)
+
+The catalogue answers *what capabilities exist*; the **endpoint access matrix**
+answers *which capability each authenticated action requires*. It is the single
+source of truth for the endpoint-to-permission binding, and it lives in the
+`identity` module next to the catalogue — `com.example.agentflow.identity.application.authorization.AccessMatrix` — so the catalogue and the matrix agree in one place.
+`com.example.agentflow.config.SecurityConfiguration` consumes this matrix when it
+builds the secured `SecurityFilterChain`; it never hardcodes the mapping.
+
+Each rule (`AccessMatrix.EndpointRule`) is an HTTP `method`, an Ant-style
+`pathPattern` under `/api/v1`, and the single `Permission` that the
+`hasAuthority` check verifies against:
+
+| Method | `pathPattern` | Required permission |
+|---|---|---|
+| `POST`  | `/api/v1/workflows`    | `workflow:write`  |
+| `GET`   | `/api/v1/workflows`    | `workflow:read`   |
+| `GET`   | `/api/v1/workflows/*`  | `workflow:read`   |
+
+The chain applies the matrix by iterating its rules and gating each action on its
+own permission (`authorize.requestMatchers(method, pattern).hasAuthority(requiredPermission.id())`),
+then closes the rest with `anyRequest().authenticated()`.
+
+Three invariants back the S04-08 acceptance:
+
+- **Least privilege.** Every rule grants exactly one permission — the minimum the
+  endpoint needs (`workflow:read` for a read, `workflow:write` for a write). No
+  endpoint asks for more than it uses, so a token is never granted broad access it
+  does not need.
+- **Default-deny.** The matrix only lists what is allowed. An endpoint not in the
+  matrix (and any future one) grants nothing until an explicit rule is added here,
+  so nothing is reachable without an explicit rule. A caller holding none of the
+  referenced permissions is denied on every endpoint.
+- **Separated admin/operator operations.** User operations (`workflow:*`,
+  `document:*`, `run:*`) are the rules above; operator operations that require the
+  `ops:dlq` permission form a separate group, documented and reserved in the matrix
+  rather than bolted on as an ad-hoc exception in the security chain. Adding a new
+  operator/admin endpoint is a new rule here.
+
+To add an endpoint: add one `EndpointRule` to `AccessMatrix` with the minimum
+permission it needs. The matrix is a plain, framework-agnostic data structure; the
+translation to Spring Security request matchers lives in `SecurityConfiguration`.
+
 ## Consumers
 
 | Consumer | Uses the catalogue |

@@ -65,7 +65,7 @@ Each table lists:
 
 | Section | Contents |
 |---|---|
-| Public application services | `TenantContextResolver` — resolve tenant + verified actor **only** from the verified security context (HTTP `SecurityContext`) or a stored event re-checked against PostgreSQL; never from body/query/Kafka headers. `ClaimsToAuthoritiesMapper` — S04-04, the single place that maps the verified JWT's role claims into Spring Security authorities, validated against the `Permission` catalogue (deny-by-default, idempotent). `TenantService` — tenant lifecycle: create tenant, get tenant, set tenant `status`. |
+| Public application services | `TenantContextResolver` — resolve tenant + verified actor **only** from the verified security context (HTTP `SecurityContext`) or a stored event re-checked against PostgreSQL; never from body/query/Kafka headers. `ClaimsToAuthoritiesMapper` — S04-04, the single place that maps the verified JWT's role claims into Spring Security authorities, validated against the `Permission` catalogue (deny-by-default, idempotent). `AccessMatrix` — S04-08, the endpoint access matrix (`EndpointRule`: HTTP `method` + Ant `pathPattern` under `/api/v1` → single required `Permission`); the single source of truth for the endpoint↔permission mapping consumed by `SecurityConfiguration` (least privilege, default-deny). `TenantService` — tenant lifecycle: create tenant, get tenant, set tenant `status`. |
 | Published event types | none (the tenant is the trusted source; the `audit` module records the verified actor). |
 | Permitted public types | `TenantContext` (`tenantId`, `actor` — the immutable value threaded explicitly through
   application services; `requiredScopes` is layered on by `TenantScope` in S04-07), `TenantSummaryDto`
