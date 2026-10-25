@@ -51,9 +51,14 @@ member of any tenant simply gets no `tenant_id` claim. The realm import is
   same resolver reads the tenant of the stored run/event against PostgreSQL.
 - **`S04-07` tenant-scoped access** — resolves resources by `(tenant_id, resource_id)`; another
   tenant's resource is indistinguishable from a missing one.
-- **`S04-10` remove the local auth bypass** — the temporary `${agentflow.local.tenant-id}` default
-  (S03-13/S03-14 local-skeleton) must be deleted; it is exactly the "tenant not from a non-verified
-  source" rule the plan defers to this sprint.
+- **`S04-10` remove the local auth bypass** — the permissive mock-auth chain (the temporary local
+  {@code test}-profile {@code SecurityFilterChain}) was moved out of the production artifact into a
+  test-only config, so the production/kubernetes profile can never start with a permissive
+  principal (the S04-10 acceptance criterion). The {@code ${agentflow.local.tenant-id}} default
+  (S03-13/S03-14 local-skeleton) is a *separate* tenant-isolation bypass — "tenant not from a
+  non-verified source" — that this sprint did **not** remove: threading the tenant from the verified
+  context needs a new `workflowdefinition` → `identity` edge (an ADR), so it is a documented
+  follow-up, tracked as a later tenant-isolation task.
 - **`S04-13` security regression** — `body tenant spoofing` and `cross-tenant read/write` are the
   acceptance proof for this contract: substituting another tenant's id does not change the access
   scope.
