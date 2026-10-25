@@ -134,6 +134,33 @@ class WorkflowDefinitionRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
+  void updateMetadata_foreignTenant_affects_zero_rows() throws SQLException {
+    // S04-07: a write scoped to the wrong tenant must affect zero rows. The tenant_id guard in the
+    // WHERE clause (invariant 1) scopes every write to its owning tenant, so guessing another
+    // tenant's resource id grants no update — the write is denied (409), never a silent no-op that
+    // masquerades as a successful mutation.
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
+    UUID impersonator = UUID.fromString("00000000-0000-0000-0000-0000000000bb");
+    WorkflowDefinition def = WorkflowDefinition.draft(impersonator, "x", "x", "alice");
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(0);
+
+    assertThatThrownBy(() -> repo.updateMetadata(def, WorkflowDefinition.DRAFT, "x"))
+        .isInstanceOf(ConflictException.class);
+
+    verify(jdbc).update(sql.capture(), setter.capture());
+    // the write is scoped to the writer's tenant: a row owned by any other tenant cannot match
+    assertThat(sql.getValue()).contains("WHERE id = ?").contains("AND tenant_id = ?");
+    setter.getValue().setValues(ps);
+    verify(ps).setObject(4, impersonator);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
   void listByTenant_binds_the_tenant_orders_by_created_at_id_and_bounds_the_page()
       throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
