@@ -19,8 +19,9 @@ import org.springframework.web.client.RestTemplate;
  * <p>Only {@code health} and {@code info} are exposed over HTTP, while the sensitive {@code env},
  * {@code configprops} and {@code beans} endpoints are outside the exposure allow-list, so they are
  * not reachable and answer {@code 404} anonymously. Liveness and readiness are separate health
- * probes used by the orchestrator. Full authentication over management endpoints is added later
- * (S04-11); the control here is least exposure.
+ * probes used by the orchestrator. The secured security chain (S04-11) keeps these probes reachable
+ * without a token for the orchestrator and requires a bearer token for everything else — least
+ * exposure.
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")

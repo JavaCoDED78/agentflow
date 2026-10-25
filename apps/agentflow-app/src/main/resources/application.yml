@@ -60,7 +60,9 @@ agentflow:
 # reachable over HTTP; every other endpoint (`env`, `configprops`, `beans`,
 # `mappings`, `loggers`, dumps) is not exposed, so it answers 404 anonymously.
 # `liveness` and `readiness` are dedicated health probes for the orchestrator
-# (Kubernetes). Role-based access is added later (S04-11); this is least
+# (Kubernetes). The secured security chain keeps the health/info probes reachable
+# without a token for the orchestrator and requires a bearer token for every
+# other management endpoint (S04-11); combined with the allow-list this is least
 # exposure.
 management:
   endpoints:

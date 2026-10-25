@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Restricted actuator endpoints (S04-11).** Management diagnostics are now behind a bearer
+  token. The secured `SecurityFilterChain` (`SecurityConfiguration.securityFilterChain`) keeps only
+  {@code /actuator/health}, {@code /actuator/health/**} and {@code /actuator/info} reachable without
+  a token — for the liveness/readiness/orchestrator probes — and applies {@code
+  anyRequest().authenticated()} to every other request, so a management endpoint can never be
+  reached anonymously. Combined with the {@code management.endpoints.web.exposure.include}
+  allow-list that leaves only {@code health} and {@code info} registered (S01-18), the sensitive
+  {@code env}/{@code configprops}/{@code beans}/{@code mappings} endpoints are never reachable
+  anonymously: the secured chain rejects an unauthenticated request with 401 (S04-11), and a
+  verified caller meets a 404 because the endpoint is not registered. This closes the
+  S04-11 acceptance criterion (sensitive endpoint not accessible anonymously) and is verified
+  through the HTTP boundary on the {@code secured-test} profile in
+  `SecurityFilterChainTest.sensitiveManagementEndpointsAreNotReachableAnonymously`;
+  {@code ./gradlew :apps:agentflow-app:test} is green.
+
 - **Least-privilege endpoint access (S04-08).** Every authenticated `/api/v1` action is now
   gated on the single permission it needs instead of the coarse `anyRequest().authenticated()`.
   The mapping lives in one place — the endpoint access matrix (`@Component` `AccessMatrix`,
@@ -1015,8 +1030,9 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   over HTTP and `liveness`/`readiness` are defined as dedicated health groups for
   the orchestrator; every other endpoint (`env`, `configprops`, `beans`,
   `mappings`, `loggers`, dumps) is outside the exposure allow-list, so it answers
-  `404` anonymously. Authentication over management endpoints is added later
-  `S04-11`). See `apps/agentflow-app/src/main/resources/application.yml`.
+  `404` anonymously. The secured security chain requires a bearer token for every management
+  endpoint other than the health/info probes used by the orchestrator (S04-11). See
+  `apps/agentflow-app/src/main/resources/application.yml`.
 
 - **Standardized JSON logging (`S01-19`).** The app now emits structured JSON on
   stdout through
