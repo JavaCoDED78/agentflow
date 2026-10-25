@@ -106,8 +106,12 @@ whether a foreign resource exists:
 - `404` — the resource is **not present in the caller's tenant** (this includes
   another tenant's resource, which is masked as missing, not `403`).
 
-The tenant comes only from the verified security context (`ADR-007`), never from
-the request body/query — so spoofing `tenantId` changes nothing.
+The tenant comes only from the verified security context (`ADR-007`), never from the request
+body/query — so spoofing `tenantId` changes nothing.
+
+The tenant-masking behaviour in detail — why a foreign resource is `404 not_found` (never
+`403`), the write-path invariant, and the capability/resource distinction — is the single source in
+[`docs/security/response-policy.md`](../security/response-policy.md) (S04-09).
 
 ---
 

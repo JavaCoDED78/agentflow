@@ -132,7 +132,9 @@ translation to Spring Security request matchers lives in `SecurityConfiguration`
   *capability* ("can approve"), while the tenant/ownership check authorizes the
   *resource* ("this run is yours"). A permission scope never replaces the per-resource
   tenant/ownership check (ADR-007).
-- **403/404 policy** (S04-09) decides how a missing/cross-tenant resource is masked;
-  the catalogue decides which capabilities exist.
+- **403/404 policy (S04-09)** decides how a missing/cross-tenant resource is masked — as a permanent
+  `404 not_found`, never a distinguishing `403`; the single source is
+  [`docs/security/response-policy.md`](../security/response-policy.md). The catalogue decides which
+  capabilities exist.
 - **Least privilege (S04-08)** assigns the minimum id(s) to each endpoint on top of
   this catalogue.

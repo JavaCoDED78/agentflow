@@ -97,6 +97,10 @@ where possible (`S02-08` rejects any edge outside the module-map table;
   and Kafka; state and the outbox record write in one transaction (`ADR-003`).
 - **Transactional outbox** between PostgreSQL and Kafka, polling publisher,
   idempotent publish by `event_id` (`ADR-004`).
+- **Versioned workflow DSL with no arbitrary code** — a versioned, typed JSON graph of
+  allowed steps (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`,
+  `LLM_EVALUATE`, `FINALIZE`); an invalid or unsafe graph is rejected before it is
+  serialized or activated (`ADR-005`).
 - **Tenant isolation** — the tenant comes only from the verified security context
   (HTTP or a stored event re-checked against PostgreSQL); another tenant's resource
   is indistinguishable from a missing one (`404`/`403`) (`ADR-007`, plan §11).

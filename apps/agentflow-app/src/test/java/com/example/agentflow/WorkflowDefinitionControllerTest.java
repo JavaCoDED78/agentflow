@@ -135,6 +135,27 @@ class WorkflowDefinitionControllerTest {
         .andExpect(jsonPath("$.error_class", equalTo("not_found")));
   }
 
+  /**
+   * A definition that belongs to another tenant is reported exactly like a missing one: {@code 404}
+   * with {@code error_class: not_found} (the 403/404 masking policy, S04-09, invariant 1). The
+   * tenant-scoped lookup returns empty for the wrong tenant, so the caller cannot tell a foreign
+   * resource from a non-existent one by the status or the problem body — guessing another tenant's
+   * UUID neither reads nor changes it. This is the HTTP-boundary half of the acceptance criterion
+   * (the service-level mapping is covered by {@code
+   * WorkflowDefinitionServiceTest.getDefinition_crossTenantIdReturnsNotFound}).
+   */
+  @Test
+  void get_crossTenantId_returnsNotFound_identicalToMissing() throws Exception {
+    when(service.getDefinition(any(UUID.class), any(UUID.class)))
+        .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "not found"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/workflows/" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class", equalTo("not_found")));
+  }
+
   @Test
   void get_invalidId_returnsBadRequest() throws Exception {
     // a non-UUID path value is a client error, not a 404
