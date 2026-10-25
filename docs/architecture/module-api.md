@@ -65,9 +65,14 @@ Each table lists:
 
 | Section | Contents |
 |---|---|
-| Public application services | `TenantContextService` — resolve tenant + verified actor **only** from the verified security context (HTTP `SecurityContext`) or a stored event re-checked against PostgreSQL; never from body/query/Kafka headers. `ClaimsToAuthoritiesMapper` — S04-04, the single place that maps the verified JWT's role claims into Spring Security authorities, validated against the `Permission` catalogue (deny-by-default, idempotent). `TenantService` — tenant lifecycle: create tenant, get tenant, set tenant `status`. |
+| Public application services | `TenantContextResolver` — resolve tenant + verified actor **only** from the verified security context (HTTP `SecurityContext`) or a stored event re-checked against PostgreSQL; never from body/query/Kafka headers. `ClaimsToAuthoritiesMapper` — S04-04, the single place that maps the verified JWT's role claims into Spring Security authorities, validated against the `Permission` catalogue (deny-by-default, idempotent). `TenantService` — tenant lifecycle: create tenant, get tenant, set tenant `status`. |
 | Published event types | none (the tenant is the trusted source; the `audit` module records the verified actor). |
-| Permitted public types | `TenantContext` (`tenantId`, `actorSubject`, `requiredScopes`), `TenantSummaryDto` (`id`, `slug`, `status`), `Permission` (S04-04 catalogue, the single source of truth for authority ids used by `ClaimsToAuthoritiesMapper`, the S04-08 endpoint access matrix and the Keycloak realm roles): `workflow:read`, `workflow:write`, `workflow:activate`, `document:read`, `document:write`, `run:execute`, `run:approve`, `ops:dlq`. |
+| Permitted public types | `TenantContext` (`tenantId`, `actor` — the immutable value threaded explicitly through
+  application services; `requiredScopes` is layered on by `TenantScope` in S04-07), `TenantSummaryDto`
+  (`id`, `slug`, `status`), `Permission` (S04-04 catalogue, the single source of truth for authority ids
+  used by `ClaimsToAuthoritiesMapper`, the S04-08 endpoint access matrix and the Keycloak realm roles):
+  `workflow:read`, `workflow:write`, `workflow:activate`, `document:read`, `document:write`,
+  `run:execute`, `run:approve`, `ops:dlq`. |
 | Internal packages | `persistence.TenantRepository`, security `KeycloakOidcAdapter`, `web` controllers. |
 
 ### `agentcatalog` — agents, model policy, tool allowlist
