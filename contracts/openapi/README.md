@@ -7,8 +7,8 @@ baseline update.
 ## Generation
 
 The file is generated **from the running application** by the Gradle task
-[`generateOpenApiContract`](apps/agentflow-app/build.gradle.kts), which runs
-[`OpenApiContractTool`](apps/agentflow-app/src/main/java/com/example/agentflow/tooling/OpenApiContractTool.java):
+[`generateOpenApiContract`](../../apps/agentflow-app/build.gradle.kts), which runs
+[`OpenApiContractTool`](../../apps/agentflow-app/src/main/java/com/example/agentflow/tooling/OpenApiContractTool.java):
 it boots the app on the default profile (no database required), waits for the
 live `/api/v1/v3/api-docs` endpoint, fetches the description and writes a
 *normalized* copy. Normalization drops the volatile ephemeral-port `servers`

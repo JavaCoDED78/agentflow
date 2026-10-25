@@ -28,6 +28,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operations) and the S04-08 additions to `SecurityFilterChainTest` (allowed/denied role-endpoint
   pairs through the HTTP boundary).
 
+- **403/404 masking policy (S04-09).** The security response policy is now written down as a
+  single, authoritative statement in [`docs/security/response-policy.md`](docs/security/response-policy.md):
+  a resource that exists but belongs to another tenant is **indistinguishable** from a resource
+  that does not exist — the response is always `404 not_found`, never `403`, so an attacker can
+  never probe a guessed UUID and learn that another tenant owns a resource with that id (invariant
+  1 / `ADR-007`). The policy makes the capability/resource distinction explicit: a `403`
+  (`authorization`, `tool_policy_denial`) signals a *capability* problem — the caller lacks the
+  scope for the *action* and the security layer denies before any resource is looked up — while a
+  `404` signals a *resource* problem — a verified caller with the capability requested a resource
+  that is not `(tenant_id, resource_id)`-scoped to them. The `tenant_id` comes only from the
+  verified security context, so spoofing it cannot turn a `404` into a `403`. The write path does
+  not leak either: a conditional update (`updateMetadata`) takes a `current` that the tenant-scoped
+  read already returned and re-checks `tenant_id` in its `WHERE`, so a zero-rows outcome surfaces
+  as a `409 conflict` — but the write can only start from a `current` the read already proved, so
+  a foreign resource can never reach that path. The global error handler (`S03-11`) renders every
+  `404` as the permanent `not_found`, so the status, `error_class`/`code` and `retryable` flag are
+  identical for foreign and missing. This formalises the masking behaviour first implemented in
+  `S04-07` (the service maps an empty tenant-scoped lookup to `404 not_found`; the repository
+  scopes every lookup by `tenant_id` in SQL). It complements — does not duplicate — the error
+  taxonomy (`docs/architecture/error-taxonomy.md`, `S02-10`, the canonical `error_class` set) and
+  the permission catalogue (`docs/security/permissions.md`, `S04-04`, which decides the `403`
+  capability side). Cross-referenced from `error-taxonomy.md`, `permissions.md` and the `docs/`
+  index; the `⚠ planned (S11)` badge in the security index is left for the still-planned
+  authn/authz + secrets policy. Verification: `WorkflowDefinitionControllerTest`
+  (`get_crossTenantId_returnsNotFound_identicalToMissing`) asserts a foreign-tenant read returns
+  `404 not_found` — the HTTP-boundary half of the acceptance criterion, alongside the existing
+  `get_missingDefinition_returnsNotFound` (both indistinguishable) and the service-level
+  `WorkflowDefinitionServiceTest.getDefinition_crossTenantIdReturnsNotFound`;
+  `./gradlew :apps:agentflow-app:test` is green.
+
 - **Tenant-scoped access (S04-07).** Every read and write against a tenant-scoped
   resource is scoped by the pair `(tenant_id, resource_id)` — the `tenant_id` is a
   predicate in the SQL itself (`workflowdefinition.persistence.WorkflowDefinitionRepository`),

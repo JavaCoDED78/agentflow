@@ -191,7 +191,7 @@ module per migration) are in
 
 - General rules: [`AGENTS.md`](AGENTS.md)
 - Documentation index: [`docs/README.md`](docs/README.md) — where every topic lives (current and `planned`)
-- Module docs: [`docs/AGENTS.md`](docs/AGENTS.md), [`apps/AGENTS.md`](apps/AGENTS.md)
+- Module docs: [`docs/AGENTS.md`](docs/AGENTS.md), [`apps/agentflow-app/AGENTS.md`](apps/agentflow-app/AGENTS.md)
 - Product boundaries: [`docs/product-scope.md`](docs/product-scope.md)
 - Contracts: [`contracts/`](contracts/) — OpenAPI, event schemas, AsyncAPI
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)

@@ -1,7 +1,7 @@
 # Contributing to AgentFlow
 
 Contribution rules for the AgentFlow repository. The detailed rules live in the
-root [`AGENTS.md`](../AGENTS.md) and the documentation conventions in
+root [`AGENTS.md`](AGENTS.md) and the documentation conventions in
 [`docs/AGENTS.md`](docs/AGENTS.md); this file is the short, practical guide for
 a new contributor. Follow them so every change stays reviewable, testable, and
 safe to run.
@@ -9,7 +9,7 @@ safe to run.
 ## Before you start
 
 - Read [`docs/AGENTS.md`](docs/AGENTS.md) (documentation conventions) and the
-  root [`AGENTS.md`](../AGENTS.md) (invariants, module rules, tests) first.
+  root [`AGENTS.md`](AGENTS.md) (invariants, module rules, tests) first.
 - Pick a task from `AGENTFLOW_ARCHITECTURE_AND_PLAN.md`, referenced by its id
   (`S##-##`). Prefer the smallest complete change that satisfies the task's
   acceptance criteria; do not widen scope or refactor unrelated code.
@@ -77,7 +77,7 @@ safe to run.
 ## Changelog
 
 - Add a user-visible entry under `[Unreleased]` in
-  [`CHANGELOG.md`](../CHANGELOG.md) (categories `Added` / `Changed` / `Fixed` /
+  [`CHANGELOG.md`](CHANGELOG.md) (categories `Added` / `Changed` / `Fixed` /
   `Security`) for notable API, event, security or operational changes.
 - If nothing in `CHANGELOG.md` needs updating, record `N/A` with a reason in the
   PR template rather than leaving an empty entry.

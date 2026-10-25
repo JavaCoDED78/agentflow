@@ -20,7 +20,11 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-002`](ADR-002-postgresql-source-of-truth.md) | PostgreSQL is the source of truth for workflow state | 2026-10-20 | S02-06 | Accepted |
 | [`ADR-003`](ADR-003-at-least-once-idempotency.md) | At-least-once delivery + idempotency | 2026-10-20 | S02-06 | Accepted |
 | [`ADR-004`](ADR-004-transactional-outbox.md) | Transactional outbox between PostgreSQL and Kafka | 2026-10-20 | S02-06 | Accepted |
+| [`ADR-005`](ADR-005-versioned-workflow-dsl.md) | Versioned workflow DSL with no arbitrary code | 2026-10-25 | S03-09 | Accepted |
+| [`ADR-006`](ADR-006-untrusted-planner.md) | The model is an untrusted planner, never an authorization authority | 2026-10-25 | S09 | Accepted |
+| [`ADR-007`](ADR-007-tenant-isolation.md) | Tenant isolation by default | 2026-10-25 | S04-07 | Accepted |
 | [`ADR-008`](ADR-008-database-migrations.md) | Single migration tool: Flyway | 2026-10-21 | S03-01 | Accepted |
+| [`ADR-009`](ADR-009-single-persistence-spring-data-jdbc.md) | Single persistence approach — Spring Data JDBC | 2026-10-22 | S03-08 | Accepted |
 | — | S3-compatible object storage: Garage for the local stack | 2026-10-18 | S01-15 | Accepted |
 
 ## Statuses
