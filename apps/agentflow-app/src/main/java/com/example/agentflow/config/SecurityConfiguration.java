@@ -44,9 +44,11 @@ import org.springframework.security.web.SecurityFilterChain;
  * <ul>
  *   <li>the <strong>secured</strong> chain, active on every non-test profile (default, local,
  *       kubernetes) and on the {@code secured-test} profile used by the security-layer test;
- *   <li>a <strong>permissive</strong> chain active only on the {@code test} profile, so the many
- *       existing tests that exercise controllers without authenticating keep working. A permissive
- *       principal never runs on the kubernetes or production profile (see S04-10).
+ *   <li>a <strong>permissive</strong> chain (S04-10) that lives in the <em>test</em> source set and
+ *       is active only on the {@code test} profile, so the many existing tests that exercise
+ *       controllers without authenticating keep working. Moving it out of {@code src/main} means
+ *       the permissive chain never ships in the production jar — a misconfigured profile can no
+ *       longer open the API (see S04-10).
  * </ul>
  */
 @Configuration
@@ -104,8 +106,8 @@ class SecurityConfiguration {
    * chain registers it as the {@link JwtAuthenticationConverter}, so every entry point — HTTP
    * controllers, Kafka listeners, scheduled jobs — derives the principal's {@code
    * workflow:read}/{@code run:execute}/… authorities from the same catalogue; controllers never
-   * parse the JWT themselves. The permissive {@code test} chain leaves the default converter in
-   * place.
+   * parse the JWT themselves. The test-only permissive chain (S04-10) leaves the default converter
+   * in place.
    *
    * @param mapper the claims-to-authorities converter
    * @return the {@link JwtAuthenticationConverter}
@@ -221,23 +223,6 @@ class SecurityConfiguration {
             oauth.jwt(
                 jwt ->
                     jwt.decoder(decoder).jwtAuthenticationConverter(jwtAuthenticationConverter)));
-    return http.build();
-  }
-
-  /**
-   * The permissive chain, active only on the {@code test} profile. Existing tests exercise
-   * controllers without authenticating, so on that profile every request is permitted. It never
-   * runs on the kubernetes or production profile.
-   *
-   * @param http the HTTP security customizer
-   * @return the permissive {@link SecurityFilterChain}
-   * @throws Exception if the chain cannot be built
-   */
-  @Bean
-  @Profile("test")
-  SecurityFilterChain permissiveSecurityFilterChain(HttpSecurity http) throws Exception {
-    http.csrf(AbstractHttpConfigurer::disable)
-        .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
     return http.build();
   }
 }

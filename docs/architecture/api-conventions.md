@@ -47,8 +47,10 @@ reach this API only through the HTTP contract — never by importing the control
   context, never from the request body, query or headers — invariant 1. In this
   sprint the tenant is read from application configuration
   (`agentflow.local.tenant-id`, defaulting to the zero UUID `00000000-...`); this
-  is a temporary local-skeleton bypass that is removed in **S04-10**, when the
-  tenant comes from the verified security context.
+  is a temporary local-skeleton tenant-isolation bypass left as a follow-up —
+  threading the tenant from the verified context needs a new `workflowdefinition`
+  → `identity` edge (an ADR), so it was not removed by S04-10 (which removed only
+  the permissive mock-auth chain) but is tracked for a later tenant-isolation task.
 - **Content type.** JSON (`application/json`), `camelCase` API fields.
 
 ---

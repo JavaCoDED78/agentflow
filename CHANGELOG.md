@@ -117,7 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   well-formed `tenant_id` claim (no membership, or a non-UUID id) resolves to **no tenant** and is
   denied, never defaulted to a fallback. `tenant_id` is **never** taken from the request body,
   query or Kafka header (invariant 1 / `ADR-007`); the temporary `${agentflow.local.tenant-id}`
-  local-skeleton default (S03-13/S03-14) stays until `S04-10` removes it. The extraction primitive
+  local-skeleton default (S03-13/S03-14) remains a tenant-isolation bypass: threading the tenant
+  from the verified context needs a new `workflowdefinition` → `identity` edge (an ADR), so it is a
+  documented follow-up rather than an S04-10 change. The extraction primitive
   seeds the `TenantContext` (S04-06) that threads the tenant through the application and re-checks
   it against PostgreSQL for async workers. Acceptance ("substituting another tenant's id does not
   change the access scope") is enforced by construction; the `S04-13` HTTP-boundary suite is the
@@ -322,7 +324,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   {@code size}, {@code totalElements}, {@code totalPages}, {@code hasNext}) and {@code GET
   /api/v1/workflows/{workflowId}} returns a single definition (a cross-tenant id is a {@code 404}
   {@code not_found}, never a {@code 403}). Both read the {@code tenantId} from the trusted security
-  context (the S03-13 local-skeleton {@code @Value} default, removed in S04-10) and filter by
+  context (the S03-13 local-skeleton {@code @Value} default is a tenant-isolation bypass left as a
+  follow-up — threading it from the verified context needs a new `workflowdefinition` → `identity`
+  edge, an ADR) and filter by
   {@code tenant_id} in the SQL itself (invariant 1). {@code WorkflowDefinitionService} gains
   {@code listDefinitions(tenantId, page, requestedSize)} — clamps {@code size} to a configured
   maximum ({@code MAX_PAGE_SIZE = 100}) so one call cannot pull the whole collection, rejects a
@@ -361,8 +365,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   {@code createdBy}, {@code createdAt}). The {@code tenantId} is read from application
   configuration (`@Value("${agentflow.local.tenant-id:...}")`, defaulting to the zero UUID), not
   from the request body (invariant 1 — the tenant is never derived from input); this is a
-  temporary local-skeleton bypass removed in S04-10 when the tenant comes from the verified
-  security context. `WorkflowDefinitionService.createDefinition(tenantId, actor, name,
+  temporary local-skeleton tenant-isolation bypass left as a follow-up — threading the tenant from
+  the verified context needs a new `workflowdefinition` → `identity` edge (an ADR).
+  `WorkflowDefinitionService.createDefinition(tenantId, actor, name,
   description)` owns the use case: it builds the {@code WorkflowDefinition.draft} with the
   caller-supplied tenant and records it through the tenant-scoped {@code WorkflowDefinitionRepository}.
   The repository bean is only present when a {@code DataSource} exists, so the dependency is
@@ -1178,6 +1183,26 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
 
 ### Security
 
-- No security advisories yet. Security-relevant changes (for example the repo
+- **Local auth bypass removed (S04-10).** The permissive {@code test}-profile
+  {@code SecurityFilterChain} — the temporary local mock-auth that let the many controller tests
+  run without a verified JWT — is no longer part of the production artifact. It moved to a
+  test-only config
+  ({@code apps/agentflow-app/src/test/java/com/example/agentflow/security/TestOnlySecurityConfiguration.java},
+  {@code @Profile("test")}), so the permissive chain can never ship in the jar. On the {@code test}
+  profile the secured chain ({@code @Profile("!test")}) is absent, so exactly one chain is
+  registered; on every other profile the secured chain is the only one. Even a misconfigured
+  deployment that activates the {@code test} profile can no longer open the API: the
+  production/kubernetes profile never starts with a permissive principal (the S04-10 acceptance
+  criterion). The {@code jwtDecoder} / {@code jwtAuthenticationConverter} beans and the {@code
+  secured-test} profile (the in-memory-key secured chain) are unchanged; {@code ./gradlew
+  :apps:agentflow-app:test} is green — the {@code test}-profile suites ({@code
+  ConfigurationTestProfileTest}, {@code HealthEndpointsTest}, {@code
+  GlobalExceptionHandlerTest}) still boot the permissive chain, and {@code
+  SecurityFilterChainTest} still runs the secured chain on {@code secured-test}. The
+  {@code ${agentflow.local.tenant-id}} local default (S03-13/S03-14) is a *separate*
+  tenant-isolation bypass that this sprint deliberately did not remove (threading the tenant from
+  the verified context needs a new `workflowdefinition` → `identity` edge, an ADR) and is tracked
+  as a follow-up.
+- Security-relevant changes (for example the repo
   secret hygiene, `S01-11`) are recorded under `Added`; dedicated security
   entries use this section going forward (see `CONTRIBUTING.md`).

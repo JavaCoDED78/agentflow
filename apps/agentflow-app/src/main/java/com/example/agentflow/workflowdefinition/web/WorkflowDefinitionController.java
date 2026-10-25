@@ -28,8 +28,10 @@ import org.springframework.web.bind.annotation.RestController;
  * the {@code tenantId} filters every read in SQL (S03-14, invariant 1).
  *
  * <p>The {@code tenantId} is read from application configuration, not from the request body
- * (invariant 1 — the tenant is never derived from input). This is a temporary local-skeleton
- * bypass; the tenant comes from the verified security context (S04-10) in later sprints.
+ * (invariant 1 — the tenant is never derived from input). This {@code agentflow.local.tenant-id}
+ * default is a temporary local-skeleton tenant-isolation bypass left as a follow-up: threading the
+ * tenant from the verified security context needs a new `workflowdefinition` → `identity` edge (an
+ * ADR), so it is tracked separately rather than removed with the S04-10 permissive-auth fix.
  */
 @RestController
 @RequestMapping("/api/v1/workflows")
