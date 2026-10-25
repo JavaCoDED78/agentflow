@@ -5,9 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.agentflow.audit.application.AuditService;
+import com.example.agentflow.audit.domain.AuditAction;
+import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowDefinitionRepository;
 import java.util.Collections;
@@ -27,10 +31,11 @@ import org.springframework.web.server.ResponseStatusException;
 class WorkflowDefinitionServiceTest {
 
   @Mock private WorkflowDefinitionRepository repository;
+  @Mock private AuditService auditService;
 
   @Test
   void createDefinition_buildsDraftWithTenantId() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     WorkflowDefinition stub = WorkflowDefinition.draft(tenant, "Report", null, "local");
@@ -47,11 +52,21 @@ class WorkflowDefinitionServiceTest {
     assertThat(created.createdBy()).isEqualTo("local");
     assertThat(created.status()).isEqualTo(WorkflowDefinition.DRAFT);
     assertThat(created.version()).isEqualTo(0);
+
+    // a successful create records an audit event (S04-12); it is linked to the calling actor and
+    // carries no credential
+    verify(auditService)
+        .record(
+            eq(tenant),
+            eq("local"),
+            eq(AuditAction.CREATE),
+            eq(AuditResourceType.WORKFLOW_DEFINITION),
+            eq(stub.id()));
   }
 
   @Test
   void createDefinition_reportsDuplicateNameAsConflict() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000002");
     when(repository.insert(any(WorkflowDefinition.class)))
         .thenThrow(new DataIntegrityViolationException("unique (tenant_id, name) violated"));
@@ -65,8 +80,26 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
+  void createDefinition_doesNotRecordAuditWhenInsertFails() {
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    when(repository.insert(any(WorkflowDefinition.class)))
+        .thenThrow(new DataIntegrityViolationException("unique (tenant_id, name) violated"));
+
+    assertThatThrownBy(() -> service.createDefinition(tenant, "local", "Report", null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+
+    // no definition was created, so no audit event is written
+    verify(auditService, never()).record(any(), any(), any(), any(), any());
+  }
+
+  @Test
   void createDefinition_withoutDatabaseIsUnavailable() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(null);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(null, null);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000003");
 
     assertThatThrownBy(() -> service.createDefinition(tenant, "local", "Report", null))
@@ -79,7 +112,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void listDefinitions_returns_tenant_scoped_page_with_pagination_metadata() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
     WorkflowDefinition a = WorkflowDefinition.draft(tenant, "A", null, "local");
     WorkflowDefinition b = WorkflowDefinition.draft(tenant, "B", null, "local");
@@ -99,7 +132,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void listDefinitions_clamps_oversized_size_to_max_page_size() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
     when(repository.listByTenant(any(UUID.class), anyInt(), anyInt()))
         .thenReturn(Collections.emptyList());
@@ -115,7 +148,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void listDefinitions_rejects_non_positive_size() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
 
     assertThatThrownBy(() -> service.listDefinitions(tenant, 0, 0))
@@ -128,7 +161,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void listDefinitions_rejects_negative_page() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
 
     assertThatThrownBy(() -> service.listDefinitions(tenant, -1, 10))
@@ -141,7 +174,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void listDefinitions_withoutDatabaseIsUnavailable() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(null);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(null, null);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
 
     assertThatThrownBy(() -> service.listDefinitions(tenant, 0, 10))
@@ -154,7 +187,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void getDefinition_returns_tenant_scoped_definition() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-00000000000a");
     UUID id = UUID.randomUUID();
     WorkflowDefinition def = WorkflowDefinition.draft(tenant, "Report", null, "local");
@@ -167,7 +200,7 @@ class WorkflowDefinitionServiceTest {
 
   @Test
   void getDefinition_crossTenantIdReturnsNotFound() {
-    WorkflowDefinitionService service = new WorkflowDefinitionService(repository);
+    WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-00000000000a");
     UUID id = UUID.randomUUID();
     // another tenant's id: the tenant-scoped lookup returns empty, so this is a 404, not a 403

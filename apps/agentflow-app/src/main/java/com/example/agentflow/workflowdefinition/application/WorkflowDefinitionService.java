@@ -1,5 +1,8 @@
 package com.example.agentflow.workflowdefinition.application;
 
+import com.example.agentflow.audit.application.AuditService;
+import com.example.agentflow.audit.domain.AuditAction;
+import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowDefinitionRepository;
 import java.util.List;
@@ -8,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -36,17 +40,26 @@ public class WorkflowDefinitionService {
   private static final int MAX_PAGE_SIZE = 100;
 
   private final WorkflowDefinitionRepository repository;
+  private final AuditService auditService;
 
   public WorkflowDefinitionService(
-      @Autowired(required = false) WorkflowDefinitionRepository repository) {
+      @Autowired(required = false) WorkflowDefinitionRepository repository,
+      AuditService auditService) {
     this.repository = repository;
+    this.auditService = auditService;
   }
 
   /**
    * Creates a DRAFT workflow definition owned by {@code tenantId}.
    *
+   * <p>The definition insert and its audit record (see {@link AuditService}) are written in one
+   * transaction: a definition is never created without its audit trail, and a failed audit write
+   * rolls the definition back with it (S04-12, invariant 3). A successful create records an {@link
+   * AuditAction#CREATE} event for the {@link AuditResourceType#WORKFLOW_DEFINITION} with the
+   * calling {@code actor} — so the mutation links to an actor without carrying any credential.
+   *
    * @param tenantId the owning tenant, resolved from the trusted security context
-   * @param actor the authenticated actor recorded as {@code created_by}
+   * @param actor the authenticated actor recorded as {@code created_by} and in the audit trail
    * @param name the unique, per-tenant definition name
    * @param description optional free-text description
    * @return the persisted definition
@@ -54,6 +67,7 @@ public class WorkflowDefinitionService {
    *     the same {@code name} already exists for this tenant (the {@code (tenant_id, name)} unique
    *     constraint, ADR-009)
    */
+  @Transactional
   public WorkflowDefinition createDefinition(
       UUID tenantId, String actor, String name, String description) {
     if (repository == null) {
@@ -63,7 +77,14 @@ public class WorkflowDefinitionService {
     }
     WorkflowDefinition definition = WorkflowDefinition.draft(tenantId, name, description, actor);
     try {
-      return repository.insert(definition);
+      WorkflowDefinition inserted = repository.insert(definition);
+      auditService.record(
+          tenantId,
+          actor,
+          AuditAction.CREATE,
+          AuditResourceType.WORKFLOW_DEFINITION,
+          inserted.id());
+      return inserted;
     } catch (DataIntegrityViolationException e) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT,

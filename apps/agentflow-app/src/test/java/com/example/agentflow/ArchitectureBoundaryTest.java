@@ -65,7 +65,7 @@ class ArchitectureBoundaryTest {
       Map.ofEntries(
           Map.entry("identity", Set.of("identity")),
           Map.entry("agentcatalog", Set.of("agentcatalog", "identity")),
-          Map.entry("workflowdefinition", Set.of("workflowdefinition", "agentcatalog")),
+          Map.entry("workflowdefinition", Set.of("workflowdefinition", "agentcatalog", "audit")),
           Map.entry(
               "workflowexecution", Set.of("workflowexecution", "workflowdefinition", "messaging")),
           Map.entry(
