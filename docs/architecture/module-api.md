@@ -153,7 +153,7 @@ Each table lists:
 |---|---|
 | Public application services | `AuditService` — write an immutable append-only record (actor, tenant, action, resource, outcome, correlationId, redacted metadata) in one transaction or via a controlled outbox. |
 | Published event types | none. |
-| Permitted public types | `AuditEventDto` (`id`, `tenantId`, `actorSubject`, `action`, `resourceType`, `resourceId`, `outcome`, `correlationId`, `metadataRedacted`, `createdAt`). |
+| Permitted public types | `AuditEvent` — the immutable, append-only value type persisted as one `audit_events` row (`id`, `tenantId`, `actorSubject`, `action`, `resourceType`, `resourceId`, `outcome`, `correlationId`, `metadataRedacted`, `createdAt`), plus the `AuditAction` / `AuditResourceType` / `AuditOutcome` enums. All four live in the `domain` package (the value types are the only public surface the `workflowdefinition`/`toolexecution` modules cross, together with the `AuditService` port). |
 | Internal packages | `persistence.AuditRepository`. |
 
 ### `messaging` — outbox, inbox, envelope/versioning, publisher/consumer, DLQ
