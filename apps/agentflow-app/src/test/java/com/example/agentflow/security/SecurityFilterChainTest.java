@@ -45,11 +45,11 @@ import org.springframework.web.client.NoOpResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Verifies the S04-03 and S04-08 acceptance criteria through the HTTP boundary. The S04-03 checks
- * (missing/expired/tampered/mis-issued token → {@code 401}) live alongside the S04-08 access-matrix
- * checks: a valid token that does not hold the single permission an endpoint requires is rejected
- * with {@code 403 Forbidden} at the secured {@code SecurityFilterChain} (default-deny, least
- * privilege), while a valid token that holds the permission passes the security layer. The
+ * Verifies the S04-03, S04-08 and S04-11 acceptance criteria through the HTTP boundary. The S04-03
+ * checks (missing/expired/tampered/mis-issued token → {@code 401}) live alongside the S04-08
+ * access-matrix checks: a valid token that does not hold the single permission an endpoint requires
+ * is rejected with {@code 403 Forbidden} at the secured {@code SecurityFilterChain} (default-deny,
+ * least privilege), while a valid token that holds the permission passes the security layer. The
  * rejections are attributed to the real reasons (signature/expiry/issuer/audience) rather than to
  * an unreachable Keycloak.
  *
@@ -286,6 +286,24 @@ class SecurityFilterChainTest {
     assertThat(response.getStatusCode())
         .isNotEqualTo(HttpStatus.UNAUTHORIZED)
         .isNotEqualTo(HttpStatus.FORBIDDEN);
+  }
+
+  // --- S04-11: restricted actuator endpoints through the HTTP boundary ---
+
+  @Test
+  void sensitiveManagementEndpointsAreNotReachableAnonymously() {
+    // env / configprops / beans / mappings are not in the exposure allow-list (S01-18), and the
+    // secured chain's anyRequest().authenticated() (S04-11) rejects an unauthenticated request to
+    // any non-probe path with 401 before it reaches the dispatcher — so these endpoints are never
+    // reachable anonymously. A verified caller then meets a 404 (the endpoint is not registered),
+    // which is the least-exposure layer on top.
+    String[] sensitive = {
+      "/actuator/env", "/actuator/configprops", "/actuator/beans", "/actuator/mappings"
+    };
+    for (String path : sensitive) {
+      ResponseEntity<String> response = rest.getForEntity(baseUrl() + path, String.class);
+      assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
   }
 
   /** A second, unrelated RSA key used to exercise the signature-rejection path. */
