@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TenantContext abstraction (S04-06).** The tenant is now threaded through the
+  application as one immutable value — {@code TenantContext}
+  ({@code identity/application/TenantContext}) — carrying only {@code tenantId}
+  (a {@code UUID}) and the verified {@code actor}, so the tenant is a single,
+  explicit method argument instead of something each entry point derives itself.
+  {@code TenantContextResolver}
+  ({@code identity/application/TenantContextResolver}, a {@code @Component}) is the
+  single place the trusted tenant is pulled out of the security context: it reads
+  the tenant from the <em>verified</em> OAuth 2.0 JWT the Resource Server (S04-03)
+  has already validated (signature, issuer, audience, expiry) and turns the
+  {@code Authentication} principal into a {@code TenantContext}, so this is the one
+  place {@code tenant_id} comes from for a request. Because it is a plain
+  immutable value threaded as an argument — never a {@code ThreadLocal} or any
+  shared, per-request state — parallel requests from different tenants cannot mix
+  context (invariant 1 / the S04-06 acceptance criterion). Async workers
+  (workflow/ingestion roles) have no HTTP {@code SecurityContext}: the resolver
+  offers {@code resolveFromStoredTenant(UUID, actor)} for the worker path, where
+  the tenant is the {@code tenant_id} of the stored run re-read from PostgreSQL
+  (the source of truth, ADR-002) and re-checked against the run actually being
+  processed; the {@code Kafka} envelope's {@code tenantId} is routing/correlation
+  only, never trusted. {@code WorkflowDefinitionController} (S03-13) is left
+  untouched — it reads the tenant from configuration until {@code S04-10} moves it
+  to the verified context — and its local default keeps working. Denials use
+  {@code ResponseStatusException} with {@code ErrorClass.AUTHENTICATION} → {@code
+  401}. Unit-tested in {@code TenantContextResolverTest}: the happy path from a
+  verified JWT, denial without a membership claim, denial of a non-UUID
+  {@code tenant_id}, resolution from the {@code SecurityContext} principal, denial
+  when the principal is not a verified JWT, the worker path from the stored run,
+  and the acceptance criterion — {@code parallelRequestsFromDifferentTenantsDoNotMixContext},
+  which resolves many tenants concurrently through one singleton resolver and
+  asserts each returns its own tenant. {@code docs/security/tenant-claim.md}
+  already documents this resolver as the concrete realisation of S04-06.
+  {@code ./gradlew check} is green (unit + architecture boundary gate + formatting).
+
 - **Trusted tenant claim (S04-05).** The tenant in an authenticated request is carried by the
   `tenant_id` Keycloak claim — a mapped claim present only when the user has a tenant membership —
   and is read **only** from the OAuth 2.0 JWT the Resource Server (S04-03) has already verified

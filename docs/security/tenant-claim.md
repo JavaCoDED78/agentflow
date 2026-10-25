@@ -45,9 +45,10 @@ member of any tenant simply gets no `tenant_id` claim. The realm import is
 ## Relation to the other Sprint 4 tasks
 
 - **`S04-03` Resource Server** — verifies the token the claim rides on (signature/issuer/audience/expiry).
-- **`S04-06` `TenantContext`** — reads the `Jwt` from the `SecurityContext`, extracts the tenant with
-  `TenantClaimExtractor`, passes it explicitly through application services, and for async workers
-  re-checks the tenant of the stored run/event against PostgreSQL.
+- **`S04-06` `TenantContext`** — the `TenantContextResolver` bean reads the `Jwt` from the
+  `SecurityContext`, extracts the tenant with `TenantClaimExtractor`, and returns an immutable
+  `TenantContext` threaded explicitly through application services; for async workers the
+  same resolver reads the tenant of the stored run/event against PostgreSQL.
 - **`S04-07` tenant-scoped access** — resolves resources by `(tenant_id, resource_id)`; another
   tenant's resource is indistinguishable from a missing one.
 - **`S04-10` remove the local auth bypass** — the temporary `${agentflow.local.tenant-id}` default
