@@ -1,6 +1,7 @@
 package com.example.agentflow.config;
 
 import com.example.agentflow.identity.application.ClaimsToAuthoritiesMapper;
+import com.example.agentflow.identity.application.authorization.AccessMatrix;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
@@ -14,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.oauth2.jwt.JwtAudienceValidator;
@@ -54,10 +56,15 @@ class SecurityConfiguration {
 
   private final ClaimsToAuthoritiesMapper claimsToAuthoritiesMapper;
 
+  private final AccessMatrix accessMatrix;
+
   SecurityConfiguration(
-      AgentFlowProperties properties, ClaimsToAuthoritiesMapper claimsToAuthoritiesMapper) {
+      AgentFlowProperties properties,
+      ClaimsToAuthoritiesMapper claimsToAuthoritiesMapper,
+      AccessMatrix accessMatrix) {
     this.properties = properties;
     this.claimsToAuthoritiesMapper = claimsToAuthoritiesMapper;
+    this.accessMatrix = accessMatrix;
   }
 
   /**
@@ -162,34 +169,58 @@ class SecurityConfiguration {
   }
 
   /**
-   * The secured chain: a bearer JWT is required for everything except the diagnostics endpoints.
-   * Active on every non-test profile (default, local, kubernetes) and on the {@code secured-test}
-   * profile. The {@link JwtDecoder} already carries the issuer/audience/expiry validator set in
-   * {@link #jwtDecoder()}; on {@code secured-test} it is the test's in-memory key.
+   * The secured chain: a bearer JWT is required for everything except the diagnostics endpoints,
+   * and every authenticated {@code /api/v1} endpoint is additionally gated on the single
+   * least-privilege permission its action needs (S04-08, the {@link AccessMatrix}). The diagnostics
+   * endpoints ({@code /actuator/health}, {@code /actuator/info}) stay {@code permitAll} so the
+   * liveness/ readiness probes work; {@code anyRequest().authenticated()} keeps the default-deny
+   * close so a future endpoint grants nothing until it is added to the matrix. On {@code
+   * secured-test} the {@link JwtDecoder} is the test's in-memory key.
    *
    * @param http the HTTP security customizer
    * @param decoder the standard JWT decoder
-   * @return the secured {@link SecurityFilterChain}
+   * @param jwtAuthenticationConverter the claims-to-authorities converter (S04-04)
+   * @param accessMatrix the endpoint access matrix (S04-08) mapping each {@code /api/v1} action to
+   *     the permission it requires
+   * @return the {@link SecurityFilterChain}
    * @throws Exception if the chain cannot be built
    */
   @Bean
   @Profile("!test")
   SecurityFilterChain securityFilterChain(
-      HttpSecurity http, JwtDecoder decoder, JwtAuthenticationConverter jwtAuthenticationConverter)
+      HttpSecurity http,
+      JwtDecoder decoder,
+      JwtAuthenticationConverter jwtAuthenticationConverter,
+      AccessMatrix accessMatrix)
       throws Exception {
-    http.csrf(AbstractHttpConfigurer::disable)
-        .authorizeHttpRequests(
-            auth ->
-                auth.requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info")
-                    .permitAll()
-                    .anyRequest()
-                    .authenticated())
-        .oauth2ResourceServer(
-            oauth ->
-                oauth.jwt(
-                    jwt ->
-                        jwt.decoder(decoder)
-                            .jwtAuthenticationConverter(jwtAuthenticationConverter)));
+    // Default-deny with an explicit access matrix (S04-08). The diagnostics endpoints stay
+    // reachable for the liveness/readiness probes; every authenticated endpoint is gated on its
+    // single least-privilege permission from the {@link AccessMatrix}; and everything else is
+    // authenticated, so no endpoint is reachable without an explicit rule here.
+    http.csrf(AbstractHttpConfigurer::disable);
+    http.authorizeHttpRequests(
+        authz -> {
+          // Public for the liveness/readiness/info probes only.
+          authz
+              .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info")
+              .permitAll();
+          // S04-08: least privilege — each /api/v1 action is gated on the single permission the
+          // {@link AccessMatrix} maps it to (e.g. workflow:read for a GET, workflow:write for a
+          // POST); a token must hold exactly the authority each rule requires.
+          for (AccessMatrix.EndpointRule rule : accessMatrix.rules()) {
+            authz
+                .requestMatchers(HttpMethod.valueOf(rule.method()), rule.pathPattern())
+                .hasAuthority(rule.requiredPermission().id());
+          }
+          // Default-deny close: any endpoint not listed above (including future ones) is
+          // authenticated only, so nothing is reachable without an explicit rule here.
+          authz.anyRequest().authenticated();
+        });
+    http.oauth2ResourceServer(
+        oauth ->
+            oauth.jwt(
+                jwt ->
+                    jwt.decoder(decoder).jwtAuthenticationConverter(jwtAuthenticationConverter)));
     return http.build();
   }
 

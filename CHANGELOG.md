@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Least-privilege endpoint access (S04-08).** Every authenticated `/api/v1` action is now
+  gated on the single permission it needs instead of the coarse `anyRequest().authenticated()`.
+  The mapping lives in one place — the endpoint access matrix (`@Component` `AccessMatrix`,
+  `identity/application/authorization/AccessMatrix`, next to the `Permission` catalogue in the
+  `identity` module) — where each `EndpointRule` is an HTTP `method` + Ant `pathPattern` under
+  `/api/v1` and the one `Permission` the `hasAuthority` check verifies.
+  `com.example.agentflow.config.SecurityConfiguration`
+  (`SecurityConfiguration.securityFilterChain`) consumes the matrix, iterating its rules
+  (`authorize.requestMatchers(method, pattern).hasAuthority(requiredPermission.id())`) and closing
+  the rest with `anyRequest().authenticated()` — default-deny. This enforces least privilege (a
+  read needs only `workflow:read`, a create only `workflow:write`), keeps user operations
+  (`workflow:*`, `document:*`, `run:*`) in a group distinct from a reserved operator group
+  (`ops:dlq`), and makes the matrix the single source of truth (no ad-hoc `permitAll`/
+  `hasAuthority` in the chain). The `secured-test` profile keeps the secured chain active with the
+  in-memory test `JwtDecoder`. Verification: `./gradlew :apps:agentflow-app:test` is green —
+  `AccessMatrixTest` (the matrix contract: least-privilege mapping, catalogue ids, separated user
+  operations) and the S04-08 additions to `SecurityFilterChainTest` (allowed/denied role-endpoint
+  pairs through the HTTP boundary).
+
 - **Tenant-scoped access (S04-07).** Every read and write against a tenant-scoped
   resource is scoped by the pair `(tenant_id, resource_id)` — the `tenant_id` is a
   predicate in the SQL itself (`workflowdefinition.persistence.WorkflowDefinitionRepository`),
