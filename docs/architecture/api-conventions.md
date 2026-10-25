@@ -130,7 +130,17 @@ missing) is a `409 conflict`. Two writers cannot silently overwrite each other.
 a post-filter. A foreign tenant's definition is indistinguishable from a missing
 one: it is reported as a permanent `404 not_found`, never a `403`, so the
 existence of another tenant's resource cannot be probed through the error
-message (`404`/`403` policy).
+message (404`/`403 policy).
+
+### Child resources carry the tenant too
+
+A resource's children are looked up by the *owning* tenant, never by their own id in
+isolation. A child lookup is scoped by the pair `(tenant_id, child_id)` as well, so a
+guessed child id from another tenant is again indistinguishable from a missing one
+(`404 not_found`). The parent's tenant is the trust anchor: a child id is never an
+authorization on its own (invariant 1 / `S04-07`). When a module owns child resources
+(a workflow definition's runs, a knowledge base's documents), the child repository
+applies the same tenant predicate it applies to the parent.
 
 ---
 

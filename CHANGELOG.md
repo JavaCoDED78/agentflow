@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tenant-scoped access (S04-07).** Every read and write against a tenant-scoped
+  resource is scoped by the pair `(tenant_id, resource_id)` — the `tenant_id` is a
+  predicate in the SQL itself (`workflowdefinition.persistence.WorkflowDefinitionRepository`),
+  never a post-filter and never derived from the guessed `id` alone. A foreign tenant's
+  resource is therefore indistinguishable from a missing one: `getDefinition` returns a
+  permanent `404 not_found` (never a `403`), and a conditional update (`updateMetadata`)
+  re-checks `tenant_id` in its `WHERE`, so a write scoped to the wrong tenant affects zero
+  rows and surfaces as a `409 conflict` rather than a silent no-op. Guessing another
+  tenant's UUID gives neither read nor write (invariant 1 / `ADR-007`). This sprint closes
+  the write half of the acceptance criterion with the DB-free negative test
+  `WorkflowDefinitionRepositoryTest.updateMetadata_foreignTenant_affects_zero_rows` (the
+  cross-tenant read denial is already covered by the service and repository tests). Child
+  resources inherit the same rule: their lookups are scoped by the owning tenant too — the
+  parent's tenant is the trust anchor, a child id is never an authorization on its own —
+  documented in [`docs/architecture/api-conventions.md`](docs/architecture/api-conventions.md).
+  Verification: `./gradlew :apps:agentflow-app:test` is green.
+
 - **Trusted tenant claim (S04-05).** The tenant in an authenticated request is carried by the
   `tenant_id` Keycloak claim — a mapped claim present only when the user has a tenant membership —
   and is read **only** from the OAuth 2.0 JWT the Resource Server (S04-03) has already verified
