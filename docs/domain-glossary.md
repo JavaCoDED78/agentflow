@@ -102,7 +102,11 @@ references a pinned *workflow version*, not the loose definition.
 | Concept | Shape | Meaning |
 |---|---|---|
 | **Run** | table `workflow_runs` (`id`, `tenant_id`, `workflow_version_id`, `status`, `input_ref/json`, `result_ref/json`, `idempotency_key`, `attempt`, `lease_owner`, `lease_until`, `lease_epoch`, `next_action_at`, `version`, timestamps); response field `runId` | One execution of a workflow against a specific pinned version and input. `unique (tenant_id, idempotency_key)` where the key is not null. The canonical identifier is `runId`. |
-| **Run status** | `workflow_runs.status` | `QUEUED → RUNNING → SUCCEEDED`/`FAILED`/`CANCELLED`, with `WAITING_FOR_APPROVAL`, `RETRY_WAIT`, `CANCEL_REQUESTED` as intermediate states. Transitions are centralized in the state machine and must not be set directly from a controller. |
+| **Run status** | `workflow_runs.status` | `QUEUED → RUNNING → SUCCEEDED`/`FAILED`/`CANCELLED`, with `WAITING_FOR_APPROVAL`, `RETRY_WAIT`, `CANCEL_REQUESTED` as intermediate states. The full state set, the terminal states, the diagram and
+the per-transition event/command/condition table are in
+[`docs/architecture/run-state-machine.md`](architecture/run-state-machine.md)
+(`S05-01`); transitions stay centralized in the single transition service
+(`S05-11`) and must not be set directly from a controller. |
 | **Step** | table `workflow_step_runs` (`id`, `run_id`, `step_key`, `status`, `attempt`, `input_hash`, `output_ref/json`, `error_code`, `error_summary`, timestamps, `lease_epoch`); `unique (run_id, step_key, attempt)` | A single step execution within a run. Not the same as a run or an event. |
 | **Step status** | `workflow_step_runs.status` | `PENDING → READY → RUNNING → SUCCEEDED`, with alt `RETRY_WAIT`, `WAITING_FOR_APPROVAL`, `FAILED`, `SKIPPED`, `CANCELLED`. |
 | **Attempt** | `run.attempt`, `step.attempt`, `attempt` history | The `attempt` is persisted **before** an external call; an ambiguous external outcome is marked, never treated as exactly-once (`ADR-003`). |

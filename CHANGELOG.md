@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Run state machine (`S05-01`).**
+  `docs/architecture/run-state-machine.md` is the new reference for the run-level
+  state machine of the `workflowexecution` module. It defines the eight run states
+  (`QUEUED`, `RUNNING`, `WAITING_FOR_APPROVAL`, `RETRY_WAIT`, `SUCCEEDED`, `FAILED`,
+  `CANCEL_REQUESTED`, `CANCELLED` — anchored verbatim to `docs/domain-glossary.md`
+  §5), marks the three terminal states (`SUCCEEDED`, `FAILED`, `CANCELLED`), and
+  gives a Mermaid `stateDiagram-v2` plus a transition table whose every row names the
+  triggering **event/command** and the **guard condition** (`run.started` lease claim,
+  `step.approval-needed`, `run.approved`/`run.rejected` for the approval gate,
+  `step.failed`/`run.retry-due` for retry, `run.finished`/`run.failed` for the
+  terminal outcomes, the four `run.cancel` commands and the one-phase `run.cancelled`).
+  Cancellation is modelled as a two-phase, one-way path
+  (`… → CANCEL_REQUESTED → CANCELLED`); `WAITING_FOR_APPROVAL` can end in either resume
+  (`run.approved`) or failure (`run.rejected`), because a rejected approval must not
+  execute its side effect. The doc also records that transitions are applied through
+  the single transition service (conditional update + append-only `workflow_events` in
+  one transaction, `ADR-002`…`ADR-004`, `S05-11`), reconciled with step-state
+  aggregation (`S05-02`), fenced by the lease, and that the Java `WorkflowRunState`
+  enum implementing the table lives in `S05-10`. The `⚠ planned (S07-17)` note on
+  `durable-execution.md` is trimmed to lease/fencing/recovery (the state machine now
+  lives here); `docs/domain-glossary.md` §5 links to the new doc. No code changed
+  (the enum is `S05-10`); verification is by link integrity (`git diff --check`, every
+  relative in-document link resolves to a present, on-topic destination) and a diff
+  review — a documentation-only task, no build gate.
+
 - **Authentication/authorization guide (S04-15).**
   [`docs/security/authentication-authorization.md`](docs/security/authentication-authorization.md) is
   the new authn/authz reference. It ties the Sprint 4 pieces into one picture — the OAuth 2.0

@@ -44,7 +44,8 @@ docs/
 │   ├── dependency-insight.txt         ← resolved dependency graph (S01-08)
 │   ├── module-map.md                  ← bounded contexts, owners, dependency direction (S02-03)
 │   ├── module-api.md                  ← public API per module: services, event types, permitted DTOs, internal packages (S02-04)
-│   ├── durable-execution.md           ⚠ planned (S07-17) — state machine, lease, recovery
+│   ├── run-state-machine.md           ← run/step run state machine + transitions (S05-01/02)
+│   ├── durable-execution.md           ⚠ planned (S07-17) — lease, fencing, recovery
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
