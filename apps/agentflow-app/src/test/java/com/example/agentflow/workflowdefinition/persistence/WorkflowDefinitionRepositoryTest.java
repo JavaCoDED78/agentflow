@@ -54,7 +54,7 @@ class WorkflowDefinitionRepositoryTest {
   }
 
   @Test
-  void updateMetadata_zero_rows_becomes_a_conflict() {
+  void update_metadata_zero_rows_becomes_a_conflict() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
     WorkflowDefinition def = WorkflowDefinition.draft(UUID.randomUUID(), "x", "x", "alice");
@@ -65,7 +65,7 @@ class WorkflowDefinitionRepositoryTest {
   }
 
   @Test
-  void updateMetadata_is_a_tenant_status_and_version_conditional_update() throws SQLException {
+  void update_metadata_is_a_tenant_status_and_version_conditional_update() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
     WorkflowDefinition def = WorkflowDefinition.draft(UUID.randomUUID(), "x", "x", "alice");
@@ -97,7 +97,7 @@ class WorkflowDefinitionRepositoryTest {
   }
 
   @Test
-  void updateMetadata_bumps_the_optimistic_version_on_success() throws SQLException {
+  void update_metadata_bumps_the_optimistic_version_on_success() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
     WorkflowDefinition def = WorkflowDefinition.draft(UUID.randomUUID(), "x", "x", "alice");
@@ -118,7 +118,7 @@ class WorkflowDefinitionRepositoryTest {
   }
 
   @Test
-  void updateMetadata_stale_version_becomes_a_conflict() {
+  void update_metadata_stale_version_becomes_a_conflict() {
     // Two writers read the same row (version 0); the second update sees version 1 on the row, so
     // its conditional UPDATE affects zero rows and must not silently overwrite the first writer's
     // change (S03-10: one of two competing updates does not silently overwrite the other).
@@ -192,7 +192,7 @@ class WorkflowDefinitionRepositoryTest {
   }
 
   @Test
-  void countByTenant_binds_the_tenant_and_reads_the_count_as_a_long() throws SQLException {
+  void count_by_tenant_binds_the_tenant_and_reads_the_count_as_a_long() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
     UUID tenant = UUID.randomUUID();

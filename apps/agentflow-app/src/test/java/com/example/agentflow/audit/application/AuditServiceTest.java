@@ -22,7 +22,7 @@ class AuditServiceTest {
   @Mock private AuditRepository repository;
 
   @Test
-  void record_appendsSucceededEventLinkedToActor() {
+  void record_appends_succeeded_event_linked_to_actor() {
     AuditService service = new AuditService(repository);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000001");
     UUID resource = UUID.randomUUID();
@@ -48,7 +48,7 @@ class AuditServiceTest {
   }
 
   @Test
-  void record_withoutDatabaseThrowsUnavailability() {
+  void record_without_database_throws_unavailability() {
     AuditService service = new AuditService(null);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000001");
 

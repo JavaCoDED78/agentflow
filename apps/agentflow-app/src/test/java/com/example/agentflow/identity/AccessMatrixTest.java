@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 class AccessMatrixTest {
 
   @Test
-  void everyEndpointRequiresExactlyOneCataloguePermission() {
+  void every_endpoint_requires_exactly_one_catalogue_permission() {
     AccessMatrix matrix = new AccessMatrix();
 
     for (EndpointRule rule : matrix.rules()) {
@@ -29,7 +29,7 @@ class AccessMatrixTest {
   }
 
   @Test
-  void createWorkflowRequiresWriteWhileListAndGetRequireRead() {
+  void create_workflow_requires_write_while_list_and_get_require_read() {
     AccessMatrix matrix = new AccessMatrix();
 
     EndpointRule create = find(matrix, "POST", "/api/v1/workflows");
@@ -42,7 +42,7 @@ class AccessMatrixTest {
   }
 
   @Test
-  void referencedPermissionsAreSubsetOfCatalogue() {
+  void referenced_permissions_are_subset_of_catalogue() {
     AccessMatrix matrix = new AccessMatrix();
 
     Set<String> referenced =
@@ -53,7 +53,7 @@ class AccessMatrixTest {
   }
 
   @Test
-  void userOperationsDoNotReferenceOperatorPermissions() {
+  void user_operations_do_not_reference_operator_permissions() {
     // admin/operator operations (ops:dlq) are separated from user operations in the matrix.
     AccessMatrix matrix = new AccessMatrix();
 

@@ -64,7 +64,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void removingARequiredPropertyIsBreaking() {
+  void removing_a_required_property_is_breaking() {
     // Baseline exposes a required `name` on the create request; current drops it.
     JsonNode baseline =
         schemaSpec("Req", schema(Map.of("name", "string", "description", "string"), "name"));
@@ -80,7 +80,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void removingAnOptionalPropertyIsCompatible() {
+  void removing_an_optional_property_is_compatible() {
     JsonNode baseline =
         schemaSpec("Req", schema(Map.of("name", "string", "description", "string"), "name"));
     JsonNode current = schemaSpec("Req", schema(Map.of("name", "string"), "name"));
@@ -94,7 +94,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void removingAPathIsBreaking() {
+  void removing_a_path_is_breaking() {
     JsonNode baseline = pathSpec("/api/v1/workflows", "/api/v1/workflows/{id}");
     JsonNode current = pathSpec("/api/v1/workflows");
 
@@ -107,7 +107,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void removingAnHttpMethodIsBreaking() {
+  void removing_an_http_method_is_breaking() {
     // Build {"/api/v1/workflows/{id}": {"get": {...}, "delete": {...}}}. putObject() returns the
     // created child, so capture the parent to add more than one method.
     ObjectNode root = mapper.createObjectNode();
@@ -128,7 +128,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void changingAPropertyTypeIsBreaking() {
+  void changing_a_property_type_is_breaking() {
     JsonNode baseline = schemaSpec("Req", schema(Map.of("count", "integer")));
     JsonNode current = schemaSpec("Req", schema(Map.of("count", "string")));
 
@@ -141,7 +141,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void addingOptionalFieldAndPathKeepsTheGateGreen() {
+  void adding_optional_field_and_path_keeps_the_gate_green() {
     // The realistic "I added an endpoint + a field" case: no breaking change, the baseline just
     // needs a deliberate refresh. putObject() returns the created child, so capture the parent.
     ObjectNode baselineRoot = mapper.createObjectNode();
@@ -164,7 +164,7 @@ class OpenApiCompatibilityTest {
   }
 
   @Test
-  void identicalSpecsReportNoChanges() {
+  void identical_specs_report_no_changes() {
     JsonNode spec = schemaSpec("Req", schema(Map.of("name", "string"), "name"));
 
     var report = checker.compare(spec, spec);

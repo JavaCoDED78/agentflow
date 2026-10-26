@@ -34,7 +34,7 @@ class WorkflowDefinitionServiceTest {
   @Mock private AuditService auditService;
 
   @Test
-  void createDefinition_buildsDraftWithTenantId() {
+  void create_definition_builds_draft_with_tenant_id() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
@@ -65,7 +65,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void createDefinition_reportsDuplicateNameAsConflict() {
+  void create_definition_reports_duplicate_name_as_conflict() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000002");
     when(repository.insert(any(WorkflowDefinition.class)))
@@ -80,7 +80,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void createDefinition_doesNotRecordAuditWhenInsertFails() {
+  void create_definition_does_not_record_audit_when_insert_fails() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000002");
     when(repository.insert(any(WorkflowDefinition.class)))
@@ -98,7 +98,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void createDefinition_withoutDatabaseIsUnavailable() {
+  void create_definition_without_database_is_unavailable() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(null, null);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000003");
 
@@ -111,7 +111,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void listDefinitions_returns_tenant_scoped_page_with_pagination_metadata() {
+  void list_definitions_returns_tenant_scoped_page_with_pagination_metadata() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
     WorkflowDefinition a = WorkflowDefinition.draft(tenant, "A", null, "local");
@@ -131,7 +131,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void listDefinitions_clamps_oversized_size_to_max_page_size() {
+  void list_definitions_clamps_oversized_size_to_max_page_size() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
     when(repository.listByTenant(any(UUID.class), anyInt(), anyInt()))
@@ -147,7 +147,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void listDefinitions_rejects_non_positive_size() {
+  void list_definitions_rejects_non_positive_size() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
 
@@ -160,7 +160,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void listDefinitions_rejects_negative_page() {
+  void list_definitions_rejects_negative_page() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
 
@@ -173,7 +173,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void listDefinitions_withoutDatabaseIsUnavailable() {
+  void list_definitions_without_database_is_unavailable() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(null, null);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000009");
 
@@ -186,7 +186,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void getDefinition_returns_tenant_scoped_definition() {
+  void get_definition_returns_tenant_scoped_definition() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-00000000000a");
     UUID id = UUID.randomUUID();
@@ -199,7 +199,7 @@ class WorkflowDefinitionServiceTest {
   }
 
   @Test
-  void getDefinition_crossTenantIdReturnsNotFound() {
+  void get_definition_cross_tenant_id_returns_not_found() {
     WorkflowDefinitionService service = new WorkflowDefinitionService(repository, auditService);
     UUID tenant = UUID.fromString("00000000-0000-0000-0000-00000000000a");
     UUID id = UUID.randomUUID();

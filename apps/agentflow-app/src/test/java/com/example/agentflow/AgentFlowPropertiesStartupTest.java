@@ -25,7 +25,7 @@ class AgentFlowPropertiesStartupTest {
                   ValidationAutoConfiguration.class));
 
   @Test
-  void missingRequiredAppNameFailsStartup() {
+  void missing_required_app_name_fails_startup() {
     // A missing agentflow.app-name makes the @Validated bean fail to bind, so the context
     // fails to start. Assert on the startup failure reported by ApplicationContextRunner.
     runner
@@ -38,7 +38,7 @@ class AgentFlowPropertiesStartupTest {
   }
 
   @Test
-  void providedAppNameStarts() {
+  void provided_app_name_starts() {
     runner
         .withUserConfiguration(AgentFlowStartupTestConfig.class)
         .withPropertyValues(

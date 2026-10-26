@@ -40,7 +40,7 @@ class TenantClaimExtractorTest {
   }
 
   @Test
-  void readsTenantIdFromVerifiedJwt() {
+  void reads_tenant_id_from_verified_jwt() {
     UUID tenant = UUID.randomUUID();
     Jwt jwt = signTenant(tenant.toString());
 
@@ -50,7 +50,7 @@ class TenantClaimExtractorTest {
   }
 
   @Test
-  void tokenWithoutMembershipClaimsYieldsNoTenant() {
+  void token_without_membership_claims_yields_no_tenant() {
     // A verified token that carries no tenant membership (no tenant_id claim).
     Jwt jwt = signClaim("preferred_username", "jdoe");
 
@@ -60,7 +60,7 @@ class TenantClaimExtractorTest {
   }
 
   @Test
-  void malformedTenantIdDenies() {
+  void malformed_tenant_id_denies() {
     Jwt jwt = signTenant("not-a-uuid");
 
     Optional<UUID> resolved = TenantClaimExtractor.extract(jwt);
@@ -69,7 +69,7 @@ class TenantClaimExtractorTest {
   }
 
   @Test
-  void tenantIdIsReadOnlyFromTheVerifiedJwtClaim() {
+  void tenant_id_is_read_only_from_the_verified_jwt_claim() {
     // The extractor only consults the verified Jwt: the claim name is the single source, so a
     // caller cannot supply a different tenant out-of-band and have it accepted.
     Jwt jwt = signTenant(UUID.randomUUID().toString());

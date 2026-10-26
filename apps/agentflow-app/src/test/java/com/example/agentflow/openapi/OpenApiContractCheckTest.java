@@ -38,7 +38,7 @@ class OpenApiContractCheckTest {
   @LocalServerPort private int port;
 
   @Test
-  void currentContractDoesNotBreakTheCommittedBaseline() throws Exception {
+  void current_contract_does_not_break_the_committed_baseline() throws Exception {
     // The gate runs via ./gradlew check, which sets -Dopenapi.contract.baseline. When the class is
     // run directly (e.g. from an IDE) without it, skip instead of failing the build.
     String baselineProperty = System.getProperty("openapi.contract.baseline");

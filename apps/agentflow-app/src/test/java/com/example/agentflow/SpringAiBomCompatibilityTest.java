@@ -35,7 +35,7 @@ class SpringAiBomCompatibilityTest {
    * JavaTimeModule is a Jackson 3.x ecosystem question, see the insight report.)
    */
   @Test
-  void managedMapperRoundTrips() {
+  void managed_mapper_round_trips() {
     Map<String, Object> payload = Map.of("tenantId", "s01-08", "value", 42);
 
     String json = mapper.writeValueAsString(payload);
@@ -48,7 +48,7 @@ class SpringAiBomCompatibilityTest {
   }
 
   @Test
-  void managedMapperHandlesMap() {
+  void managed_mapper_handles_map() {
     ObjectMapper fresh = new ObjectMapper();
     Map<String, Object> payload = Map.of("tenantId", "t-1", "value", 42);
 

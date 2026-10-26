@@ -16,7 +16,7 @@ class AgentFlowPropertiesTest {
   private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
   @Test
-  void defaultsAreContainerReady() {
+  void defaults_are_container_ready() {
     AgentFlowProperties properties = new AgentFlowProperties();
 
     assertThat(properties.getHttp().getPort()).isEqualTo(8080);
@@ -24,7 +24,7 @@ class AgentFlowPropertiesTest {
   }
 
   @Test
-  void rejectsMissingAppName() {
+  void rejects_missing_app_name() {
     // appName has no Java default, so it stays null and @NotBlank fails validation.
     AgentFlowProperties properties = new AgentFlowProperties();
 
@@ -32,7 +32,7 @@ class AgentFlowPropertiesTest {
   }
 
   @Test
-  void rejectsOutOfRangePort() throws ReflectiveOperationException {
+  void rejects_out_of_range_port() throws ReflectiveOperationException {
     AgentFlowProperties properties = new AgentFlowProperties();
     var portField = AgentFlowProperties.Http.class.getDeclaredField("port");
     portField.setAccessible(true);
@@ -42,14 +42,14 @@ class AgentFlowPropertiesTest {
   }
 
   @Test
-  void graphMaxBytesDefaultsToOneMebibyte() {
+  void graph_max_bytes_defaults_to_one_mebibyte() {
     AgentFlowProperties properties = new AgentFlowProperties();
 
     assertThat(properties.getGraph().getMaxBytes()).isEqualTo(1_000_000);
   }
 
   @Test
-  void rejectsNonPositiveGraphMaxBytes() throws ReflectiveOperationException {
+  void rejects_non_positive_graph_max_bytes() throws ReflectiveOperationException {
     AgentFlowProperties properties = new AgentFlowProperties();
     var maxBytesField = AgentFlowProperties.Graph.class.getDeclaredField("maxBytes");
     maxBytesField.setAccessible(true);

@@ -23,13 +23,13 @@ class WorkflowGraphValidatorTest {
   }
 
   @Test
-  void acceptsGraphWithAllowedNodeTypes() {
+  void accepts_graph_with_allowed_node_types() {
     WorkflowGraphValidator.validate(
         graphWith("TOOL_CALL", "HUMAN_APPROVAL", "LLM_PLAN", "FINALIZE"));
   }
 
   @Test
-  void rejectsUnknownNodeType() {
+  void rejects_unknown_node_type() {
     WorkflowGraph graph = graphWith("TOOL_CALL", "EVALUATE_BY_HUMAN");
 
     assertThatThrownBy(() -> WorkflowGraphValidator.validate(graph))
@@ -38,14 +38,14 @@ class WorkflowGraphValidatorTest {
   }
 
   @Test
-  void rejectsEmptyGraph() {
+  void rejects_empty_graph() {
     assertThatThrownBy(() -> WorkflowGraphValidator.validate(new WorkflowGraph(List.of())))
         .isInstanceOf(InvalidGraphException.class)
         .hasMessageContaining("at least one node");
   }
 
   @Test
-  void rejectsBlankNodeId() {
+  void rejects_blank_node_id() {
     WorkflowGraph graph = new WorkflowGraph(List.of(new WorkflowNode("  ", "TOOL_CALL", Map.of())));
 
     assertThatThrownBy(() -> WorkflowGraphValidator.validate(graph))
@@ -54,7 +54,7 @@ class WorkflowGraphValidatorTest {
   }
 
   @Test
-  void nodeTypesMatchTheGlossary() {
+  void node_types_match_the_glossary() {
     // The allowed set is anchored verbatim to the domain glossary "Workflow DSL / graph".
     assertThat(WorkflowGraphValidator.ALLOWED_NODE_TYPES)
         .containsExactlyInAnyOrder(

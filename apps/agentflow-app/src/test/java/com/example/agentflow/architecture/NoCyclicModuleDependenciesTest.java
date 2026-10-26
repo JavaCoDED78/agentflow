@@ -34,7 +34,7 @@ class NoCyclicModuleDependenciesTest {
   private static final String ROOT = "com.example.agentflow";
 
   @Test
-  void moduleDependenciesAreAcyclic() {
+  void module_dependencies_are_acyclic() {
     JavaClasses classes = new ClassFileImporter().importPackages(ROOT);
 
     List<String> analysedPackages = new ArrayList<>();
