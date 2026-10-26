@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local authentication runbook (S04-14).** [`docs/runbooks/local-auth.md`](docs/runbooks/local-auth.md)
+  is the new developer guide for logging in locally against the secured `/api/v1` API with a real
+  Keycloak token. It covers both local login flows — the machine-to-machine `agentflow-service`
+  (Client Credentials, `curl` only) and the public `agentflow-web` browser client (Authorization
+  Code + PKCE), shows the exact `curl`/token commands **without real secrets**, and explains the two
+  things that most often fail locally: the token **issuer** (`AGENTFLOW_KEYCLOAK_ISSUER_URI`) and the
+  token **audience** (`agentflow-api`). It documents exactly what the Resource Server validates
+  (signature, issuer, audience, expiry) and maps each failure to an HTTP status
+  (`401`/`403`/`404`), including the masking policy (S04-09). Verified locally: Keycloak is
+  `healthy`, OIDC discovery returns `HTTP 200`, a Client Credentials request for
+  `agentflow-service` issues a token, and decoding it confirms the payload carries `iss`, `sub`,
+  `azp=agentflow-service`, `scope=agentflow` and **`aud=["agentflow-api"]`** — S04-03 now stamps the
+  `agentflow-api` audience into the token via the realm `fixed-audience` mapper, so the Resource
+  Server's `/api/v1` audience check passes. A `401` on that check happens only if the realm was not
+  re-imported after the change (S04-14). The runbook links to
+  `docs/security/tenant-claim.md`, `permissions.md` and `response-policy.md`; `S04-15`
+  (`docs/security/authentication-authorization.md`) links back to it. Documentation-only change —
+  verified by link integrity (`git diff --check`, every relative link in the repo resolves).
+
 - **Cross-tenant isolation at the secured HTTP boundary (S04-13).** Tenant isolation (invariant 1 /
   `ADR-007`) is now verified through the real, bearer-token `SecurityFilterChain`
   (`SecurityConfiguration.securityFilterChain`) — the `workflow:read` / `workflow:write` least-
@@ -1183,6 +1202,23 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   connects lazily, so no live Postgres is needed for the smoke boot) and fails
   fast with the driver-class error when the env datasource is absent.
 
+### Fixed
+
+- **`bootRun` resolves `runtimeClasspath` (dependency-lock gap closed, S04-14 follow-up).** The
+  `apps/agentflow-app/gradle.lockfile` pinned the security stack (`nimbus-jose-jwt`, the
+  `spring-security-*` suite and the `spring-boot-security` /
+  `spring-boot-starter-oauth2-resource-server` starters) only for `compileClasspath` /
+  `testCompileClasspath` / `testRuntimeClasspath`. Because the app's lock resolution hard-fails
+  when a resolved version is missing from the lock, `./gradlew bootRun` aborted with
+  `"not part of the dependency lock state"` even though the build and the `check` gate passed —
+  `check` never resolves `runtimeClasspath`, so the gap was invisible there. Regenerated the lock
+  with `./gradlew generateLockFiles --write-locks`; the diff adds `runtimeClasspath` to exactly
+  those 12 entries and is idempotent (a second regeneration produces no diff). Verified: the app
+  boots with `-Dspring.profiles.active=local`, `Tomcat started on port 8080`, secured endpoint
+  returns `401` without a token and `403` with a valid `agentflow-service` m2m token (passes the
+  Resource Server signature/issuer/audience checks, denied by the AccessMatrix for the missing
+  `workflow:read` role) — matching the runbook's documented results.
+
 ### Changed
 
 - No breaking or behavior changes yet. This skeleton is established in
@@ -1205,7 +1241,28 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   deprecation warnings; and the context-startup tests on the `default`/`kubernetes`/`local`
   profiles (which boot without Keycloak) pass — `productionJwtDecoderBuildsWithLocalIssuer`
   additionally asserts the production bean is a `NimbusJwtDecoder`. The `JsonNode.asText()`
-  deprecations noted here were removed later in the S04-03 follow-up (see the entry above).
+  deprecations noted here were removed later in the S04-03 follow-up (see the entry above). The
+  key lookup itself (JWK set from `jwk_set_uri`, with a `jwks_uri` fallback for Keycloak) is a
+  later fix — see "JWT decoder resolves the JWK set via `jwks_uri`" below.
+- **JWT decoder resolves the JWK set via `jwks_uri` when discovery omits `jwk_set_uri`.** The
+  `default`/`local`/`kubernetes` secured chain builds the `NimbusJwtDecoder` JWK source from the
+  issuer's OIDC discovery document (`SecurityConfiguration.issuerJwkSource` →
+  `jwkSetFromIssuer`), reading the JWK set URL from the `jwk_set_uri` field. Keycloak 26.8.1 —
+  the realm used locally and Keycloak's own `master` realm — exposes the JWK set under the legacy
+  `jwks_uri` discovery field and not the OIDC-standard `jwk_set_uri`, so `getURI(metadata,
+  "jwk_set_uri")` returned `null` and the decoder rejected every token with `401 invalid_token`
+  *before* the issuer and audience checks ever ran. That is what produced the opaque local `401`
+  on `/api/v1` despite a well-formed `aud` claim: the failure was the key-resolution naming gap,
+  not the audience. The decoder now reads `jwk_set_uri` first and falls back to `jwks_uri` (both
+  point at the same `/protocol/openid-connect/certs` endpoint) so an issuer is never rejected for a
+  field-name difference; if discovery exposes neither, resolution fails with a clear message. No
+  validation is weakened — the signature, issuer, audience and expiry checks are unchanged, only
+  the key lookup is now tolerant of both conventions. Verified locally: the secured chain on the
+  `default` profile now verifies a real `agentflow-service` Client Credentials token (whose
+  `aud=agentflow-api`) past the security layer to a `403` (missing `workflow:read`), and still
+  rejects an unauthenticated request with `401`. The `jwks_uri` fallback is a regression unit test
+  (`SecurityConfigurationJwkResolutionTest`), which drives `jwkSetFromIssuer` against a local HTTP
+  server covering the `jwk_set_uri` path, the `jwks_uri` fallback, and the neither-present case.
 - **No deprecated `JsonNode.asText()` in the build (S04-03 follow-up).** The standard
   Jackson 3.1.5 `JsonNode.asText()` is a deprecated alias — its Javadoc says `@deprecated
   Use asString() instead`, and `asText()` is implemented as `return asString()` — which left
