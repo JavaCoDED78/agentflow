@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Authentication/authorization guide (S04-15).**
+  [`docs/security/authentication-authorization.md`](docs/security/authentication-authorization.md) is
+  the new authn/authz reference. It ties the Sprint 4 pieces into one picture — the OAuth 2.0
+  Resource Server (`S04-03`), the claims-to-authorities mapper and the closed permission catalogue
+  (`S04-04`), the `tenant_id` claim (`S04-05`), the tenant scope (`S04-07`) and the endpoint access
+  matrix (`S04-08`) — and describes the `401`/`403`/`404` masking policy (`S04-09`) and the
+  actuator restrictions (`S04-11`). It covers the two local flows (machine-to-machine
+  `agentflow-service` / Client Credentials and the public `agentflow-web` browser client /
+  Authorization Code + PKCE), the claims a token must carry, what the Resource Server validates
+  (signature, issuer, audience `agentflow-api`, expiry), the catalogue ids, tenant resolution and
+  the actuator allow-list, and links to the executable local-login walkthrough
+  [`docs/runbooks/local-auth.md`](docs/runbooks/local-auth.md) (`S04-14`) and the
+  [`tenant-claim.md`](docs/security/tenant-claim.md) / [`permissions.md`](docs/security/permissions.md)
+  / [`response-policy.md`](docs/security/response-policy.md) guides. No secrets are in the
+  examples. It also notes a **follow-up**: the realm currently assigns realm roles
+  (`workflow:approve`, `knowledge:read`, `tenant:admin`) that the deny-by-default mapper drops until
+  the realm converges on the closed `Permission` catalogue. Config fix alongside: the local issuer
+  default in `application-local.yml` was `http://localhost:8443/…` — corrected to
+  `http://localhost:8083/…` to match the Keycloak compose port (`KC_HTTP_PORT`), the
+  `application-local.yml` `.env` and `local-auth.md`. `docs/README.md` now points to the new doc
+  (authn/authz removed from the ⚠ `planned` list; the secrets-policy doc stays ⚠ `planned` for
+  `S11`). Verified by link integrity (`git diff --check`, every relative in-document link resolves to
+  a present, on-topic destination) and a diff review — documentation-only change, no build gate.
+  Local login/runbook verification is the `S04-14` runbook's (Keycloak `identity` profile +
+  PostgreSQL), which this guide points to rather than re-running.
+
 - **Local authentication runbook (S04-14).** [`docs/runbooks/local-auth.md`](docs/runbooks/local-auth.md)
   is the new developer guide for logging in locally against the secured `/api/v1` API with a real
   Keycloak token. It covers both local login flows — the machine-to-machine `agentflow-service`
