@@ -74,6 +74,8 @@ reaches the write path.
     `tenant_id` re-read from PostgreSQL (`S04-06`), never from the Kafka envelope.
 - **Follow-ups:**
   - `S04-13` adds the HTTP-boundary security suite, including the mandatory negative test that a
-    cross-tenant read is denied.
+    cross-tenant read is denied (`SecurityFilterChainTest.crossTenantReadIsIndistinguishableFromMissingThroughTheSecuredChain`)
+    and the positive that a body-carried `tenant_id` is ignored (`SecurityFilterChainTest.bodyTenantSpoofingIsNotScopedThroughTheSecuredChain`),
+    through the live bearer-token chain on the `secured-test` profile.
   - The `identity` module owns the verified `TenantContext` and the `tenant_id` claim contract
     (`docs/security/tenant-claim.md`, `S04-05`).

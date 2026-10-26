@@ -61,7 +61,12 @@ member of any tenant simply gets no `tenant_id` claim. The realm import is
   follow-up, tracked as a later tenant-isolation task.
 - **`S04-13` security regression** — `body tenant spoofing` and `cross-tenant read/write` are the
   acceptance proof for this contract: substituting another tenant's id does not change the access
-  scope.
+  scope. Proven through the live bearer-token `SecurityFilterChain` on the `secured-test` profile —
+  `SecurityFilterChainTest.bodyTenantSpoofingIsNotScopedThroughTheSecuredChain` (a
+  `workflow:write` caller whose request body carries a different `tenant_id` is scoped to the
+  verified tenant, not the spoofed one) and `SecurityFilterChainTest.crossTenantReadIsIndistinguishableFromMissingThroughTheSecuredChain`
+  (a valid `workflow:read` caller reading another tenant's `{workflowId}` gets `404`, the same
+  response a missing resource returns).
 
 ## Acceptance
 

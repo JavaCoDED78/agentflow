@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-tenant isolation at the secured HTTP boundary (S04-13).** Tenant isolation (invariant 1 /
+  `ADR-007`) is now verified through the real, bearer-token `SecurityFilterChain`
+  (`SecurityConfiguration.securityFilterChain`) — the `workflow:read` / `workflow:write` least-
+  privilege gates (`S04-08`) and the `404` masking policy (`S04-09`) together, on a live
+  {@code secured-test} server rather than at the service layer alone. Two new tests in
+  `SecurityFilterChainTest.crossTenantReadIsIndistinguishableFromMissingThroughTheSecuredChain`
+  and
+  {@code SecurityFilterChainTest.bodyTenantSpoofingIsNotScopedThroughTheSecuredChain} drive an
+  {@code AuthorizationCodeExchange} flow and {@code HttpExchange} through the chain: a valid
+  {@code workflow:read} caller reading another tenant's {@code {workflowId}} returns {@code 404}
+  (indistinguishable from a missing resource), and a {@code workflow:write} caller whose request
+  body carries a different {@code tenant_id} is scoped to the verified tenant, not the spoofed one
+  (the create is recorded under {@code configuredTenant} and the {@code spoofedTenant} path is
+  never taken). The stubbed {@code WorkflowDefinitionService} mock is a {@code @Primary} bean in
+  {@code TestKeycloak}, and {@code Mockito.reset} in {@code @BeforeEach} clears stubs and interaction
+  counts so the singleton mock is shared cleanly across the class. {@code ./gradlew check} is
+  green (unit, architecture, and spotless/Google-Java-Format gates).
+
+- **Audit on workflow definition mutations (S04-12).** Every create of a workflow definition now
+  records exactly one row in the append-only, tenant-scoped `audit_events` trail the invariant
+  (`docs/security/tenant-claim.md`, invariant 3) and `ADR-010` demand. The `workflowdefinition`
+  module records the mutation through the single public `audit` API (`AuditService.record`) — it
+  does not write the table itself, which would violate `audit`'s ownership of `audit_events` and the
+  module boundary (only `AuditService`'s root public API plus the `AuditEvent`/`AuditAction`/
+  `AuditResourceType` value types are imported; `audit` stays the sole owner, the new module-map
+  edge `workflowdefinition → audit` mirrors `toolexecution → audit`). The insert is **transactional**
+  (`WorkflowDefinitionService.createDefinition`, annotated `@Transactional`): the `AuditAction.CREATE`
+  event for the `WORKFLOW_DEFINITION` resource commits in the same statement as the definition
+  insert, so a definition is never created without its audit trail and a failed audit write rolls the
+  definition back with it — satisfying invariant 3 directly for this mutation. The event links only
+  the caller's `actor` subject, never a credential or token (`metadata_redacted` holds the redacted
+  text, per the `V3_3_5` migration and the "no secrets" invariant); an async outbox variant (`
+  AuditService.recordOutbox`) exists but was rejected (S04-12): the mutation is already transactional,
+  so async delivery adds delivery/retry/dedup complexity for no gain. Verification:
+  `./gradlew check` is green — unit plus the architecture gates (`ArchitectureBoundaryTest.ALLOWED` +
+  `NoCyclicModuleDependenciesTest` and the module-map, which now include the `workflowdefinition →
+  audit` edge) — and `AuditServiceTest` / `AuditRepositoryTest` exercise the audit write path. S04-13…
+  S04-15 audit the other definition mutations (update/activate) through the same API.
+
 - **Restricted actuator endpoints (S04-11).** Management diagnostics are now behind a bearer
   token. The secured `SecurityFilterChain` (`SecurityConfiguration.securityFilterChain`) keeps only
   {@code /actuator/health}, {@code /actuator/health/**} and {@code /actuator/info} reachable without
@@ -23,25 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the HTTP boundary on the {@code secured-test} profile in
   `SecurityFilterChainTest.sensitiveManagementEndpointsAreNotReachableAnonymously`;
   {@code ./gradlew :apps:agentflow-app:test} is green.
-
-- **Least-privilege endpoint access (S04-08).** Every authenticated `/api/v1` action is now
-  gated on the single permission it needs instead of the coarse `anyRequest().authenticated()`.
-  The mapping lives in one place — the endpoint access matrix (`@Component` `AccessMatrix`,
-  `identity/application/authorization/AccessMatrix`, next to the `Permission` catalogue in the
-  `identity` module) — where each `EndpointRule` is an HTTP `method` + Ant `pathPattern` under
-  `/api/v1` and the one `Permission` the `hasAuthority` check verifies.
-  `com.example.agentflow.config.SecurityConfiguration`
-  (`SecurityConfiguration.securityFilterChain`) consumes the matrix, iterating its rules
-  (`authorize.requestMatchers(method, pattern).hasAuthority(requiredPermission.id())`) and closing
-  the rest with `anyRequest().authenticated()` — default-deny. This enforces least privilege (a
-  read needs only `workflow:read`, a create only `workflow:write`), keeps user operations
-  (`workflow:*`, `document:*`, `run:*`) in a group distinct from a reserved operator group
-  (`ops:dlq`), and makes the matrix the single source of truth (no ad-hoc `permitAll`/
-  `hasAuthority` in the chain). The `secured-test` profile keeps the secured chain active with the
-  in-memory test `JwtDecoder`. Verification: `./gradlew :apps:agentflow-app:test` is green —
-  `AccessMatrixTest` (the matrix contract: least-privilege mapping, catalogue ids, separated user
-  operations) and the S04-08 additions to `SecurityFilterChainTest` (allowed/denied role-endpoint
-  pairs through the HTTP boundary).
 
 - **403/404 masking policy (S04-09).** The security response policy is now written down as a
   single, authoritative statement in [`docs/security/response-policy.md`](docs/security/response-policy.md):
@@ -72,6 +92,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `get_missingDefinition_returnsNotFound` (both indistinguishable) and the service-level
   `WorkflowDefinitionServiceTest.getDefinition_crossTenantIdReturnsNotFound`;
   `./gradlew :apps:agentflow-app:test` is green.
+
+- **Least-privilege endpoint access (S04-08).** Every authenticated `/api/v1` action is now
+  gated on the single permission it needs instead of the coarse `anyRequest().authenticated()`.
+  The mapping lives in one place — the endpoint access matrix (`@Component` `AccessMatrix`,
+  `identity/application/authorization/AccessMatrix`, next to the `Permission` catalogue in the
+  `identity` module) — where each `EndpointRule` is an HTTP `method` + Ant `pathPattern` under
+  `/api/v1` and the one `Permission` the `hasAuthority` check verifies.
+  `com.example.agentflow.config.SecurityConfiguration`
+  (`SecurityConfiguration.securityFilterChain`) consumes the matrix, iterating its rules
+  (`authorize.requestMatchers(method, pattern).hasAuthority(requiredPermission.id())`) and closing
+  the rest with `anyRequest().authenticated()` — default-deny. This enforces least privilege (a
+  read needs only `workflow:read`, a create only `workflow:write`), keeps user operations
+  (`workflow:*`, `document:*`, `run:*`) in a group distinct from a reserved operator group
+  (`ops:dlq`), and makes the matrix the single source of truth (no ad-hoc `permitAll`/
+  `hasAuthority` in the chain). The `secured-test` profile keeps the secured chain active with the
+  in-memory test `JwtDecoder`. Verification: `./gradlew :apps:agentflow-app:test` is green —
+  `AccessMatrixTest` (the matrix contract: least-privilege mapping, catalogue ids, separated user
+  operations) and the S04-08 additions to `SecurityFilterChainTest` (allowed/denied role-endpoint
+  pairs through the HTTP boundary).
 
 - **Tenant-scoped access (S04-07).** Every read and write against a tenant-scoped
   resource is scoped by the pair `(tenant_id, resource_id)` — the `tenant_id` is a
