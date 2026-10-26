@@ -26,13 +26,13 @@ class OpenApiContractTest {
 
   /** The context loads with springdoc present, so a model is generated at runtime. */
   @Test
-  void contextGeneratesOpenApiModel() {
+  void context_generates_open_api_model() {
     assertThat(openApi).isNotNull();
   }
 
   /** The API metadata (title + version) is documented, not empty. */
   @Test
-  void apiMetadataIsDocumented() {
+  void api_metadata_is_documented() {
     assertThat(openApi.getInfo().getTitle()).isNotEmpty();
     assertThat(openApi.getInfo().getVersion()).isEqualTo("v1");
   }
@@ -42,7 +42,7 @@ class OpenApiContractTest {
    * OIDC resource server added in S04. It is referenced from the global security requirement.
    */
   @Test
-  void securitySchemeIsDocumented() {
+  void security_scheme_is_documented() {
     var components = openApi.getComponents();
     var schemes = components != null ? components.getSecuritySchemes() : null;
     Optional<SecurityScheme> bearer =
@@ -59,7 +59,7 @@ class OpenApiContractTest {
 
   /** The global security requirement references the bearer scheme. */
   @Test
-  void globalSecurityRequirementIsApplied() {
+  void global_security_requirement_is_applied() {
     assertThat(openApi.getSecurity()).isNotEmpty();
   }
 }

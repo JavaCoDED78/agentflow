@@ -64,7 +64,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void resolvesTenantAndVerifiedActorFromVerifiedJwt() {
+  void resolves_tenant_and_verified_actor_from_verified_jwt() {
     UUID tenant = UUID.randomUUID();
     String actor = "jdoe";
     Jwt jwt = signWithTenantAndSubject(tenant.toString(), actor);
@@ -76,7 +76,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void tokenWithoutMembershipClaimsIsDenied() {
+  void token_without_membership_claims_is_denied() {
     // A verified token that carries no tenant membership (no tenant_id claim).
     Jwt jwt = signClaim("preferred_username", "jdoe");
 
@@ -89,7 +89,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void malformedTenantIdIsDenied() {
+  void malformed_tenant_id_is_denied() {
     Jwt jwt = signWithTenantAndSubject("not-a-uuid", "jdoe");
 
     assertThatThrownBy(() -> resolver.resolve(jwt))
@@ -101,7 +101,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void resolvesFromTheSecurityContextPrincipal() {
+  void resolves_from_the_security_context_principal() {
     UUID tenant = UUID.randomUUID();
     Jwt jwt = signWithTenantAndSubject(tenant.toString(), "jdoe");
 
@@ -112,7 +112,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void principalThatIsNotAVerifiedJwtIsDenied() {
+  void principal_that_is_not_a_verified_jwt_is_denied() {
     // e.g. the permissive test principal on the {@code test} profile carries no verified Jwt.
     assertThatThrownBy(() -> resolver.resolveFromAuthentication(principal("anonymous")))
         .isInstanceOf(ResponseStatusException.class)
@@ -123,7 +123,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void workerResolvesTenantFromTheStoredRun() {
+  void worker_resolves_tenant_from_the_stored_run() {
     // A worker re-checks the run's real tenant against PostgreSQL and passes it in; an
     // attacker-controlled Kafka header would never reach here.
     UUID tenant = UUID.randomUUID();
@@ -135,7 +135,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void workerResolvesTenantFromStoredRunRejectsMissingTenant() {
+  void worker_resolves_tenant_from_stored_run_rejects_missing_tenant() {
     assertThatThrownBy(() -> resolver.resolveFromStoredTenant(null, "agentflow-worker"))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
@@ -145,7 +145,7 @@ class TenantContextResolverTest {
   }
 
   @Test
-  void parallelRequestsFromDifferentTenantsDoNotMixContext() throws Exception {
+  void parallel_requests_from_different_tenants_do_not_mix_context() throws Exception {
     // The acceptance criterion for S04-06: the singleton resolver keeps no per-request state, so
     // many tenants resolved concurrently through the same instance cannot leak one tenant's
     // identity into another request's context.

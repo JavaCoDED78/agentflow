@@ -18,7 +18,7 @@ import org.mockito.Mockito;
 class WorkflowDefinitionMapperTest {
 
   @Test
-  void mapRow_maps_every_column_to_the_record() throws SQLException {
+  void map_row_maps_every_column_to_the_record() throws SQLException {
     UUID id = UUID.randomUUID();
     UUID tenant = UUID.randomUUID();
     Instant createdAt = Instant.parse("2026-10-22T00:00:00Z");

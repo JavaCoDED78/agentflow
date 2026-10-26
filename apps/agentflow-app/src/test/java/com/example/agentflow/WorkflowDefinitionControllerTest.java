@@ -63,7 +63,7 @@ class WorkflowDefinitionControllerTest {
   }
 
   @Test
-  void create_validRequest_returnsCreated() throws Exception {
+  void create_valid_request_returns_created() throws Exception {
     WorkflowDefinition fixture = WorkflowDefinition.draft(TENANT, "Report", null, "local");
     when(service.createDefinition(any(UUID.class), anyString(), eq("Report"), any()))
         .thenReturn(fixture);
@@ -81,7 +81,7 @@ class WorkflowDefinitionControllerTest {
   }
 
   @Test
-  void create_blankName_returnsValidationBadRequest() throws Exception {
+  void create_blank_name_returns_validation_bad_request() throws Exception {
     MockHttpServletRequestBuilder request =
         post("/api/v1/workflows")
             .contentType(MediaType.APPLICATION_JSON)
@@ -94,7 +94,7 @@ class WorkflowDefinitionControllerTest {
   }
 
   @Test
-  void list_validRequest_returnsPagedList() throws Exception {
+  void list_valid_request_returns_paged_list() throws Exception {
     WorkflowDefinition fixture = WorkflowDefinition.draft(TENANT, "Report", null, "local");
     WorkflowDefinitionPageDto fixturePage =
         new WorkflowDefinitionPageDto(
@@ -113,7 +113,7 @@ class WorkflowDefinitionControllerTest {
   }
 
   @Test
-  void get_existingDefinition_returnsOk() throws Exception {
+  void get_existing_definition_returns_ok() throws Exception {
     WorkflowDefinition fixture = WorkflowDefinition.draft(TENANT, "Report", null, "local");
     when(service.getDefinition(any(UUID.class), any(UUID.class))).thenReturn(fixture);
 
@@ -124,7 +124,7 @@ class WorkflowDefinitionControllerTest {
   }
 
   @Test
-  void get_missingDefinition_returnsNotFound() throws Exception {
+  void get_missing_definition_returns_not_found() throws Exception {
     when(service.getDefinition(any(UUID.class), any(UUID.class)))
         .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "not found"));
 
@@ -145,7 +145,7 @@ class WorkflowDefinitionControllerTest {
    * WorkflowDefinitionServiceTest.getDefinition_crossTenantIdReturnsNotFound}).
    */
   @Test
-  void get_crossTenantId_returnsNotFound_identicalToMissing() throws Exception {
+  void get_cross_tenant_id_returns_not_found_identical_to_missing() throws Exception {
     when(service.getDefinition(any(UUID.class), any(UUID.class)))
         .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "not found"));
 
@@ -157,7 +157,7 @@ class WorkflowDefinitionControllerTest {
   }
 
   @Test
-  void get_invalidId_returnsBadRequest() throws Exception {
+  void get_invalid_id_returns_bad_request() throws Exception {
     // a non-UUID path value is a client error, not a 404
     mockMvc
         .perform(get("/api/v1/workflows/not-a-uuid").contentType(MediaType.APPLICATION_JSON))

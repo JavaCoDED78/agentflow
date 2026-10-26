@@ -52,6 +52,16 @@ safe to run.
   disabling it, excluding it, or weakening it to pass the build.
 - Keep `./gradlew check` green.
 
+- **Test method names are full `snake_case`.** A `@Test`/`@ParameterizedTest`
+  method name reads as the invariant it proves: the method under test followed by
+  the scenario and the expected outcome, all snake_cased and lower-cased, e.g.
+  `create_definition_reports_duplicate_name_as_conflict`,
+  `missing_token_is_rejected`, `get_cross_tenant_id_returns_not_found_identical_to_missing`.
+  This makes failures greppable (grep for the scenario fragment) and keeps every
+  test method on one consistent style. Only test methods are renamed this way —
+  `@BeforeEach`/`@AfterEach` fixtures (`setUp`/`tearDown`) and private helpers
+  keep their existing names.
+
 ## Documentation
 
 - **Documentation as code.** Code, docs and contracts change in one PR. A new

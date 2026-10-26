@@ -10,5 +10,5 @@ import org.springframework.test.context.ActiveProfiles;
 class ConfigurationKubernetesProfileTest {
 
   @Test
-  void kubernetesContextLoads() {}
+  void kubernetes_context_loads() {}
 }

@@ -49,7 +49,7 @@ class ClaimsToAuthoritiesMapperTest {
   }
 
   @Test
-  void clientScopedRoleClaimsAreMappedToCatalogueAuthorities() {
+  void client_scoped_role_claims_are_mapped_to_catalogue_authorities() {
     Jwt jwt =
         sign(Map.of("agentflow-service", List.of("workflow:read", "run:approve", "bogus:role")));
 
@@ -62,7 +62,7 @@ class ClaimsToAuthoritiesMapperTest {
   }
 
   @Test
-  void realmScopedRoleClaimsAreMapped() {
+  void realm_scoped_role_claims_are_mapped() {
     Jwt jwt = signClaim("realm-access", Map.of("roles", List.of("workflow:activate")));
 
     Collection<GrantedAuthority> authorities = mapper.map(jwt);
@@ -72,7 +72,7 @@ class ClaimsToAuthoritiesMapperTest {
   }
 
   @Test
-  void unknownRoleClaimsGrantNothing() {
+  void unknown_role_claims_grant_nothing() {
     Jwt jwt = sign(Map.of("agentflow-service", List.of("bogus:role", "another-bogus:role")));
 
     Collection<GrantedAuthority> authorities = mapper.map(jwt);
@@ -81,7 +81,7 @@ class ClaimsToAuthoritiesMapperTest {
   }
 
   @Test
-  void tokenWithoutRoleClaimsYieldsNoAuthorities() {
+  void token_without_role_claims_yields_no_authorities() {
     Jwt jwt = signClaim("preferred_username", "jdoe");
 
     Collection<GrantedAuthority> authorities = mapper.map(jwt);
@@ -90,7 +90,7 @@ class ClaimsToAuthoritiesMapperTest {
   }
 
   @Test
-  void duplicateRoleClaimsCollapseToOneAuthority() {
+  void duplicate_role_claims_collapse_to_one_authority() {
     Jwt jwt = sign(Map.of("client-a", List.of("workflow:read")));
 
     Jwt jwt2 = sign(Map.of("client-b", List.of("workflow:read")));

@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 class PermissionTest {
 
   @Test
-  void catalogueHoldsTheCanonicalS04_04Ids() {
+  void catalogue_holds_the_canonical_s04_04_ids() {
     Set<String> ids = Permission.ids();
 
     assertThat(ids)
@@ -30,7 +30,7 @@ class PermissionTest {
   }
 
   @Test
-  void everyIdRoundTripsThroughFromId() {
+  void every_id_round_trips_through_from_id() {
     for (Permission permission : Permission.all()) {
       assertThat(Permission.fromId(permission.id())).contains(permission);
       assertThat(Permission.exists(permission.id())).isTrue();
@@ -38,14 +38,14 @@ class PermissionTest {
   }
 
   @Test
-  void catalogueIdsAreUnique() {
+  void catalogue_ids_are_unique() {
     Set<String> ids = Permission.ids();
 
     assertThat(ids).hasSize(Permission.all().size());
   }
 
   @Test
-  void unknownIdsAreRejected() {
+  void unknown_ids_are_rejected() {
     assertThat(Permission.fromId("workflow:approve")).isEmpty();
     assertThat(Permission.fromId("knowledge:read")).isEmpty();
     assertThat(Permission.fromId("tenant:admin")).isEmpty();
@@ -54,14 +54,14 @@ class PermissionTest {
   }
 
   @Test
-  void everyIdIsLowercaseColonSeparated() {
+  void every_id_is_lowercase_colon_separated() {
     for (String id : Permission.ids()) {
       assertThat(id).matches("[a-z]+:[a-z]+");
     }
   }
 
   @Test
-  void catalogueIsStable() {
+  void catalogue_is_stable() {
     // Guard: adding a permission must not silently shrink the catalogue.
     assertThat(Permission.all()).hasSizeGreaterThanOrEqualTo(8);
   }

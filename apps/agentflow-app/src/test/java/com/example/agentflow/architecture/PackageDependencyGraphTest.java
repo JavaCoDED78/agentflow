@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 class PackageDependencyGraphTest {
 
   @Test
-  void acyclicChainHasNoCycle() {
+  void acyclic_chain_has_no_cycle() {
     Map<String, Set<String>> edges = new LinkedHashMap<>();
     edges.put("A", Set.of("B"));
     edges.put("B", Set.of("C"));
@@ -24,7 +24,7 @@ class PackageDependencyGraphTest {
   }
 
   @Test
-  void createdCycleIsDetected() {
+  void created_cycle_is_detected() {
     Map<String, Set<String>> edges = new LinkedHashMap<>();
     edges.put("A", Set.of("B"));
     edges.put("B", Set.of("C"));
@@ -38,7 +38,7 @@ class PackageDependencyGraphTest {
   }
 
   @Test
-  void selfLoopIsNotTreatedAsCycle() {
+  void self_loop_is_not_treated_as_cycle() {
     Map<String, Set<String>> edges = new LinkedHashMap<>();
     edges.put("A", Set.of("A"));
 
@@ -46,7 +46,7 @@ class PackageDependencyGraphTest {
   }
 
   @Test
-  void declaredModuleGraphIsAcyclic() {
+  void declared_module_graph_is_acyclic() {
     // Mirrors docs/architecture/module-map.md arrows 1-16. Arrow 17 is runtime-only (the
     // StepHandler SPI) and is therefore not a compile edge and not part of this graph; the SPI is
     // what keeps the graph acyclic (S02-09).

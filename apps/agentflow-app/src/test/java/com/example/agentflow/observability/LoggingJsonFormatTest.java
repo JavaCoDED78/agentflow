@@ -75,7 +75,7 @@ class LoggingJsonFormatTest {
   }
 
   @Test
-  void emitsStructuredJsonWithMdcAndMasksSecrets() throws java.io.IOException {
+  void emits_structured_json_with_mdc_and_masks_secrets() throws java.io.IOException {
     // Seed the same MDC the LoggingContextProperties bean seeds in production.
     MDC.put("service", "agentflow-app");
     MDC.put("environment", "local");

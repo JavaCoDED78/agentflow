@@ -15,5 +15,5 @@ import org.springframework.boot.test.context.SpringBootTest;
 public class AgentflowApplicationTests {
 
   @Test
-  public void contextLoads() {}
+  public void context_loads() {}
 }

@@ -36,31 +36,31 @@ public class HealthEndpointsTest {
   }
 
   @Test
-  public void healthIsExposed() throws Exception {
+  public void health_is_exposed() throws Exception {
     assertThat(rest.getForEntity(baseUrl() + "/health", String.class).getStatusCode())
         .isEqualTo(HttpStatus.OK);
   }
 
   @Test
-  public void infoIsExposed() throws Exception {
+  public void info_is_exposed() throws Exception {
     assertThat(rest.getForEntity(baseUrl() + "/info", String.class).getStatusCode())
         .isEqualTo(HttpStatus.OK);
   }
 
   @Test
-  public void livenessProbeIsExposed() throws Exception {
+  public void liveness_probe_is_exposed() throws Exception {
     assertThat(rest.getForEntity(baseUrl() + "/health/liveness", String.class).getStatusCode())
         .isEqualTo(HttpStatus.OK);
   }
 
   @Test
-  public void readinessProbeIsExposed() throws Exception {
+  public void readiness_probe_is_exposed() throws Exception {
     assertThat(rest.getForEntity(baseUrl() + "/health/readiness", String.class).getStatusCode())
         .isEqualTo(HttpStatus.OK);
   }
 
   @Test
-  public void sensitiveEndpointsAreClosed() throws Exception {
+  public void sensitive_endpoints_are_closed() throws Exception {
     // RestTemplate throws HttpClientErrorException.NotFound on a 404 rather than returning it.
     assertThatThrownBy(() -> rest.getForEntity(baseUrl() + "/env", String.class))
         .isInstanceOf(HttpClientErrorException.NotFound.class);

@@ -30,7 +30,7 @@ class ConfigurationLocalProfileTest {
   @Autowired private JwtDecoder jwtDecoder;
 
   @Test
-  void localContextLoads() {
+  void local_context_loads() {
     assertThat(properties.getAppName()).isEqualTo("agentflow-app");
   }
 
@@ -41,7 +41,7 @@ class ConfigurationLocalProfileTest {
    * Keycloak.
    */
   @Test
-  void productionJwtDecoderBuildsWithLocalIssuer() {
+  void production_jwt_decoder_builds_with_local_issuer() {
     assertThat(jwtDecoder).isNotNull();
     assertThat(jwtDecoder).isInstanceOf(JwtDecoder.class);
   }

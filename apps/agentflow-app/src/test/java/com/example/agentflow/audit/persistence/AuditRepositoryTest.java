@@ -31,7 +31,7 @@ class AuditRepositoryTest {
   @Mock private PreparedStatement ps;
 
   @Test
-  void insert_writesAllColumnsAndReturnsPersistedId() throws SQLException {
+  void insert_writes_all_columns_and_returns_persisted_id() throws SQLException {
     AuditRepository repository = new AuditRepository(jdbc);
     AuditEvent event =
         AuditEvent.created(
@@ -68,7 +68,7 @@ class AuditRepositoryTest {
   }
 
   @Test
-  void rowMapper_mapsAllColumns() throws SQLException {
+  void row_mapper_maps_all_columns() throws SQLException {
     AuditRowMapper mapper = new AuditRowMapper();
     ResultSet rs = mock(ResultSet.class);
     UUID id = UUID.randomUUID();

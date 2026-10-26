@@ -12,5 +12,5 @@ import org.springframework.test.context.TestPropertySource;
 class ConfigurationTestProfileTest {
 
   @Test
-  void testContextLoads() {}
+  void test_context_loads() {}
 }
