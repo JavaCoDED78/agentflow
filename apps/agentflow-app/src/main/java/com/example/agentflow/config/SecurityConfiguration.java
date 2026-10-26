@@ -11,6 +11,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -135,8 +136,10 @@ class SecurityConfiguration {
   }
 
   /**
-   * Resolves the issuer's OIDC discovery document over HTTP and then fetches the located {@code
-   * jwk_set_uri}. Called lazily on first decode, never at startup.
+   * Resolves the issuer's OIDC discovery document over HTTP and then fetches the located JWK set.
+   * The JWK set URL is read from the {@code jwk_set_uri} field (OIDC discovery), falling back to
+   * {@code jwks_uri} (Keycloak / legacy OIDC) when the issuer does not publish the newer field.
+   * Called lazily on first decode, never at startup.
    *
    * @param issuer the configured issuer base URI
    * @return the parsed {@link JWKSet}
@@ -150,8 +153,19 @@ class SecurityConfiguration {
               HttpRequest.newBuilder(discoveryUri).GET().build(),
               HttpResponse.BodyHandlers.ofString());
       requireOk(discovery, "OIDC discovery for " + issuer);
-      URI jwkSetUri =
-          JSONObjectUtils.getURI(JSONObjectUtils.parse(discovery.body()), "jwk_set_uri");
+      Map<String, Object> metadata = JSONObjectUtils.parse(discovery.body());
+      // OIDC discovery publishes the JWK set under `jwk_set_uri`; Keycloak (and the legacy spec)
+      // use
+      // `jwks_uri` instead. Resolve whichever is present so an issuer is never rejected for a
+      // field-name difference alone.
+      URI jwkSetUri = JSONObjectUtils.getURI(metadata, "jwk_set_uri");
+      if (jwkSetUri == null) {
+        jwkSetUri = JSONObjectUtils.getURI(metadata, "jwks_uri");
+      }
+      if (jwkSetUri == null) {
+        throw new IllegalStateException(
+            "issuer " + issuer + " discovery exposes neither jwk_set_uri nor jwks_uri");
+      }
       HttpResponse<String> jwkSet =
           client.send(
               HttpRequest.newBuilder(jwkSetUri).GET().build(),
