@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Step state machine (`S05-02`).**
+  `docs/architecture/step-state-machine.md` is the new reference for the step-level
+  state machine of the `workflowexecution` module.  It defines nine step states: the eight in the `S05-02` task enumeration
+  (`PENDING`, `READY`, `RUNNING`, `RETRY_WAIT`, `SUCCEEDED`, `FAILED`, `SKIPPED`, `CANCELLED`
+  — anchored verbatim to `docs/domain-glossary.md` §5) plus a step-level
+  `WAITING_FOR_APPROVAL`; marks the four terminal states (`SUCCEEDED`, `FAILED`, `SKIPPED`,
+  `CANCELLED`), and gives a Mermaid `stateDiagram-v2` plus a transition table whose every
+  row names the triggering **event/command** and the **guard condition**
+  (`step.schedulable` once upstream dependencies `SUCCEEDED`, `run.started`/`step.started`
+  lease claim, `step.succeeded`, `step.failed`/`run.retry-due` for retry, the failed
+  predecessor `step.skipped` cascade, the run `cancel`/`run.cancelled` steps). It then
+  documents the run-state aggregation the task asks for: the run terminal states are
+  **derived** from a fold over the step-state multiset — a run is `SUCCEEDED` only when
+  every step is `SUCCEEDED`, `FAILED` on a terminal step failure or cascade skip, and
+  `CANCELLED` once all steps drained — reconciled with the run transition table
+  (`run-state-machine.md`, `S05-01`, guards 7/8/13). The acceptance criterion — the order
+  of duplicate events does not change the final aggregation result — is proved by
+  construction: aggregation is an idempotent, order-independent fold over the committed
+  step states read from PostgreSQL (`ADR-002`), with events deduplicated by `event_id` in
+  the outbox/inbox (`ADR-003`) and step transitions applied through the single transition
+  service (`S05-11`), so a duplicate event cannot flip a terminal state.  The doc also reconciles its nine-state set with the `S05-02` enumeration: the glossary §5
+  and plan §8.1 list a step-level `WAITING_FOR_APPROVAL`, which this spec keeps — it is the
+  step-level half of the run-level approval pause (`S05-01`, where the lease is released, so
+  the step must leave `RUNNING`). The approval pause is modelled once, at the step level, and
+  synchronized with the run level; no ADR is required (no contract/invariant change). The
+  `⚠ planned (S07-17)` `durable-execution.md` note stays
+  for lease/fencing/recovery; `docs/README.md` and the `run-state-machine.md` index now
+  point at the new doc. No code changed (the enum is `S05-10`); verification is by link
+  integrity (`git diff --check`, every relative in-document link resolves to a present,
+  on-topic destination) and a diff review — a documentation-only task, no build gate.
+
+
 - **Run state machine (`S05-01`).**
   `docs/architecture/run-state-machine.md` is the new reference for the run-level
   state machine of the `workflowexecution` module. It defines the eight run states
