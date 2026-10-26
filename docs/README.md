@@ -71,6 +71,7 @@ Machine-readable contracts are **not** in `docs/`; they live in
 ../contracts/
 ├── AGENTS.md                          ← contract rules & conventions
 ├── openapi/                           ← REST API (/api/v1); spec added S03-12
+├── workflow-graph/                    ← workflow graph JSON Schema (S05-03)
 ├── events/
 │   └── json-schema/                   ← envelope + event payloads (S06-01)
 └── asyncapi/                          ⚠ planned — topics & producer/consumer roles

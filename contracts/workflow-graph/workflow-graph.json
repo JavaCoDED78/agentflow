@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentflow.local/schemas/workflow-graph/1.0.0.json",
+  "title": "AgentFlow Workflow Graph (DSL v1)",
+  "description": "JSON Schema for the declarative, typed DAG persisted as workflow_definition_versions.graph_json (ADR-005). It fixes the shape of a v1 workflow graph: a schemaVersion, an ordered list of typed nodes and the edges that order them. The allowed node types are the closed set from docs/domain-glossary.md and ADR-005 (RETRIEVE_CONTEXT, LLM_PLAN, TOOL_CALL, HUMAN_APPROVAL, LLM_EVALUATE, FINALIZE). Node ids, edge endpoints and input references must name existing nodes, the graph must be acyclic and free of dangling, duplicate or self-referencing edges, and every node id must be unique. Those topology rules are not expressible in portable JSON Schema and are enforced by the workflowdefinition DSL validator (S05-05, S05-06, S05-07); this schema enforces everything it can: the required fields, the closed node-type set, field shapes and patterns, and the node/edge size limits below. Input/output wiring is optional data mapping; edges express execution order.",
+  "type": "object",
+  "required": ["schemaVersion", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "The DSL schema version this graph conforms to. Only 1.0.0 is defined by this file; any other value is rejected so an unknown version yields a controlled validation error (S05-04).",
+      "examples": ["1.0.0"]
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "description": "The ordered steps of the graph. At least one node is required (an empty graph is not a runnable workflow); capped at 200 to bound graph size and cost (S05-03, S05-06).",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 1000,
+      "description": "Execution-order edges between node ids. May be empty for a single-node graph; capped at 1000 (S05-03).",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    }
+  },
+  "$defs": {
+    "nodeType": {
+      "enum": [
+        "RETRIEVE_CONTEXT",
+        "LLM_PLAN",
+        "TOOL_CALL",
+        "HUMAN_APPROVAL",
+        "LLM_EVALUATE",
+        "FINALIZE"
+      ],
+      "description": "The closed set of allowed node types (docs/domain-glossary.md, ADR-005). The DSL validator (S05-07) is the authority for this set going forward."
+    },
+    "nodeId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+      "maxLength": 128,
+      "description": "A stable, non-blank identifier that must be unique across the graph. Uniqueness is enforced by the DSL validator (S05-05), not by this schema (JSON Schema cannot express cross-item uniqueness portably)."
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "$ref": "#/$defs/nodeType"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Free-form, per-step parameters. Treated as untrusted DATA, never executed (invariant 7)."
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/reference"
+          },
+          "description": "Optional mapping of an input name to a literal string or to another node's output. Wire a downstream input to an upstream output here."
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Optional declaration of this node's named outputs. Downstream inputs reference them via a {node, output} reference."
+        }
+      },
+      "description": "A single typed step in the graph."
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "to": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "description": "An execution-order edge from the 'from' node to the 'to' node. Self-references, dangling endpoints and duplicate edges are rejected by the DSL validator (S05-05, S05-06), not by this schema."
+    },
+    "reference": {
+      "description": "An input value: either a literal string or a reference to another node's output. The referenced node id must exist and expose that output; that linkage is checked by the DSL validator (S05-05), not by this schema.",
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "required": ["node", "output"],
+          "properties": {
+            "node": {
+              "$ref": "#/$defs/nodeId"
+            },
+            "output": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

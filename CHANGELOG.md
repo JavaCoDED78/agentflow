@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow graph JSON Schema (`S05-03`).**
+  [`contracts/workflow-graph/workflow-graph.json`](../contracts/workflow-graph/workflow-graph.json)
+  is the new machine-readable contract for `graph_json` (`ADR-005`, domain glossary "Workflow DSL /
+  graph"): a v1 graph is `{schemaVersion, nodes, edges}` with `schemaVersion` pinned to `1.0.0`, an
+  ordered list of `1..200` typed nodes (`{id, type, config?, input?, output?}`) and `0..1000`
+  execution-order `{from, to}` edges. The `type` is the closed glossary set
+  (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`, `FINALIZE`), the
+  node `id` must match `^[a-zA-Z][a-zA-Z0-9_-]*$` (≤128) and `config` is free-form untrusted data.
+  The schema enforces everything portable JSON Schema can; the topology rules that cannot be
+  expressed portably (unique ids, no dangling/self-referencing/duplicate edges, acyclicity,
+  input-reference linkage) are left to the `workflowdefinition` DSL validator (`S05-05`, `S05-06`,
+  `S05-07`) and documented as such. [`contracts/workflow-graph/README.md`](../contracts/workflow-graph/README.md)
+  explains the schema-vs-validator boundary, the chosen limits and the exact `jsonschema` check.
+  Fixtures accompany it: [`valid/`](../contracts/workflow-graph/valid) (a six-node linear pipeline
+  covering every node type and a branching DAG that exercises `input`/`output` references) and
+  [`invalid/`](../contracts/workflow-graph/invalid) (wrong/missing `schemaVersion`, unknown node
+  type, malformed edge, bad id pattern, malformed/object input reference and a 201-node
+  over-limit graph); each structurally-valid-but-topology-invalid case lives in
+  [`topology/`](../contracts/workflow-graph/topology) for the DSL validator. Verified by the
+  external `jsonschema` validator (Draft 2020-12): every `valid/` fixture passes and every
+  `invalid/` fixture fails — the `S05-03` acceptance criterion ("a graph can be checked with an
+  external schema validator"). Documentation-only change, no build gate.
+
+
 - **Step state machine (`S05-02`).**
   `docs/architecture/step-state-machine.md` is the new reference for the step-level
   state machine of the `workflowexecution` module.  It defines nine step states: the eight in the `S05-02` task enumeration
