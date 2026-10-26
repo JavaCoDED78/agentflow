@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "1.0.0",
+  "nodes": [
+    {
+      "id": "retrieve-1",
+      "type": "RETRIEVE_CONTEXT",
+      "config": {
+        "query": "the user's question",
+        "top_k": 5
+      }
+    },
+    {
+      "id": "plan-1",
+      "type": "LLM_PLAN",
+      "config": {
+        "prompt": "plan from retrieved context",
+        "budget": {
+          "max_steps": 10
+        }
+      }
+    },
+    {
+      "id": "tool-1",
+      "type": "TOOL_CALL",
+      "config": {
+        "tool": "http_fetch",
+        "args": {
+          "url": "https://example.com/data"
+        }
+      }
+    },
+    {
+      "id": "approval-1",
+      "type": "HUMAN_APPROVAL",
+      "config": {
+        "instruction": "confirm the tool result before proceeding"
+      }
+    },
+    {
+      "id": "eval-1",
+      "type": "LLM_EVALUATE",
+      "config": {
+        "rubric": "correctness against the rubric"
+      }
+    },
+    {
+      "id": "finalize-1",
+      "type": "FINALIZE",
+      "config": {
+        "summary": "final answer"
+      }
+    }
+  ],
+  "edges": [
+    { "from": "retrieve-1", "to": "plan-1" },
+    { "from": "plan-1", "to": "tool-1" },
+    { "from": "tool-1", "to": "approval-1" },
+    { "from": "approval-1", "to": "eval-1" },
+    { "from": "eval-1", "to": "finalize-1" }
+  ]
+}

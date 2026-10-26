@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0.0",
+  "nodes": [
+    { "id": "1-bad-id", "type": "FINALIZE" }
+  ],
+  "edges": []
+}

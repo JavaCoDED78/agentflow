@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "nodes": [
+    {
+      "id": "plan-1",
+      "type": "LLM_PLAN",
+      "config": { "prompt": "plan" },
+      "input": {
+        "ctx": { "node": "retrieve-1" }
+      }
+    }
+  ],
+  "edges": []
+}

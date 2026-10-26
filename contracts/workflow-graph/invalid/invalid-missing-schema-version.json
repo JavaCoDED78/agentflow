@@ -1,0 +1,6 @@
+{
+  "nodes": [
+    { "id": "finalize-1", "type": "FINALIZE" }
+  ],
+  "edges": []
+}

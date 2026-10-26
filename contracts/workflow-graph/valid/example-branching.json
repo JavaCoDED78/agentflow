@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "1.0.0",
+  "nodes": [
+    {
+      "id": "retrieve-1",
+      "type": "RETRIEVE_CONTEXT",
+      "config": { "query": "a retrieval query" },
+      "output": { "context": "the retrieved context" }
+    },
+    {
+      "id": "plan-a",
+      "type": "LLM_PLAN",
+      "config": { "prompt": "plan A" },
+      "input": {
+        "ctx": { "node": "retrieve-1", "output": "context" }
+      }
+    },
+    {
+      "id": "plan-b",
+      "type": "LLM_PLAN",
+      "config": { "prompt": "plan B" },
+      "input": {
+        "ctx": { "node": "retrieve-1", "output": "context" }
+      }
+    },
+    {
+      "id": "merge-1",
+      "type": "TOOL_CALL",
+      "config": { "tool": "concat", "args": {} }
+    },
+    {
+      "id": "finalize-1",
+      "type": "FINALIZE",
+      "config": { "summary": "merged answer" }
+    }
+  ],
+  "edges": [
+    { "from": "retrieve-1", "to": "plan-a" },
+    { "from": "retrieve-1", "to": "plan-b" },
+    { "from": "plan-a", "to": "merge-1" },
+    { "from": "plan-b", "to": "merge-1" },
+    { "from": "merge-1", "to": "finalize-1" }
+  ]
+}

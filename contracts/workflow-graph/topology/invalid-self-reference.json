@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0.0",
+  "nodes": [
+    { "id": "plan-1", "type": "LLM_PLAN" },
+    { "id": "finalize-1", "type": "FINALIZE" }
+  ],
+  "edges": [
+    { "from": "plan-1", "to": "plan-1" }
+  ]
+}

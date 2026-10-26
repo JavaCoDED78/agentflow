@@ -7,7 +7,7 @@ Machine-readable integration contracts. General rules are in the root `AGENTS.md
 - `openapi/` — HTTP API (`/api/v1`). Generated from the application or saved deterministically; serves as the baseline for compatibility checks (P1).
 - `events/json-schema/` — JSON Schema of envelope v1 and the payload of every event; fixtures for contract tests.
 - `asyncapi/` — description of topics and consumer/producer roles (P1).
-- The workflow graph JSON Schema (S05-03) — ⚠ the plan does not fix its location; for now keep it next to `docs/workflows/dsl-v1.md` or here, but in one place only.
+- The workflow graph JSON Schema (`S05-03`) — [`workflow-graph/`](workflow-graph/): `workflow-graph.json`, the `valid/` and `invalid/` fixtures and a `README.md`. One place only.
 
 ## Rules
 
