@@ -137,19 +137,6 @@ class WorkflowGraphValidatorTest {
   }
 
   @Test
-  void node_types_match_the_glossary() {
-    // The allowed set is anchored verbatim to the domain glossary "Workflow DSL / graph".
-    assertThat(WorkflowGraphValidator.ALLOWED_NODE_TYPES)
-        .containsExactlyInAnyOrder(
-            "RETRIEVE_CONTEXT",
-            "LLM_PLAN",
-            "TOOL_CALL",
-            "HUMAN_APPROVAL",
-            "LLM_EVALUATE",
-            "FINALIZE");
-  }
-
-  @Test
   void topological_order_of_a_linear_graph_is_node_order() {
     WorkflowGraph graph =
         new WorkflowGraph(

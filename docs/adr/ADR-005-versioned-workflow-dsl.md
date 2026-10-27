@@ -30,9 +30,11 @@ arbitrary code.
 A workflow is a **versioned, typed JSON graph of allowed steps.** Only the node types named in the
 domain glossary are allowed (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`,
 `LLM_EVALUATE`, `FINALIZE`); everything else is a validation boundary, never a runtime escape. The
-graph is validated structurally by `WorkflowGraphValidator` before it is serialized, and the deeper
-DAG validation — cycles, connectivity, the node graph, required fields and limits — is the DSL
-validator's responsibility (`S09`), which is the authority for the allowed node set going forward.
+The graph is validated structurally by `WorkflowGraphValidator` before it is serialized, rejecting
+any node whose type is not in the closed `WorkflowNodeTypeRegistry` (S05-07) — the single authority
+for the allowed node set — before a version is persisted or activated, so a client or the untrusted
+planner cannot register a new executable type. The deeper DAG validation — cycles, connectivity, the
+node graph, required fields and limits — is the DSL validator's responsibility (`S09`).
 
 Versioning is by design: the DSL is the `graph_json` payload of one immutable
 `workflow_definition_versions` row (migration `V3_3_2`), addressed by a monotonic `version`. An
