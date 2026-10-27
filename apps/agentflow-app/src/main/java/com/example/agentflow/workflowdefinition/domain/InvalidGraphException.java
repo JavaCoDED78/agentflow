@@ -7,8 +7,9 @@ package com.example.agentflow.workflowdefinition.domain;
  * invalid payload never reaches storage (S05-05).
  *
  * <p>Mapped to HTTP 400 (validation) by the global error handler (S03-11). It lives in the domain
- * layer so the codec and validator can throw it without inverting the layering. DAG / cycle checks
- * are the DSL validator's job (S05-06), not this structural gate.
+ * layer so the codec and validator can throw it without inverting the layering. The structural gate
+ * (S05-05) and the DAG gate (S05-06) — node/edge size limits and acyclicity — are enforced here, so
+ * an invalid graph never reaches storage.
  *
  * <p>See glossary "Workflow DSL / graph" and ADR-009.
  */
