@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow graph parser (`S05-04`).** The `workflowdefinition` module gains a controlled input
+  gate for `graph_json`: `WorkflowGraphParser`
+  (`apps/agentflow-app/src/main/java/com/example/agentflow/workflowdefinition/persistence`) turns a
+  raw, untrusted graph body into the typed `WorkflowGraph`/`WorkflowNode` model *after* enforcing the
+  contract, instead of a blind Jackson round-trip. Parse is ordered and strict — the `schemaVersion`
+  must equal the single defined version `1.0.0` (an unknown or missing version fails closed), every
+  `nodes` entry must be a JSON object with a string `id`, a string `type` and an optional object
+  `config`, and the node `type`s are then validated by the domain `WorkflowGraphValidator` before the
+  graph is returned. Any violation throws a controlled `InvalidGraphException` — the
+  `workflowdefinition` validation-error class, rendered as HTTP 400 by the global error handler
+  (`S03-11`) — whose message names the offending field/index, so a malformed, over-future or unsafe
+  graph never becomes a raw Jackson exception leaking parser internals. It is the sibling of
+  `WorkflowGraphCodec` (which keeps the storage round-trip of an already-valid graph); the codec is
+  left as a pure round-trip so the schema-version/type gate lives in one place, the input boundary.
+  Node `config` is parsed verbatim into a `Map` as untrusted **data**, never executed (invariant 7).
+  DB-free unit suite `WorkflowGraphParserTest` (13 tests) covers the happy path, unknown/missing/non-
+  string `schemaVersion`, unknown node type, non-string/non-existent `id` and `type`, a non-object
+  node, a `config` that is not an object, `nodes` that is not an array, a root that is not an object,
+  and malformed JSON —  the `S05-04` acceptance criterion (unknown version and wrong types give
+  controlled validation errors). Verified: `./gradlew :apps:agentflow-app:test` is green (13/13) and
+  `./gradlew :apps:agentflow-app:check` is green (unit + architecture + formatting + OpenAPI
+  contract gate). The parser is the S05-04 artifact and is wired into the create-version use case as
+  the versioning flow is added (S05-12); the codec stays the storage round-trip for the already-
+  verified graph the row mapper re-reads from `graph_json`.
+
 - **Workflow graph JSON Schema (`S05-03`).**
   [`contracts/workflow-graph/workflow-graph.json`](../contracts/workflow-graph/workflow-graph.json)
   is the new machine-readable contract for `graph_json` (`ADR-005`, domain glossary "Workflow DSL /
@@ -31,7 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   external `jsonschema` validator (Draft 2020-12): every `valid/` fixture passes and every
   `invalid/` fixture fails — the `S05-03` acceptance criterion ("a graph can be checked with an
   external schema validator"). Documentation-only change, no build gate.
-
 
 - **Step state machine (`S05-02`).**
   `docs/architecture/step-state-machine.md` is the new reference for the step-level
