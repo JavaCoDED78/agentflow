@@ -42,7 +42,7 @@
         "LLM_EVALUATE",
         "FINALIZE"
       ],
-      "description": "The closed set of allowed node types (docs/domain-glossary.md, ADR-005). The DSL validator (S05-07) is the authority for this set going forward."
+      "description": "The closed set of allowed node types (docs/domain-glossary.md, ADR-005). The WorkflowNodeTypeRegistry (S05-07) is the closed authority for this set going forward; the DSL validator rejects any node whose type is not in it before a version is persisted, so a client/LLM cannot register its own executable type."
     },
     "nodeId": {
       "type": "string",

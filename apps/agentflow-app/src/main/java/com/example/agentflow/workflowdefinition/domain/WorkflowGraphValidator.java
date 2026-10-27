@@ -19,6 +19,11 @@ import java.util.TreeSet;
  * contract's {@code 200} nodes / {@code 1000} edges, and {@link #topologicalOrder(WorkflowGraph)}
  * returns a deterministic topological order for a valid (acyclic) graph.
  *
+ * <p>The closed set of allowed node types is owned by {@link WorkflowNodeTypeRegistry} (S05-07):
+ * {@link #validate(WorkflowGraph)} rejects any node whose type is not one of the glossary's allowed
+ * types before a version is persisted, so a client or the untrusted planner cannot register its own
+ * executable type.
+ *
  * <ul>
  *   <li>the graph must exist and hold at least one step;
  *   <li>the node count is within {@link #MAX_NODES} and the edge count within {@link #MAX_EDGES};
@@ -35,20 +40,6 @@ import java.util.TreeSet;
  * persistence layer.
  */
 public final class WorkflowGraphValidator {
-
-  /**
-   * The allowed node types in the MVP. Anchored verbatim to the domain glossary "Workflow DSL /
-   * graph" (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`,
-   * `FINALIZE`); the DSL validator (S09) is the authority for this set going forward.
-   */
-  public static final Set<String> ALLOWED_NODE_TYPES =
-      Set.of(
-          "RETRIEVE_CONTEXT",
-          "LLM_PLAN",
-          "TOOL_CALL",
-          "HUMAN_APPROVAL",
-          "LLM_EVALUATE",
-          "FINALIZE");
 
   /**
    * The maximum number of nodes a graph may hold. Anchored verbatim to the contract's {@code
@@ -178,9 +169,9 @@ public final class WorkflowGraphValidator {
       if (node.type() == null || node.type().isBlank()) {
         throw new InvalidGraphException("workflow graph node type must not be blank");
       }
-      if (!ALLOWED_NODE_TYPES.contains(node.type())) {
-        throw new InvalidGraphException("unknown workflow node type: " + node.type());
-      }
+      // The closed type vocabulary is the single authority (S05-07); an unknown type is rejected
+      // before a version is persisted, so a client/LLM cannot register its own executable type.
+      WorkflowNodeTypeRegistry.assertKnown(node.type());
     }
   }
 
