@@ -57,7 +57,7 @@ class MigrationsTest {
     flyway.migrate();
   }
 
-  /** All five Sprint 3 migrations apply in order to a fresh database (the migration result). */
+  /** Every migration applies in order to a fresh database (the migration result). */
   @Test
   void all_migrations_apply_in_order() throws SQLException {
     try (Connection connection = connection();
@@ -70,7 +70,7 @@ class MigrationsTest {
         applied.add(versions.getString("version"));
       }
       assertThat(applied)
-          .containsExactly("3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6");
+          .containsExactly("3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7");
     }
   }
 
@@ -86,7 +86,8 @@ class MigrationsTest {
             "workflow_definitions",
             "workflow_definition_versions",
             "workflow_runs",
-            "workflow_step_runs");
+            "workflow_step_runs",
+            "workflow_events");
   }
 
   /**
@@ -109,6 +110,11 @@ class MigrationsTest {
     assertThat(nullableColumn("workflow_step_runs", "run_id")).isFalse();
     assertThat(nullableColumn("workflow_step_runs", "step_key")).isFalse();
     assertThat(nullableColumn("workflow_step_runs", "status")).isFalse();
+    // workflow_events (S05-09): the tenant, the run and the event type are NOT NULL.
+    assertThat(nullableColumn("workflow_events", "tenant_id")).isFalse();
+    assertThat(nullableColumn("workflow_events", "run_id")).isFalse();
+    assertThat(nullableColumn("workflow_events", "event_type")).isFalse();
+    assertThat(nullableColumn("workflow_events", "occurred_at")).isFalse();
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
@@ -135,6 +141,9 @@ class MigrationsTest {
     assertThat(referencedParents("workflow_runs"))
         .contains("tenants", "workflow_definition_versions");
     assertThat(referencedParents("workflow_step_runs")).contains("workflow_runs");
+    // S05-09: the event is tenant-scoped and pinned to its run, with a nullable step pin.
+    assertThat(referencedParents("workflow_events"))
+        .contains("tenants", "workflow_runs", "workflow_step_runs");
   }
 
   /** The single genuine secondary index (S03-07) exists on the tenant-list lookup path. */
@@ -145,6 +154,15 @@ class MigrationsTest {
     // S05-08: a tenant's run list, and a run's step list — one index per real path.
     assertThat(indexes("workflow_runs")).contains("workflow_runs_tenant_created_at_idx");
     assertThat(indexes("workflow_step_runs")).contains("workflow_step_runs_run_created_at_idx");
+  }
+
+  /**
+   * The event-history index backs the replay path (S05-09): one run's events ordered by {@code
+   * occurred_at}, most recent first.
+   */
+  @Test
+  void event_history_index_exists() throws SQLException {
+    assertThat(indexes("workflow_events")).contains("workflow_events_run_occurred_at_idx");
   }
 
   /**
@@ -165,6 +183,8 @@ class MigrationsTest {
     // S05-08: both execution tables record their owner and the task in their table COMMENT.
     assertThat(tableComment("workflow_runs")).contains("S05-08").contains("workflowexecution");
     assertThat(tableComment("workflow_step_runs")).contains("S05-08").contains("workflowexecution");
+    // S05-09: the append-only event history records its owner (messaging) and the task.
+    assertThat(tableComment("workflow_events")).contains("S05-09").contains("messaging");
   }
 
   /**
@@ -322,9 +342,10 @@ class MigrationsTest {
         // (run_id, step_key, attempt) unique rejects the duplicate. The foreign run_id uses a
         // fresh step_key so the unique guard (already held by the valid step above) does not fire
         // first and hide the foreign-key failure.
+        String stepId = uuid();
         insert(
             "INSERT INTO workflow_step_runs (id, run_id, step_key, status) VALUES (?, ?, 'LLM_PLAN', 'PENDING')",
-            uuid(),
+            stepId,
             runId);
         assertThatThrownBy(
                 () ->
@@ -344,6 +365,69 @@ class MigrationsTest {
                         runId))
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("unique constraint");
+
+        // workflow_events (S05-09): a run-level transition event lands and can be replayed
+        // through (run_id, occurred_at); a step-level event pins its step. The NOT NULL guards
+        // reject a missing tenant or run, and the foreign keys reject a missing tenant or run
+        // parent (fresh run values so no unique or the satisfied FK fires first).
+        insert(
+            "INSERT INTO workflow_events (id, tenant_id, run_id, event_type, payload_redacted) "
+                + "VALUES (?, ?, ?, ?, ?)",
+            uuid(),
+            tenant,
+            runId,
+            "RUNNING",
+            "prior=QUEUED new=RUNNING");
+        insert(
+            "INSERT INTO workflow_events (id, tenant_id, run_id, step_run_id, event_type) "
+                + "VALUES (?, ?, ?, ?, ?)",
+            uuid(),
+            tenant,
+            runId,
+            stepId,
+            "STEP_RUNNING");
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_events (run_id, event_type) VALUES ('"
+                                + runId
+                                + "', 'RUNNING')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("not-null");
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_events (tenant_id, event_type) VALUES ('"
+                                + tenant
+                                + "', 'RUNNING')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("not-null");
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_events (id, tenant_id, run_id, event_type) VALUES ("
+                                + "'"
+                                + uuid()
+                                + "', '00000001-0000-0000-0000-000000000001', '"
+                                + runId
+                                + "', 'RUNNING')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_events (id, tenant_id, run_id, event_type) VALUES ("
+                                + "'"
+                                + uuid()
+                                + "', '"
+                                + tenant
+                                + "', '00000001-0000-0000-0000-000000000001', 'RUNNING')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
 
         connection.rollback();
       } catch (SQLException e) {
