@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.agentflow.workflowdefinition.domain.InvalidGraphException;
+import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
 import java.util.List;
@@ -27,7 +28,8 @@ class WorkflowGraphCodecTest {
         new WorkflowGraph(
             List.of(
                 new WorkflowNode("n1", "TOOL_CALL", Map.of("tool", "document.search")),
-                new WorkflowNode("n2", "HUMAN_APPROVAL", Map.of("reason", "write action"))));
+                new WorkflowNode("n2", "HUMAN_APPROVAL", Map.of("reason", "write action"))),
+            List.of());
 
     String json = codec.serialize(original);
     WorkflowGraph restored = codec.deserialize(json);
@@ -44,10 +46,25 @@ class WorkflowGraphCodecTest {
   }
 
   @Test
+  void round_trips_edges_along_with_nodes() {
+    WorkflowGraph original =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode("n1", "TOOL_CALL", Map.of()),
+                new WorkflowNode("n2", "HUMAN_APPROVAL", Map.of())),
+            List.of(new WorkflowEdge("n1", "n2")));
+
+    WorkflowGraph restored = codec.deserialize(codec.serialize(original));
+
+    assertThat(restored.edges()).containsExactly(new WorkflowEdge("n1", "n2"));
+  }
+
+  @Test
   void serialize_for_storage_rejects_graph_larger_than_limit() {
     String padded = "-".repeat(8000); // ~8000 chars
     WorkflowGraph graph =
-        new WorkflowGraph(List.of(new WorkflowNode("n1", "TOOL_CALL", Map.of("data", padded))));
+        new WorkflowGraph(
+            List.of(new WorkflowNode("n1", "TOOL_CALL", Map.of("data", padded))), List.of());
 
     String json = codec.serialize(graph);
     assertThat(json).hasSizeGreaterThan(1000);
@@ -60,7 +77,8 @@ class WorkflowGraphCodecTest {
   @Test
   void serialize_for_storage_accepts_graph_within_limit() {
     WorkflowGraph graph =
-        new WorkflowGraph(List.of(new WorkflowNode("n1", "TOOL_CALL", Map.of("tool", "x"))));
+        new WorkflowGraph(
+            List.of(new WorkflowNode("n1", "TOOL_CALL", Map.of("tool", "x"))), List.of());
 
     String json = codec.serializeForStorage(graph, 1_000_000);
 
@@ -70,7 +88,8 @@ class WorkflowGraphCodecTest {
   @Test
   void serialize_for_storage_rejects_misconfigured_limit() {
     WorkflowGraph graph =
-        new WorkflowGraph(List.of(new WorkflowNode("n1", "TOOL_CALL", Map.of("tool", "x"))));
+        new WorkflowGraph(
+            List.of(new WorkflowNode("n1", "TOOL_CALL", Map.of("tool", "x"))), List.of());
 
     assertThatThrownBy(() -> codec.serializeForStorage(graph, 0))
         .isInstanceOf(InvalidGraphException.class)

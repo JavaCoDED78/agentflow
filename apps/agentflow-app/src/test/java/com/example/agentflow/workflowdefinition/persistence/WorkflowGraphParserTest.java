@@ -4,15 +4,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.agentflow.workflowdefinition.domain.InvalidGraphException;
+import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 /**
  * Verifies the {@link WorkflowGraphParser} input gate (S05-04): a valid body parses into a typed
- * graph, while an unknown/missing {@code schemaVersion} or a wrong-typed node field is rejected
- * with a controlled {@link InvalidGraphException} (never a raw Jackson exception) before a domain
- * object is produced. DB-free: a fresh {@link ObjectMapper} (Jackson 3.x) backs the parser.
+ * graph, while an unknown/missing {@code schemaVersion}, a wrong-typed node or edge field is
+ * rejected with a controlled {@link InvalidGraphException} (never a raw Jackson exception) before a
+ * domain object is produced. Edges are parsed into {@link WorkflowEdge}s and handed to the domain
+ * {@link com.example.agentflow.workflowdefinition.domain.WorkflowGraphValidator} for the structural
+ * gate (S05-05). DB-free: a fresh {@link ObjectMapper} (Jackson 3.x) backs the parser.
  */
 class WorkflowGraphParserTest {
 
@@ -223,5 +226,97 @@ class WorkflowGraphParserTest {
     assertThatThrownBy(() -> parser.parse(json))
         .isInstanceOf(InvalidGraphException.class)
         .hasMessageContaining("JSON object");
+  }
+
+  @Test
+  void parse_valid_graph_parses_edges() {
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [
+            { "id": "plan-1", "type": "LLM_PLAN" },
+            { "id": "finalize-1", "type": "FINALIZE" }
+          ],
+          "edges": [{ "from": "plan-1", "to": "finalize-1" }]
+        }
+        """;
+
+    WorkflowGraph graph = parser.parse(json);
+
+    assertThat(graph.edges()).containsExactly(new WorkflowEdge("plan-1", "finalize-1"));
+  }
+
+  @Test
+  void parse_missing_edges_defaults_to_empty() {
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [{ "id": "finalize-1", "type": "FINALIZE" }]
+        }
+        """;
+
+    assertThat(parser.parse(json).edges()).isEmpty();
+  }
+
+  @Test
+  void parse_rejects_non_object_edge() {
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [{ "id": "finalize-1", "type": "FINALIZE" }],
+          "edges": ["plan-1"]
+        }
+        """;
+
+    assertThatThrownBy(() -> parser.parse(json))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("index 0")
+        .hasMessageContaining("edge")
+        .hasMessageContaining("object");
+  }
+
+  @Test
+  void parse_rejects_edge_missing_from() {
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [
+            { "id": "plan-1", "type": "LLM_PLAN" },
+            { "id": "finalize-1", "type": "FINALIZE" }
+          ],
+          "edges": [{ "to": "finalize-1" }]
+        }
+        """;
+
+    assertThatThrownBy(() -> parser.parse(json))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("index 0")
+        .hasMessageContaining("edge")
+        .hasMessageContaining("from");
+  }
+
+  @Test
+  void parse_rejects_non_string_edge_from() {
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [
+            { "id": "plan-1", "type": "LLM_PLAN" },
+            { "id": "finalize-1", "type": "FINALIZE" }
+          ],
+          "edges": [{ "from": 1, "to": "finalize-1" }]
+        }
+        """;
+
+    assertThatThrownBy(() -> parser.parse(json))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("edge")
+        .hasMessageContaining("from")
+        .hasMessageContaining("string");
   }
 }

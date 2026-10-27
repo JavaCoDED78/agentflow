@@ -84,6 +84,7 @@ add or enable one.
 | **Workflow version** | table `workflow_definition_versions` (`id`, `workflow_id`, `version`, `graph_json`, `checksum`, `status`, `created_by`, `created_at`); `unique (workflow_id, version)` | A single immutable version of a workflow definition. The `graph_json` is a declarative graph of typed steps plus a checksum; an activated version never changes. |
 | **Workflow DSL / graph** | `graph_json` | A validated, typed DAG of allowed node types: `RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`, `FINALIZE`. Cycles are not permitted in the MVP; arbitrary user code is forbidden (`ADR-005`). The machine-readable contract is [`contracts/workflow-graph/`](../contracts/workflow-graph/README.md) (`S05-03`). |
 | **Node / step type** | `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_PLAN`, etc. | A single unit of work in the graph; not the same as a run. |
+| **Workflow edge** | `{from, to}` (two node ids) in `graph_json` | An ordered execution-order link between two nodes of a workflow graph. Endpoints are node ids, not nodes; the structural validator (`S05-05`) rejects a dangling, self-referencing or duplicate edge and a duplicate node id — acyclicity is the DSL validator's job (`S05-06`). |
 
 API: `POST /api/v1/workflows`, `GET /api/v1/workflows` (list: paginated —
 `page`, `size` query params; the response carries `page`, `size`,
