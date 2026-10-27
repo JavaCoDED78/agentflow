@@ -1,29 +1,38 @@
 package com.example.agentflow.workflowdefinition.domain;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * Structural validation of a {@link WorkflowGraph} before it is serialized and an activated version
- * is persisted (S05-05).
+ * Validation of a {@link WorkflowGraph} before it is serialized and an activated version is
+ * persisted.
  *
- * <p>The acceptance criterion is that an invalid payload is rejected <em>before</em> saving: the
- * application calls {@link #validate(WorkflowGraph)} as a gate before the graph ever reaches the
- * persistence layer. The checks are cheap and local:
+ * <p>The structural gate (S05-05) rejects, before a version is persisted, an empty graph, a blank
+ * or duplicated node id, a blank/unknown node type, and a dangling, duplicate or self-referencing
+ * edge (each naming the offending JSON path). Acyclicity and the node/edge size limits (S05-06) are
+ * enforced here too: {@link #validate(WorkflowGraph)} rejects a cyclic graph and a graph over the
+ * contract's {@code 200} nodes / {@code 1000} edges, and {@link #topologicalOrder(WorkflowGraph)}
+ * returns a deterministic topological order for a valid (acyclic) graph.
  *
  * <ul>
  *   <li>the graph must exist and hold at least one step;
+ *   <li>the node count is within {@link #MAX_NODES} and the edge count within {@link #MAX_EDGES};
  *   <li>every node id is non-blank and <em>unique</em> across the graph;
  *   <li>every node type is non-blank and one of the glossary's allowed node types;
- *   <li>every edge points at an existing node, is not a self-reference and is not duplicated.
+ *   <li>every edge points at an existing node, is not a self-reference and is not duplicated;
+ *   <li>the graph is acyclic (a {@link #topologicalOrder(WorkflowGraph)} exists).
  * </ul>
  *
  * <p>Each structural error names the <em>JSON path</em> it comes from ({@code nodes[i]}, {@code
  * nodes[i].id}, {@code edges[j]}, {@code edges[j].from}, {@code edges[j].to}) so a client can
- * locate the offending element. Deeper DAG validation (acyclicity) is the DSL validator's
- * responsibility (S05-06), not this structural gate.
+ * locate the offending element. An invalid payload is rejected before it reaches storage, so the
+ * application calls {@link #validate(WorkflowGraph)} as a gate before the graph ever reaches the
+ * persistence layer.
  */
 public final class WorkflowGraphValidator {
 
@@ -41,21 +50,108 @@ public final class WorkflowGraphValidator {
           "LLM_EVALUATE",
           "FINALIZE");
 
+  /**
+   * The maximum number of nodes a graph may hold. Anchored verbatim to the contract's {@code
+   * workflow-graph.json} ({@code nodes.maxItems = 200}, S05-03); a graph over the limit is rejected
+   * by the pre-persistence gate so an oversized graph never reaches storage (S05-06).
+   */
+  public static final int MAX_NODES = 200;
+
+  /**
+   * The maximum number of edges a graph may hold. Anchored verbatim to the contract's {@code
+   * workflow-graph.json} ({@code edges.maxItems = 1000}, S05-03); a graph over the limit is
+   * rejected by the pre-persistence gate (S05-06).
+   */
+  public static final int MAX_EDGES = 1000;
+
   private WorkflowGraphValidator() {}
 
   /**
-   * Validates a graph structurally.
+   * Validates a graph structurally, for the size limits and for acyclicity (S05-06).
    *
    * @param graph the graph to validate; must not be {@code null}
-   * @throws InvalidGraphException if the graph is empty, or any node has a blank id/type or an
-   *     unknown node type
+   * @throws InvalidGraphException if the graph is empty, oversized, or any node has a blank id/type
+   *     or an unknown node type, an edge is dangling/duplicate/self-referencing, or the graph
+   *     contains a cycle
    */
   public static void validate(WorkflowGraph graph) {
     if (graph == null || graph.isEmpty()) {
       throw new InvalidGraphException("workflow graph must contain at least one node");
     }
+    if (graph.nodes().size() > MAX_NODES) {
+      throw new InvalidGraphException(
+          "workflow graph has "
+              + graph.nodes().size()
+              + " nodes, which exceeds the limit of "
+              + MAX_NODES);
+    }
+    if (graph.edges().size() > MAX_EDGES) {
+      throw new InvalidGraphException(
+          "workflow graph has "
+              + graph.edges().size()
+              + " edges, which exceeds the limit of "
+              + MAX_EDGES);
+    }
     checkNodeIdsUniqueAndPresent(graph);
     checkEdges(graph);
+    assertAcyclic(graph); // a valid DAG has a topological order (S05-06)
+  }
+
+  /**
+   * Computes a deterministic topological order of a valid (acyclic) graph's node ids.
+   *
+   * <p>Uses Kahn's algorithm with a definition-order tie-break: when several nodes are ready at the
+   * same time, the one defined earliest in the graph is emitted first, so the order is fully
+   * reproducible for a given input (S05-06). The graph is assumed structurally valid (every edge
+   * references an existing node id) — {@link #validate(WorkflowGraph)} guarantees that before this
+   * is meaningful.
+   *
+   * @param graph a valid graph; its edges must reference existing node ids
+   * @return the node ids in an order where every edge {@code from → to} has {@code from} first
+   * @throws InvalidGraphException if the graph contains a cycle
+   */
+  public static List<String> topologicalOrder(WorkflowGraph graph) {
+    int n = graph.nodes().size();
+    Map<String, Integer> index = new LinkedHashMap<>();
+    for (int i = 0; i < n; i++) {
+      index.put(graph.nodes().get(i).id(), i);
+    }
+    List<List<Integer>> adjacency = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      adjacency.add(new ArrayList<>());
+    }
+    int[] indegree = new int[n];
+    for (WorkflowEdge edge : graph.edges()) {
+      int from = index.get(edge.from());
+      int to = index.get(edge.to());
+      adjacency.get(from).add(to);
+      indegree[to]++;
+    }
+    TreeSet<Integer> ready = new TreeSet<>();
+    for (int i = 0; i < n; i++) {
+      if (indegree[i] == 0) {
+        ready.add(i);
+      }
+    }
+    List<String> order = new ArrayList<>(n);
+    while (!ready.isEmpty()) {
+      int current = ready.pollFirst();
+      order.add(graph.nodes().get(current).id());
+      for (int successor : adjacency.get(current)) {
+        if (--indegree[successor] == 0) {
+          ready.add(successor);
+        }
+      }
+    }
+    if (order.size() != n) {
+      throw new InvalidGraphException(
+          "workflow graph contains a cycle (a workflow graph must be an acyclic DAG)");
+    }
+    return order;
+  }
+
+  private static void assertAcyclic(WorkflowGraph graph) {
+    topologicalOrder(graph); // throws InvalidGraphException on a cycle (S05-06)
   }
 
   private static void checkNodeIdsUniqueAndPresent(WorkflowGraph graph) {

@@ -13,11 +13,12 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Verifies the workflow-graph validation (S05-05) against the committed fixtures via the parser's
- * public {@link WorkflowGraphParser#parse(String)} entry point, which runs the structural
- * validator. Each {@code topology/invalid-*.json} example the validator owns is rejected, and every
- * {@code valid/*.json} example is accepted. Cyclic graphs are {@code S05-06}, not this structural
- * gate, so {@code invalid-cyclic.json} is explicitly skipped here.
+ * Verifies the workflow-graph validation against the committed fixtures via the parser's public
+ * {@link WorkflowGraphParser#parse(String)} entry point, which runs the structural gate (S05-05)
+ * and the DAG gate (S05-06). Each {@code topology/invalid-*.json} example the validator owns is
+ * rejected, and every {@code valid/*.json} example is accepted. Cyclic graphs (S05-06) are rejected
+ * by the validator as a cycle — asserted separately below, since a cycle is a graph-level property
+ * rather than a per-field JSON path — while the other topology fixtures each name a JSON path.
  *
  * <p>The fixtures directory is handed to the test as {@code workflow.graph.fixtures} by the {@code
  * test} task in {@code build.gradle.kts} (the same pattern the OpenAPI contract gate uses); the
@@ -44,14 +45,25 @@ class WorkflowGraphTopologyTest {
       parser.parse(Files.readString(example));
     }
 
-    // Every S05-05 topology fixture (all invalid-*.json except the cyclic one, which is S05-06) is
-    // rejected by the validator, and the error names a JSON path (nodes[i] or edges[j]).
+    // Every S05-05 topology fixture (dangling / duplicate / self-referencing edge, duplicate node
+    // id) is rejected by the validator, and the error names a JSON path (nodes[i] or edges[j]).
     for (Path fixture : topologyFixturePaths(root)) {
       String text = Files.readString(fixture);
       assertThatThrownBy(() -> parser.parse(text))
           .isInstanceOf(InvalidGraphException.class)
           .as("the fixture %s must be rejected with a JSON path", fixture.getFileName())
           .hasMessageMatching(".*nodes\\[\\d+\\]|.*edges\\[\\d+\\].*");
+    }
+
+    // Cyclic graphs (S05-06) are rejected by the validator as a cycle — a graph-level property, so
+    // no single field's JSON path is named. The committed invalid-cyclic.json is asserted here.
+    Path cyclic = root.resolve("topology").resolve("invalid-cyclic.json");
+    if (Files.exists(cyclic)) {
+      String text = Files.readString(cyclic);
+      assertThatThrownBy(() -> parser.parse(text))
+          .isInstanceOf(InvalidGraphException.class)
+          .as("the cyclic fixture must be rejected as a cycle")
+          .hasMessageMatching(".*cycle.*");
     }
   }
 
