@@ -180,6 +180,12 @@ tasks.named<Test>("test") {
     // checked-in baseline so it can compare the live app against it.
     val contractBaseline = File(rootProject.projectDir, "contracts/openapi/openapi.json")
     systemProperty("openapi.contract.baseline", contractBaseline.absolutePath)
+    // Workflow-graph topology fixtures (S05-05 / S05-06): hand the DSL-validator
+    // fixtures test the path to the committed topology/valid examples so the
+    // structural graph validator is verified against the checked-in fixtures, not
+    // only against inline JSON.
+    val graphFixtures = File(rootProject.projectDir, "contracts/workflow-graph")
+    systemProperty("workflow.graph.fixtures", graphFixtures.absolutePath)
 }
 
 // The integration-test source set (S03-15). Created explicitly so Gradle makes

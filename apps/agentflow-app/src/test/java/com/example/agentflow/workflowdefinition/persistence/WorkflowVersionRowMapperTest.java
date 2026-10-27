@@ -25,7 +25,7 @@ class WorkflowVersionRowMapperTest {
     UUID workflowId = UUID.randomUUID();
     Instant createdAt = Instant.parse("2026-10-22T00:00:00Z");
     String graphJson =
-        "{\"nodes\":[{\"id\":\"n1\",\"type\":\"TOOL_CALL\",\"config\":{\"tool\":\"document.search\"}}]}";
+        "{\"nodes\":[{\"id\":\"n1\",\"type\":\"TOOL_CALL\",\"config\":{\"tool\":\"document.search\"}}],\"edges\":[]}";
 
     when(rs.getObject("id", UUID.class)).thenReturn(id);
     when(rs.getObject("workflow_id", UUID.class)).thenReturn(workflowId);

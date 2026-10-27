@@ -16,14 +16,18 @@ import java.util.List;
  * the create/activate endpoints (S03-13) and validated against the node-type/structure rules by the
  * DSL validator (S09). This record is the persistence-facing representation only.
  */
-public record WorkflowGraph(List<WorkflowNode> nodes) {
+public record WorkflowGraph(List<WorkflowNode> nodes, List<WorkflowEdge> edges) {
 
   /**
    * @param nodes the ordered steps of the graph; never {@code null}
+   * @param edges the execution-order edges of the graph; never {@code null}
    */
   public WorkflowGraph {
     if (nodes == null) {
       throw new IllegalArgumentException("workflow graph nodes must not be null");
+    }
+    if (edges == null) {
+      throw new IllegalArgumentException("workflow graph edges must not be null");
     }
   }
 
