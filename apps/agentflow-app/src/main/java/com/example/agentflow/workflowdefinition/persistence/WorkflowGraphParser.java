@@ -101,7 +101,7 @@ public class WorkflowGraphParser {
     if (versionNode.isMissingNode()) {
       throw new InvalidGraphException("workflow graph is missing required field 'schemaVersion'");
     }
-    if (!versionNode.isTextual()) {
+    if (!versionNode.isString()) {
       throw new InvalidGraphException("workflow graph field 'schemaVersion' must be a string");
     }
     String version = versionNode.stringValue();
@@ -153,7 +153,7 @@ public class WorkflowGraphParser {
               + field
               + "'");
     }
-    if (!fieldNode.isTextual()) {
+    if (!fieldNode.isString()) {
       throw new InvalidGraphException(
           "workflow graph "
               + entity
