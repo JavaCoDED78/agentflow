@@ -134,7 +134,7 @@ each step transition appends a `workflow_events` row.
 
 | Concept | Shape | Meaning |
 |---|---|---|
-| **Event** | table `workflow_events` (append-only); `event_type`, `tenant_id`, `run_id`, `step_run_id`, `occurred_at` | A domain fact appended for a run/step; read via `GET /api/v1/runs/{runId}/events`. |
+| **Event** | table `workflow_events` (append-only); `id`, `tenant_id`, `run_id`, `step_run_id`, `event_type`, `payload_redacted`, `occurred_at` | A domain fact appended for a run/step; replayed (ordered by `occurred_at`) via `GET /api/v1/runs/{runId}/events` so a run's state can be reconstructed (S05-09). |
 | **Event envelope** | Kafka record payload (`eventId`, `eventType`, `schemaVersion`, `occurredAt`, `tenantId`, `aggregateType`, `aggregateId`, `correlationId`, `causationId`, `payload`) | The minimal envelope for all events. `tenantId` is for routing/correlation only — the worker still re-checks ownership against PostgreSQL. |
 | **Outbox** | table `outbox_events` | The DB-side outbox: state and the outbox record are written in the same transaction; publishing is idempotent by `event_id`. |
 | **Inbox** | table `inbox_messages` (`consumer_name`, `event_id`, `processed_at`, `outcome`); PK `(consumer_name, event_id)` | Consumer-side dedup: a business change and its inbox record are written in the same transaction. |
