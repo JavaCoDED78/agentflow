@@ -69,7 +69,8 @@ class MigrationsTest {
       while (versions.next()) {
         applied.add(versions.getString("version"));
       }
-      assertThat(applied).containsExactly("3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4");
+      assertThat(applied)
+          .containsExactly("3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6");
     }
   }
 
@@ -80,7 +81,12 @@ class MigrationsTest {
   @Test
   void owning_tables_exist() throws SQLException {
     assertThat(baseTables())
-        .contains("tenants", "workflow_definitions", "workflow_definition_versions");
+        .contains(
+            "tenants",
+            "workflow_definitions",
+            "workflow_definition_versions",
+            "workflow_runs",
+            "workflow_step_runs");
   }
 
   /**
@@ -94,6 +100,15 @@ class MigrationsTest {
     assertThat(nullableColumn("workflow_definitions", "name")).isFalse();
     assertThat(nullableColumn("workflow_definition_versions", "graph_json")).isFalse();
     assertThat(nullableColumn("workflow_definition_versions", "checksum")).isFalse();
+    // workflow_runs (S05-08): the tenant, the pinned version and the state are NOT NULL.
+    assertThat(nullableColumn("workflow_runs", "tenant_id")).isFalse();
+    assertThat(nullableColumn("workflow_runs", "workflow_version_id")).isFalse();
+    assertThat(nullableColumn("workflow_runs", "status")).isFalse();
+    assertThat(nullableColumn("workflow_runs", "attempt")).isFalse();
+    // workflow_step_runs (S05-08): the run, the step key and the state are NOT NULL.
+    assertThat(nullableColumn("workflow_step_runs", "run_id")).isFalse();
+    assertThat(nullableColumn("workflow_step_runs", "step_key")).isFalse();
+    assertThat(nullableColumn("workflow_step_runs", "status")).isFalse();
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
@@ -105,6 +120,10 @@ class MigrationsTest {
         .contains("workflow_definition_versions_workflow_version");
     // tenants.slug uniqueness (declared inline UNIQUE) is also present.
     assertThat(uniqueConstraints("tenants")).isNotEmpty();
+    // S05-08: the composite uniques the glossary fixes for the execution state.
+    assertThat(uniqueConstraints("workflow_runs")).contains("workflow_runs_tenant_idempotency_key");
+    assertThat(uniqueConstraints("workflow_step_runs"))
+        .contains("workflow_step_runs_run_step_attempt");
   }
 
   /** Every foreign key points at the table the migrations document. */
@@ -112,6 +131,10 @@ class MigrationsTest {
   void foreign_keys_reference_the_parent_tables() throws SQLException {
     assertThat(referencedParents("workflow_definitions")).contains("tenants");
     assertThat(referencedParents("workflow_definition_versions")).contains("workflow_definitions");
+    // S05-08: the run pins its version and is tenant-scoped; a step pins its run.
+    assertThat(referencedParents("workflow_runs"))
+        .contains("tenants", "workflow_definition_versions");
+    assertThat(referencedParents("workflow_step_runs")).contains("workflow_runs");
   }
 
   /** The single genuine secondary index (S03-07) exists on the tenant-list lookup path. */
@@ -119,6 +142,9 @@ class MigrationsTest {
   void tenant_list_index_exists() throws SQLException {
     assertThat(indexes("workflow_definitions"))
         .contains("workflow_definitions_tenant_created_at_idx");
+    // S05-08: a tenant's run list, and a run's step list — one index per real path.
+    assertThat(indexes("workflow_runs")).contains("workflow_runs_tenant_created_at_idx");
+    assertThat(indexes("workflow_step_runs")).contains("workflow_step_runs_run_created_at_idx");
   }
 
   /**
@@ -136,6 +162,9 @@ class MigrationsTest {
         .contains("workflowdefinition");
     // The optimistic-lock counter column carries its own S03-10 attribution.
     assertThat(columnComment("workflow_definitions", "version")).contains("S03-10");
+    // S05-08: both execution tables record their owner and the task in their table COMMENT.
+    assertThat(tableComment("workflow_runs")).contains("S05-08").contains("workflowexecution");
+    assertThat(tableComment("workflow_step_runs")).contains("S05-08").contains("workflowexecution");
   }
 
   /**
@@ -193,9 +222,10 @@ class MigrationsTest {
         // the
         // foreign key rejects a missing parent.
         UUID definition = definitionId("wf-accept");
+        String version = uuid();
         insert(
             "INSERT INTO workflow_definition_versions (id, workflow_id, version, graph_json, checksum) VALUES (?, ?, 1, ?, ?)",
-            uuid(),
+            version,
             definition,
             "{\"nodes\":[]}",
             "c");
@@ -228,6 +258,92 @@ class MigrationsTest {
                                 + ", '00000000-0000-0000-0000-000000000000', 1, '{}', 'c')"))
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("foreign key");
+
+        // workflow_runs + workflow_step_runs (S05-08): a valid run pins its tenant and the pinned
+        // version, and a valid step pins its run. The FK guards reject a missing parent, the NOT
+        // NULL guard rejects a missing tenant, and the composite uniques deduplicate a repeated
+        // idempotency key and a repeated (step, attempt).
+        String runId = uuid();
+        insert(
+            "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt) "
+                + "VALUES (?, ?, ?, 'QUEUED', 1)",
+            runId,
+            tenant,
+            version);
+        // a second run with the same (tenant_id, idempotency_key) is deduplicated by the unique
+        // constraint; the key is non-null here so the guard applies.
+        String idempotentKey = uuid();
+        insert(
+            "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt, idempotency_key) "
+                + "VALUES (?, ?, ?, 'QUEUED', 1, ?)",
+            uuid(),
+            tenant,
+            version,
+            idempotentKey);
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt, idempotency_key) "
+                            + "VALUES (?, ?, ?, 'QUEUED', 1, ?)",
+                        uuid(),
+                        tenant,
+                        version,
+                        idempotentKey))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
+        // a run without a tenant is rejected by NOT NULL; a run with a missing parent version by
+        // the foreign key.
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_runs (id, workflow_version_id, status) VALUES ("
+                                + "'"
+                                + uuid()
+                                + "', '"
+                                + version
+                                + "', 'QUEUED')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("not-null");
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status) VALUES ("
+                                + "'"
+                                + uuid()
+                                + "', '"
+                                + tenant
+                                + "', "
+                                + "'00000001-0000-0000-0000-000000000001', 'QUEUED')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
+        // a step pins its run; a foreign run_id is rejected by the FK and the
+        // (run_id, step_key, attempt) unique rejects the duplicate. The foreign run_id uses a
+        // fresh step_key so the unique guard (already held by the valid step above) does not fire
+        // first and hide the foreign-key failure.
+        insert(
+            "INSERT INTO workflow_step_runs (id, run_id, step_key, status) VALUES (?, ?, 'LLM_PLAN', 'PENDING')",
+            uuid(),
+            runId);
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO workflow_step_runs (id, run_id, step_key, status) VALUES ("
+                                + "'"
+                                + uuid()
+                                + "', '00000001-0000-0000-0000-000000000001', 'VALIDATE_OUTPUT', 'PENDING')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO workflow_step_runs (id, run_id, step_key, status) VALUES (?, ?, 'LLM_PLAN', 'PENDING')",
+                        uuid(),
+                        runId))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
 
         connection.rollback();
       } catch (SQLException e) {
