@@ -1357,7 +1357,9 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   Resource Server signature/issuer/audience checks, denied by the AccessMatrix for the missing
   `workflow:read` role) — matching the runbook's documented results.
 
-### Changed
+- **Removed the deprecated {@code JsonNode.isTextual()} API (`workflowdefinition`).** {@code WorkflowGraphParser} asserted that the {@code schemaVersion} field and each per-entity {@code <field>} JSON node is a string via {@code JsonNode.isTextual()}; that method is deprecated since Jackson 3.0 (its Javadoc points at {@code isString()}), so {@code :apps:agentflow-app:compileJava} emitted a {@code [deprecation]} warning. Both occurrences were replaced with {@code isString()}. Verified: {@code ./gradlew :apps:agentflow-app:compileJava} no longer emits the {@code [deprecation]} warning and {@code ./gradlew :apps:agentflow-app:check} is green (parser tests, the architecture gates, the OpenAPI contract gate, and {@code spotless}); no behavior change — {@code isString()} and the removed {@code isTextual()} both mean {@code getNodeType() == JsonNodeType.STRING}.
+
+
 
 - No breaking or behavior changes yet. This skeleton is established in
   `S01-22`; add entries here for notable changes that modify existing behavior
