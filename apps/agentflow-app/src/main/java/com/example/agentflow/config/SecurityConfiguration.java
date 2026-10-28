@@ -216,9 +216,16 @@ class SecurityConfiguration {
     http.csrf(AbstractHttpConfigurer::disable);
     http.authorizeHttpRequests(
         authz -> {
-          // Public for the liveness/readiness/info probes only.
+          // Public for the liveness/readiness/info probes and the OpenAPI description. The
+          // generated description (refreshed via {@code ./gradlew generateOpenApiContract})
+          // and the Swagger UI are non-sensitive developer documentation, so they stay
+          // reachable without a token, mirroring the diagnostic probes.
           authz
-              .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info")
+              .requestMatchers(
+                  "/actuator/health",
+                  "/actuator/health/**",
+                  "/actuator/info",
+                  "/api/v1/v3/api-docs")
               .permitAll();
           // S04-08: least privilege — each /api/v1 action is gated on the single permission the
           // {@link AccessMatrix} maps it to (e.g. workflow:read for a GET, workflow:write for a

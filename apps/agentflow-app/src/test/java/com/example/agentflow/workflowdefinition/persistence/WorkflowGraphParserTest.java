@@ -3,9 +3,11 @@ package com.example.agentflow.workflowdefinition.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.agentflow.workflowdefinition.domain.GraphValidationIssue;
 import com.example.agentflow.workflowdefinition.domain.InvalidGraphException;
 import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -318,5 +320,68 @@ class WorkflowGraphParserTest {
         .hasMessageContaining("edge")
         .hasMessageContaining("from")
         .hasMessageContaining("string");
+  }
+
+  @Test
+  void collect_issues_reports_input_field_problems_with_json_paths() {
+    // id 123 is a non-string field: the parser input gate reports it before the domain gate runs.
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [{"id": 123, "type": "FINALIZE"}]
+        }
+        """;
+
+    List<GraphValidationIssue> issues = parser.collectIssues(json);
+
+    assertThat(issues).extracting(GraphValidationIssue::path).containsExactly("nodes[0].id");
+    assertThat(issues)
+        .extracting(GraphValidationIssue::message)
+        .singleElement()
+        .satisfies(
+            message -> {
+              assertThat(message).contains("index 0").contains("id").contains("string");
+            });
+  }
+
+  @Test
+  void collect_issues_reports_domain_problems_when_input_is_well_typed() {
+    // SCRIPT is a well-typed string but an unknown node type (caught by the domain gate), and a
+    // blank edge 'from' is a domain edge rule: both are collected with their JSON paths.
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [
+            {"id": "ok-1", "type": "LLM_PLAN"},
+            {"id": "bad-2", "type": "SCRIPT"}
+          ],
+          "edges": [{ "from": "", "to": "ok-1" }]
+        }
+        """;
+
+    List<GraphValidationIssue> issues = parser.collectIssues(json);
+
+    assertThat(issues)
+        .extracting(GraphValidationIssue::path)
+        .containsExactlyInAnyOrder("nodes[1]", "edges[0] field 'from'");
+    assertThat(issues)
+        .extracting(GraphValidationIssue::message)
+        .anyMatch(m -> m.contains("SCRIPT"));
+  }
+
+  @Test
+  void collect_issues_is_empty_for_a_valid_graph() {
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [{"id": "finalize-1", "type": "FINALIZE"}],
+          "edges": []
+        }
+        """;
+
+    assertThat(parser.collectIssues(json)).isEmpty();
   }
 }

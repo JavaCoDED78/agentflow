@@ -266,4 +266,47 @@ class WorkflowGraphValidatorTest {
 
     WorkflowGraphValidator.validate(graph); // exactly MAX_NODES nodes, no edges
   }
+
+  @Test
+  void collect_issues_is_empty_for_a_valid_graph() {
+    List<GraphValidationIssue> issues =
+        WorkflowGraphValidator.collectIssues(
+            new WorkflowGraph(List.of(new WorkflowNode("a", "FINALIZE", Map.of())), List.of()));
+
+    assertThat(issues).isEmpty();
+  }
+
+  @Test
+  void collect_issues_reports_the_cycle_without_throwing() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode("a", "LLM_PLAN", Map.of()),
+                new WorkflowNode("b", "LLM_PLAN", Map.of())),
+            List.of(new WorkflowEdge("a", "b"), new WorkflowEdge("b", "a")));
+
+    List<GraphValidationIssue> issues = WorkflowGraphValidator.collectIssues(graph);
+
+    assertThat(issues).extracting(GraphValidationIssue::path).contains("$");
+    assertThat(issues).extracting(GraphValidationIssue::message).anyMatch(m -> m.contains("cycle"));
+  }
+
+  @Test
+  void collect_issues_reports_a_dangling_edge_with_its_json_path() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode("plan-1", "LLM_PLAN", Map.of()),
+                new WorkflowNode("finalize-1", "FINALIZE", Map.of())),
+            List.of(new WorkflowEdge("plan-1", "does-not-exist")));
+
+    List<GraphValidationIssue> issues = WorkflowGraphValidator.collectIssues(graph);
+
+    assertThat(issues)
+        .extracting(GraphValidationIssue::path)
+        .containsExactlyInAnyOrder("edges[0] field 'to'");
+    assertThat(issues)
+        .extracting(GraphValidationIssue::message)
+        .anyMatch(m -> m.contains("does-not-exist"));
+  }
 }

@@ -66,26 +66,54 @@ public final class WorkflowGraphValidator {
    *     contains a cycle
    */
   public static void validate(WorkflowGraph graph) {
+    List<GraphValidationIssue> issues = collectIssues(graph);
+    if (!issues.isEmpty()) {
+      throw new InvalidGraphException(issues.get(0).message());
+    }
+  }
+
+  /**
+   * Collects <em>every</em> structural problem in a graph, for the size limits and acyclicity
+   * (S05-06), instead of throwing on the first.
+   *
+   * <p>Runs the same checks as {@link #validate(WorkflowGraph)} and returns them all as {@link
+   * GraphValidationIssue} values (path + message), so a client can see the full set of issues with
+   * their JSON paths in one response — including a cycle, which the throwing gate reports only
+   * after reporting any dangling edge first. A valid graph returns an empty list. The throwing
+   * {@link #validate(WorkflowGraph)} delegate returns the first collected issue, so the two paths
+   * never disagree on what is invalid.
+   *
+   * @param graph the graph to check; {@code null} is reported as an empty-graph issue
+   * @return the collected issues, in check order; empty when the graph is structurally valid
+   */
+  public static List<GraphValidationIssue> collectIssues(WorkflowGraph graph) {
+    List<GraphValidationIssue> issues = new ArrayList<>();
     if (graph == null || graph.isEmpty()) {
-      throw new InvalidGraphException("workflow graph must contain at least one node");
+      issues.add(GraphValidationIssue.wholeGraph("workflow graph must contain at least one node"));
+      return issues;
     }
     if (graph.nodes().size() > MAX_NODES) {
-      throw new InvalidGraphException(
-          "workflow graph has "
-              + graph.nodes().size()
-              + " nodes, which exceeds the limit of "
-              + MAX_NODES);
+      issues.add(
+          GraphValidationIssue.wholeGraph(
+              "workflow graph has "
+                  + graph.nodes().size()
+                  + " nodes, which exceeds the limit of "
+                  + MAX_NODES));
     }
     if (graph.edges().size() > MAX_EDGES) {
-      throw new InvalidGraphException(
-          "workflow graph has "
-              + graph.edges().size()
-              + " edges, which exceeds the limit of "
-              + MAX_EDGES);
+      issues.add(
+          GraphValidationIssue.wholeGraph(
+              "workflow graph has "
+                  + graph.edges().size()
+                  + " edges, which exceeds the limit of "
+                  + MAX_EDGES));
     }
-    checkNodeIdsUniqueAndPresent(graph);
-    checkEdges(graph);
-    assertAcyclic(graph); // a valid DAG has a topological order (S05-06)
+    collectNodeIds(graph, issues);
+    collectEdges(graph, issues);
+    if (edgesAllResolved(graph)) {
+      collectCycle(graph, issues);
+    }
+    return issues;
   }
 
   /**
@@ -141,41 +169,90 @@ public final class WorkflowGraphValidator {
     return order;
   }
 
-  private static void assertAcyclic(WorkflowGraph graph) {
-    topologicalOrder(graph); // throws InvalidGraphException on a cycle (S05-06)
+  /**
+   * @return {@code true} when every edge references an existing node id — the precondition for a
+   *     meaningful acyclicity check (a dangling endpoint is reported as an edge issue, and {@link
+   *     #topologicalOrder(WorkflowGraph)} would dereference it)
+   */
+  private static boolean edgesAllResolved(WorkflowGraph graph) {
+    if (graph.edges().isEmpty()) {
+      return true;
+    }
+    Set<String> nodeIds = new HashSet<>();
+    for (WorkflowNode node : graph.nodes()) {
+      nodeIds.add(node.id());
+    }
+    for (WorkflowEdge edge : graph.edges()) {
+      if (!nodeIds.contains(edge.from()) || !nodeIds.contains(edge.to())) {
+        return false;
+      }
+    }
+    return true;
   }
 
-  private static void checkNodeIdsUniqueAndPresent(WorkflowGraph graph) {
+  private static void collectCycle(WorkflowGraph graph, List<GraphValidationIssue> issues) {
+    try {
+      topologicalOrder(graph);
+    } catch (InvalidGraphException e) {
+      issues.add(GraphValidationIssue.wholeGraph(e.getMessage()));
+    }
+  }
+
+  private static void collectNodeIds(WorkflowGraph graph, List<GraphValidationIssue> issues) {
     Map<String, Integer> firstSeen = new LinkedHashMap<>();
     for (int i = 0; i < graph.nodes().size(); i++) {
       WorkflowNode node = graph.nodes().get(i);
       if (node == null || node.id() == null || node.id().isBlank()) {
-        throw new InvalidGraphException(
-            "workflow graph node id must not be blank at nodes[" + i + "]");
+        issues.add(
+            new GraphValidationIssue(
+                "nodes[" + i + "]",
+                "workflow graph node id must not be blank at nodes[" + i + "]"));
+        continue;
       }
       Integer previous = firstSeen.put(node.id(), i);
       if (previous != null) {
-        throw new InvalidGraphException(
-            "workflow graph node id '"
-                + node.id()
-                + "' is duplicated: first defined at nodes["
-                + previous
-                + "] and again at nodes["
-                + i
-                + "]");
+        issues.add(
+            new GraphValidationIssue(
+                "nodes[" + i + "]",
+                "workflow graph node id '"
+                    + node.id()
+                    + "' is duplicated: first defined at nodes["
+                    + previous
+                    + "] and again at nodes["
+                    + i
+                    + "]"));
       }
     }
     for (WorkflowNode node : graph.nodes()) {
       if (node.type() == null || node.type().isBlank()) {
-        throw new InvalidGraphException("workflow graph node type must not be blank");
+        issues.add(
+            new GraphValidationIssue(
+                "nodes[" + nodeIndex(graph, node) + "]",
+                "workflow graph node type must not be blank"));
+      } else if (!WorkflowNodeTypeRegistry.contains(node.type())) {
+        issues.add(
+            new GraphValidationIssue(
+                "nodes[" + nodeIndex(graph, node) + "]",
+                "unknown workflow node type: " + node.type()));
       }
-      // The closed type vocabulary is the single authority (S05-07); an unknown type is rejected
-      // before a version is persisted, so a client/LLM cannot register its own executable type.
-      WorkflowNodeTypeRegistry.assertKnown(node.type());
     }
   }
 
-  private static void checkEdges(WorkflowGraph graph) {
+  /**
+   * @param graph the graph being checked
+   * @param node a node whose {@code type} failed validation
+   * @return the zero-based index of the node within {@code graph.nodes()} for a readable path
+   */
+  private static int nodeIndex(WorkflowGraph graph, WorkflowNode node) {
+    for (int i = 0; i < graph.nodes().size(); i++) {
+      if (graph.nodes().get(i) == node) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static void collectEdges(WorkflowGraph graph, List<GraphValidationIssue> issues) {
     if (graph.edges().isEmpty()) {
       return;
     }
@@ -188,41 +265,50 @@ public final class WorkflowGraphValidator {
       WorkflowEdge edge = graph.edges().get(j);
       String path = "edges[" + j + "]";
       if (edge.from() == null || edge.from().isBlank()) {
-        throw new InvalidGraphException(
-            "workflow graph edge " + path + " field 'from' must not be blank");
+        issues.add(
+            new GraphValidationIssue(
+                path + " field 'from'",
+                "workflow graph edge " + path + " field 'from' must not be blank"));
+      } else if (!nodeIds.contains(edge.from())) {
+        issues.add(
+            new GraphValidationIssue(
+                path + " field 'from'",
+                "workflow graph edge "
+                    + path
+                    + " field 'from' references unknown node '"
+                    + edge.from()
+                    + "'"));
       }
       if (edge.to() == null || edge.to().isBlank()) {
-        throw new InvalidGraphException(
-            "workflow graph edge " + path + " field 'to' must not be blank");
+        issues.add(
+            new GraphValidationIssue(
+                path + " field 'to'",
+                "workflow graph edge " + path + " field 'to' must not be blank"));
+      } else if (!nodeIds.contains(edge.to())) {
+        issues.add(
+            new GraphValidationIssue(
+                path + " field 'to'",
+                "workflow graph edge "
+                    + path
+                    + " field 'to' references unknown node '"
+                    + edge.to()
+                    + "'"));
       }
-      if (!nodeIds.contains(edge.from())) {
-        throw new InvalidGraphException(
-            "workflow graph edge "
-                + path
-                + " field 'from' references unknown node '"
-                + edge.from()
-                + "'");
-      }
-      if (!nodeIds.contains(edge.to())) {
-        throw new InvalidGraphException(
-            "workflow graph edge "
-                + path
-                + " field 'to' references unknown node '"
-                + edge.to()
-                + "'");
-      }
-      if (edge.from().equals(edge.to())) {
-        throw new InvalidGraphException(
-            "workflow graph edge "
-                + path
-                + " is a self-reference (from and to are '"
-                + edge.from()
-                + "')");
+      if (edge.from() != null && edge.to() != null && edge.from().equals(edge.to())) {
+        issues.add(
+            new GraphValidationIssue(
+                path,
+                "workflow graph edge "
+                    + path
+                    + " is a self-reference (from and to are '"
+                    + edge.from()
+                    + "')"));
       }
       String key = edge.from() + " -> " + edge.to();
       if (!seenEdges.add(key)) {
-        throw new InvalidGraphException(
-            "workflow graph edge " + path + " duplicates an earlier edge (" + key + ")");
+        issues.add(
+            new GraphValidationIssue(
+                path, "workflow graph edge " + path + " duplicates an earlier edge (" + key + ")"));
       }
     }
   }
