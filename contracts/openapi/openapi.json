@@ -72,6 +72,41 @@
         }
       }
     },
+    "/api/v1/workflows/{workflowId}/versions/{versionId}/activate" : {
+      "post" : {
+        "tags" : [ "workflow-definition-controller" ],
+        "operationId" : "activate",
+        "parameters" : [ {
+          "name" : "workflowId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "versionId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/WorkflowVersionDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workflows/{workflowId}/validate" : {
       "post" : {
         "tags" : [ "workflow-definition-controller" ],
@@ -182,6 +217,32 @@
           "createdAt" : {
             "type" : "string",
             "format" : "date-time"
+          }
+        }
+      },
+      "WorkflowVersionDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "workflowId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "version" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "graphJson" : {
+            "type" : "string"
+          },
+          "checksum" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string"
           }
         }
       },

@@ -13,7 +13,6 @@ import com.example.agentflow.audit.application.AuditService;
 import com.example.agentflow.audit.domain.AuditAction;
 import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.config.AgentFlowProperties;
-import com.example.agentflow.workflowdefinition.domain.ImmutableVersionException;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.domain.WorkflowVersionStatus;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowDefinitionRepository;
@@ -199,15 +198,16 @@ class WorkflowVersionServiceTest {
   void activate_version_transitions_and_audits() {
     WorkflowVersionService service = service();
     UUID tenant = UUID.randomUUID();
-    UUID versionId = UUID.randomUUID();
     WorkflowVersion draft = version(2, WorkflowVersionStatus.DRAFT, "draft-checksum");
+    UUID versionId = draft.id();
     WorkflowVersion activated = version(2, WorkflowVersionStatus.ACTIVATED, "draft-checksum");
     when(versionRepository.get(tenant, versionId))
         .thenReturn(Optional.of(draft))
         .thenReturn(Optional.of(activated));
     when(versionRepository.activate(tenant, versionId, draft.checksum())).thenReturn(1);
 
-    WorkflowVersionDto dto = service.activateVersion(tenant, versionId, "alice");
+    WorkflowVersionDto dto =
+        service.activateVersion(tenant, draft.workflowId(), versionId, "alice");
 
     assertThat(dto.status()).isEqualTo(WorkflowVersionStatus.ACTIVATED);
     assertThat(dto.checksum()).isEqualTo("draft-checksum");
@@ -222,17 +222,70 @@ class WorkflowVersionServiceTest {
   }
 
   @Test
-  void activate_already_activated_version_is_a_conflict() {
+  void activate_already_activated_version_is_idempotent_without_a_second_audit() {
     WorkflowVersionService service = service();
     UUID tenant = UUID.randomUUID();
-    UUID versionId = UUID.randomUUID();
-    when(versionRepository.get(tenant, versionId))
-        .thenReturn(Optional.of(version(1, WorkflowVersionStatus.ACTIVATED, "c")));
+    WorkflowVersion activated = version(1, WorkflowVersionStatus.ACTIVATED, "c");
+    UUID versionId = activated.id();
+    when(versionRepository.get(tenant, versionId)).thenReturn(Optional.of(activated));
 
-    assertThatThrownBy(() -> service.activateVersion(tenant, versionId, "alice"))
-        .isInstanceOf(ImmutableVersionException.class);
+    // Re-activation returns the same immutable version — no error, no transition, no second audit.
+    WorkflowVersionDto dto =
+        service.activateVersion(tenant, activated.workflowId(), versionId, "alice");
 
+    assertThat(dto.status()).isEqualTo(WorkflowVersionStatus.ACTIVATED);
+    assertThat(dto.id()).isEqualTo(activated.id());
     verify(versionRepository, never()).activate(any(), any(), any());
+    verify(auditService, never()).record(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void activate_a_version_out_of_its_workflow_is_not_found() {
+    WorkflowVersionService service = service();
+    UUID tenant = UUID.randomUUID();
+    WorkflowVersion draft = version(1, WorkflowVersionStatus.DRAFT, "c");
+    UUID versionId = draft.id();
+    // get returns the tenant's draft, but the addressed workflowId does not match the version's
+    // parent workflow.
+    when(versionRepository.get(tenant, versionId)).thenReturn(Optional.of(draft));
+
+    assertThatThrownBy(() -> service.activateVersion(tenant, UUID.randomUUID(), versionId, "alice"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.NOT_FOUND));
+
+    // nothing transitions and nothing is audited
+    verify(versionRepository, never()).activate(any(), any(), any());
+    verify(auditService, never()).record(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void activate_a_version_with_a_tampered_checksum_is_mapped_to_a_409_conflict() {
+    WorkflowVersionService service = service();
+    UUID tenant = UUID.randomUUID();
+    WorkflowVersion draft = version(1, WorkflowVersionStatus.DRAFT, "c");
+    UUID versionId = draft.id();
+    when(versionRepository.get(tenant, versionId)).thenReturn(Optional.of(draft));
+    // the conditional transition changes zero rows (the stored checksum does not match the call's)
+    when(versionRepository.activate(tenant, versionId, "c")).thenReturn(0);
+
+    // The transition IS attempted (the conditional update returns 0 — the stored checksum did not
+    // match) but the invariant breach is surfaced as a 409 Conflict (invariant 6), never a silent
+    // success and never a 500: the owning service turns it into a ResponseStatusException inline,
+    // so the common error handler can render it without importing this module's domain types.
+    assertThatThrownBy(
+            () -> service.activateVersion(tenant, draft.workflowId(), versionId, "alice"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+
+    // The transition was attempted (activate returned 0) and then refused as a conflict; no audit
+    // row is written for the refused transition.
+    verify(versionRepository).activate(any(), any(), any());
     verify(auditService, never()).record(any(), any(), any(), any(), any());
   }
 
@@ -243,7 +296,7 @@ class WorkflowVersionServiceTest {
     UUID versionId = UUID.randomUUID();
     when(versionRepository.get(any(UUID.class), any(UUID.class))).thenReturn(Optional.empty());
 
-    assertThatThrownBy(() -> service.activateVersion(tenant, versionId, "alice"))
+    assertThatThrownBy(() -> service.activateVersion(tenant, UUID.randomUUID(), versionId, "alice"))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
@@ -258,7 +311,7 @@ class WorkflowVersionServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID versionId = UUID.randomUUID();
 
-    assertThatThrownBy(() -> service.activateVersion(tenant, versionId, "alice"))
+    assertThatThrownBy(() -> service.activateVersion(tenant, UUID.randomUUID(), versionId, "alice"))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
