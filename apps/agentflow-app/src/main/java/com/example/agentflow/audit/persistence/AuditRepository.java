@@ -1,6 +1,7 @@
 package com.example.agentflow.audit.persistence;
 
 import com.example.agentflow.audit.domain.AuditEvent;
+import java.sql.Timestamp;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -54,7 +55,7 @@ public class AuditRepository {
           ps.setString(7, event.outcome().name());
           ps.setObject(8, event.correlationId());
           ps.setString(9, event.metadataRedacted());
-          ps.setObject(10, event.createdAt());
+          ps.setTimestamp(10, Timestamp.from(event.createdAt()));
         });
     return id;
   }

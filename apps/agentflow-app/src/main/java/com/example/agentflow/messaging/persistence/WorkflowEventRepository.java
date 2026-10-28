@@ -1,6 +1,7 @@
 package com.example.agentflow.messaging.persistence;
 
 import com.example.agentflow.messaging.domain.WorkflowEvent;
+import java.sql.Timestamp;
 import java.util.List;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -58,7 +59,7 @@ public class WorkflowEventRepository {
           ps.setObject(4, event.stepRunId());
           ps.setString(5, event.eventType());
           ps.setString(6, event.payloadRedacted());
-          ps.setObject(7, event.occurredAt());
+          ps.setTimestamp(7, Timestamp.from(event.occurredAt()));
         });
     return id;
   }
