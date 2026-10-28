@@ -5,6 +5,8 @@ import com.example.agentflow.workflowdefinition.application.GraphValidationServi
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionPageDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionService;
+import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
+import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -21,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Workflow definition endpoints (S03-13 create, S03-14 list and get; S05-13 a read-only graph
- * validation preview).
+ * validation preview; S05-14 an activate that transitions a draft version to immutable).
  *
  * <p>{@code POST /api/v1/workflows} builds a DRAFT definition and returns {@code 201 Created} with
  * the {@link WorkflowDefinitionDto}; a blank {@code name} fails bean validation and is rendered as
@@ -42,17 +44,20 @@ public class WorkflowDefinitionController {
 
   private final WorkflowDefinitionService service;
   private final GraphValidationService graphValidationService;
+  private final WorkflowVersionService versionService;
   private final UUID tenantId;
   private final String actor;
 
   public WorkflowDefinitionController(
       WorkflowDefinitionService service,
       GraphValidationService graphValidationService,
+      WorkflowVersionService versionService,
       @Value("${agentflow.local.tenant-id:00000000-0000-0000-0000-000000000000}")
           String tenantIdRaw,
       @Value("${agentflow.local.actor:local}") String actor) {
     this.service = service;
     this.graphValidationService = graphValidationService;
+    this.versionService = versionService;
     this.tenantId = UUID.fromString(tenantIdRaw);
     this.actor = actor;
   }
@@ -124,5 +129,47 @@ public class WorkflowDefinitionController {
     GraphValidationResult result =
         graphValidationService.validateGraph(tenantId, workflowId, rawGraphJson);
     return ResponseEntity.ok(result);
+  }
+
+  /**
+   * Activates a draft version, pinning its version number and checksum as immutable (S05-14).
+   *
+   * <p>Requires {@code workflow:activate} (the {@link
+   * com.example.agentflow.identity.application.authorization.AccessMatrix} rule for this {@code
+   * POST ... /versions/{versionId}/activate} gates it before the request reaches here). The version
+   * is looked up and transitioned by the {@link WorkflowVersionService#activateVersion} single
+   * transition service:
+   *
+   * <ul>
+   *   <li>a <b>DRAFT</b> version whose pinned {@code checksum} matches transitions {@code DRAFT →
+   *       ACTIVATED}, its audit {@link com.example.agentflow.audit.domain.AuditAction#ACTIVATE}
+   *       event is written in the same transaction (atomic activation/audit, invariant 3);
+   *   <li>a repeat on an <b>already-activated</b> version is <b>idempotent</b> (S05-14): it returns
+   *       that same immutable version with no error and no second audit row, so a client that
+   *       retries after a lost response succeeds cleanly;
+   *   <li>a tampered checksum or a competing writer (the conditional update changes zero rows) is a
+   *       permanent {@code 409} conflict, not a silent success (invariant 6).
+   * </ul>
+   *
+   * <p>A draft's graph is validated at creation (S05-04/S05-05/S05-06), so an <b>invalid graph can
+   * never be activated</b> — activation only ever transitions a stored, pre-validated draft. A
+   * cross-tenant or missing version is reported exactly like a missing one ({@code 404 not_found}),
+   * and a version that does not belong to {@code workflowId} is {@code 404} under this workflow
+   * (invariant 1 — the tenant filter is in the repository SQL, and the parent-workflow check adds
+   * the resource hierarchy). No database is a {@code 503}.
+   *
+   * @param workflowId the parent definition id (must be a UUID; a non-UUID path value is a {@code
+   *     400})
+   * @param versionId the version id to activate (must be a UUID; a non-UUID path value is a {@code
+   *     400})
+   * @return {@code 200 OK} with the activated (now immutable) version; {@code 404 not_found},
+   *     {@code 409 conflict} or {@code 503} as described above
+   */
+  @PostMapping("/{workflowId}/versions/{versionId}/activate")
+  public ResponseEntity<WorkflowVersionDto> activate(
+      @PathVariable UUID workflowId, @PathVariable UUID versionId) {
+    WorkflowVersionDto activated =
+        versionService.activateVersion(tenantId, workflowId, versionId, actor);
+    return ResponseEntity.ok(activated);
   }
 }

@@ -69,7 +69,11 @@ public final class AccessMatrix {
         List.of(
             new EndpointRule("POST", API_V1 + "/workflows", Permission.WORKFLOW_WRITE),
             new EndpointRule("GET", API_V1 + "/workflows", Permission.WORKFLOW_READ),
-            new EndpointRule("GET", API_V1 + "/workflows/*", Permission.WORKFLOW_READ));
+            new EndpointRule("GET", API_V1 + "/workflows/*", Permission.WORKFLOW_READ),
+            new EndpointRule(
+                "POST",
+                API_V1 + "/workflows/{workflowId}/versions/{versionId}/activate",
+                Permission.WORKFLOW_ACTIVATE));
   }
 
   /**

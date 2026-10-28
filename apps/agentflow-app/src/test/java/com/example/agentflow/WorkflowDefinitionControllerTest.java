@@ -19,6 +19,8 @@ import com.example.agentflow.workflowdefinition.application.GraphValidationServi
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionPageDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionService;
+import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
+import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.web.WorkflowDefinitionController;
 import java.util.List;
@@ -61,14 +63,16 @@ class WorkflowDefinitionControllerTest {
   private WorkflowDefinitionController controller;
   private WorkflowDefinitionService service;
   private GraphValidationService graphValidationService;
+  private WorkflowVersionService versionService;
 
   @BeforeEach
   void setUp() {
     service = mock(WorkflowDefinitionService.class);
     graphValidationService = mock(GraphValidationService.class);
+    versionService = mock(WorkflowVersionService.class);
     controller =
         new WorkflowDefinitionController(
-            service, graphValidationService, TENANT.toString(), "local");
+            service, graphValidationService, versionService, TENANT.toString(), "local");
     mockMvc =
         MockMvcBuilders.standaloneSetup(controller)
             .setControllerAdvice(new GlobalExceptionHandler())
@@ -252,6 +256,86 @@ class WorkflowDefinitionControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     "{\"schemaVersion\":\"1.0.0\",\"nodes\":[{\"id\":\"a\",\"type\":\"FINALIZE\"}]}"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class", equalTo("not_found")));
+  }
+
+  /**
+   * The activate endpoint (S05-14) transitions a draft version to immutable. The mocked service
+   * returns the now-immutable version and the controller maps it to {@code 200 OK}. The {@code
+   * workflow:activate} permission that gates this path (the {@code AccessMatrix} rule) is enforced
+   * by the secured {@code SecurityFilterChain} <em>before</em> the request reaches the controller,
+   * so this DB-free {@link MockMvc} path exercises only the controller → service → response
+   * mapping; the permission itself is covered by {@code AccessMatrixTest} / {@code
+   * SecurityFilterChainTest}.
+   */
+  @Test
+  void activate_a_draft_returns_ok_with_the_immutable_version() throws Exception {
+    WorkflowVersionDto activated =
+        new WorkflowVersionDto(
+            UUID.randomUUID(), UUID.randomUUID(), 1, "{\"nodes\":[]}", "checksum", "ACTIVATED");
+    when(versionService.activateVersion(
+            any(UUID.class), any(UUID.class), any(UUID.class), anyString()))
+        .thenReturn(activated);
+
+    mockMvc
+        .perform(
+            post("/api/v1/workflows/"
+                    + UUID.randomUUID()
+                    + "/versions/"
+                    + UUID.randomUUID()
+                    + "/activate")
+                .contentType(MediaType.APPLICATION_JSON))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status", equalTo("ACTIVATED")))
+        .andExpect(jsonPath("$.version", equalTo(1)));
+  }
+
+  /**
+   * A version the service refuses to transition (a tampered checksum or a competing writer — the
+   * zero-row outcome, invariant 6) is mapped by the real {@link GlobalExceptionHandler} to a {@code
+   * 409 conflict}, never a {@code 500}: the owning application layer turns the invariant breach
+   * into a {@code ResponseStatusException(CONFLICT)} inline, which the common handler re-classifies
+   * to the canonical {@code conflict} class.
+   */
+  @Test
+  void activate_a_non_activatable_version_is_mapped_to_a_409_conflict() throws Exception {
+    when(versionService.activateVersion(
+            any(UUID.class), any(UUID.class), any(UUID.class), anyString()))
+        .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT, "not activatable"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/workflows/"
+                    + UUID.randomUUID()
+                    + "/versions/"
+                    + UUID.randomUUID()
+                    + "/activate")
+                .contentType(MediaType.APPLICATION_JSON))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.error_class", equalTo("conflict")));
+  }
+
+  /**
+   * A cross-tenant or missing version is reported exactly like a missing one: {@code 404} with
+   * {@code error_class: not_found} (the 403/404 masking policy, invariant 1). The tenant-scoped
+   * lookup returns empty for the wrong tenant, so a foreign resource is indistinguishable from a
+   * non-existent one.
+   */
+  @Test
+  void activate_a_cross_tenant_version_is_not_found_identical_to_missing() throws Exception {
+    when(versionService.activateVersion(
+            any(UUID.class), any(UUID.class), any(UUID.class), anyString()))
+        .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "not found"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/workflows/"
+                    + UUID.randomUUID()
+                    + "/versions/"
+                    + UUID.randomUUID()
+                    + "/activate")
+                .contentType(MediaType.APPLICATION_JSON))
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.error_class", equalTo("not_found")));
   }

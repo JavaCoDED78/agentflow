@@ -4,7 +4,6 @@ import com.example.agentflow.audit.application.AuditService;
 import com.example.agentflow.audit.domain.AuditAction;
 import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.config.AgentFlowProperties;
-import com.example.agentflow.workflowdefinition.domain.ImmutableVersionException;
 import com.example.agentflow.workflowdefinition.domain.InvalidGraphException;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
@@ -32,9 +31,8 @@ import tools.jackson.databind.ObjectMapper;
  * <p>The {@code workflowdefinition} module owns version creation, activation and reading. This
  * service is the single entry point: a version is created from a graph payload (parsed and
  * validated through the closed-set graph gate, S05-04/S05-05), stored as a {@link
- * WorkflowVersionStatus#DRAFT} with a checksum, then activated — at which point its {@code version}
- * number and {@code checksum} are pinned and it becomes {@link ImmutableVersionException
- * immutable}.
+ * {@code WorkflowVersion} with a checksum, then activated — at which point its {@code version}
+ * number and {@code checksum} are pinned and it becomes immutable.
  *
  * <p>The {@link WorkflowGraphParser}/{@link WorkflowGraphCodec} are pure round-trip helpers (no
  * bean exists for them in this module, so they are constructed here, as in {@link
@@ -134,24 +132,35 @@ public class WorkflowVersionService {
   }
 
   /**
-   * Activates a draft version, pinning its version number and checksum as immutable (S05-12).
+   * Activates a draft version, pinning its version number and checksum as immutable (S05-12 /
+   * S05-14).
    *
-   * <p>Looks the version up tenant-scoped (a cross-tenant or missing id is a 404); if the version
-   * is already activated, or its pinned checksum does not match, throws {@link
-   * ImmutableVersionException} (mapped to {@code 409}); otherwise applies the conditional {@code
-   * DRAFT → ACTIVATED} transition and audits it as {@link AuditAction#ACTIVATE}.
+   * <p>The version is looked up tenant-scoped (a cross-tenant or missing id is a {@code 404}, the
+   * tenant filter being in the SQL, invariant 1), then verified to belong to {@code workflowId} —
+   * the endpoint addresses it through its parent workflow, so a version of a different workflow is
+   * {@code 404} under this workflow. If the version is already {@code ACTIVATED} the call is
+   * <b>idempotent</b> (S05-14): it returns the current, immutable version with no error and records
+   * <em>no</em> second audit row, so a client that retries activation after a lost response — the
+   * activation committed but the reply never arrived — gets a clean success instead of a conflict.
+   * Otherwise it applies the conditional {@code DRAFT → ACTIVATED} transition (a zero-row outcome
+   * is a tampered checksum or a competing writer, so it is a permanent {@code 409}, not a harmless
+   * retry — invariant 6), audits it once as {@link AuditAction#ACTIVATE}, and returns the activated
+   * (now immutable) version.
    *
    * @param tenantId the owning tenant (from the verified security context)
+   * @param workflowId the parent workflow the version must belong to (resource hierarchy)
    * @param versionId the version id to activate
    * @param actor the actor, e.g. an email (never a token)
-   * @return the activated (now immutable) version
+   * @return the activated (now immutable) version; a repeat on an already-activated version returns
+   *     that same version (idempotent)
    * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
-   *     {@code 404} if the version is not owned by the tenant
-   * @throws ImmutableVersionException if the version is already activated or its checksum does not
-   *     match (mapped to {@code 409})
+   *     {@code 404} if the version is not owned by the tenant or does not belong to {@code
+   *     workflowId}, {@code 409 CONFLICT} if the {@code DRAFT → ACTIVATED} transition changes zero
+   *     rows (checksum mismatch or a competing writer)
    */
   @Transactional
-  public WorkflowVersionDto activateVersion(UUID tenantId, UUID versionId, String actor) {
+  public WorkflowVersionDto activateVersion(
+      UUID tenantId, UUID workflowId, UUID versionId, String actor) {
     requireRepository();
     WorkflowVersion version =
         versionRepo
@@ -160,13 +169,30 @@ public class WorkflowVersionService {
                 () ->
                     new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "workflow version '" + versionId + "' not found"));
+    // The endpoint addresses the version through its parent workflow, so a version that belongs to
+    // a different workflow is not-found under this workflow (not a silent activation of the wrong
+    // version). The tenant filter above already guarantees the version is this tenant's.
+    if (!version.workflowId().equals(workflowId)) {
+      throw new ResponseStatusException(
+          HttpStatus.NOT_FOUND,
+          "workflow version '" + versionId + "' does not belong to workflow " + workflowId);
+    }
+    // Idempotent (S05-14): an already-activated version is immutable. Re-activation is a no-op that
+    // returns the current version without error and without recording a second audit row.
     if (WorkflowVersionStatus.isActivated(version.status())) {
-      throw new ImmutableVersionException(
-          "workflow version '" + versionId + "' is already activated and immutable (S05-12)");
+      return WorkflowVersionDto.from(version, codec);
     }
     int changed = versionRepo.activate(tenantId, versionId, version.checksum());
     if (changed == 0) {
-      throw new ImmutableVersionException(
+      // A zero-row conditional update is not a harmless retry: the stored checksum did not match (a
+      // tampered graph) or a competing writer flipped the row. Surface it as a permanent conflict —
+      // an ambiguous outcome, never a silent success (invariant 6). The owning application layer
+      // maps this invariant breach to a {@code 409} here, exactly as {@link #createVersion} maps
+      // its {@code InvalidGraphException} to a {@code 400}: the global handler in {@code common}
+      // stays free of module-specific domain types (root AGENTS.md), so the domain exception does
+      // not cross the boundary — it is turned into a {@code ResponseStatusException} inline.
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
           "workflow version '" + versionId + "' is not activatable (checksum mismatch or race)");
     }
     WorkflowVersion activated = versionRepo.get(tenantId, versionId).orElseThrow();
