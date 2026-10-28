@@ -63,7 +63,7 @@ class AuditRepositoryTest {
     Mockito.verify(ps).setString(7, AuditOutcome.SUCCEEDED.name());
     Mockito.verify(ps).setObject(8, null); // correlation_id
     Mockito.verify(ps).setString(9, null); // metadata_redacted
-    Mockito.verify(ps).setObject(10, event.createdAt());
+    Mockito.verify(ps).setTimestamp(10, Timestamp.from(event.createdAt()));
     assertThat(id).isEqualTo(event.id());
   }
 

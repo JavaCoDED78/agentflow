@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import com.example.agentflow.messaging.domain.WorkflowEvent;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,7 +58,7 @@ class WorkflowEventRepositoryTest {
     Mockito.verify(ps).setObject(4, step);
     Mockito.verify(ps).setString(5, "STEP_RUNNING");
     Mockito.verify(ps).setString(6, "step=LLM_PLAN");
-    Mockito.verify(ps).setObject(7, event.occurredAt());
+    Mockito.verify(ps).setTimestamp(7, Timestamp.from(event.occurredAt()));
     assertThat(persisted).isEqualTo(id);
   }
 

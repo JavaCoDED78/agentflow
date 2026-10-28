@@ -218,7 +218,7 @@ consistent with the run machine (`S05-01`):
 
 - **Run states** — the run-level machine this reconciles with ([`run-state-machine.md`](run-state-machine.md), `S05-01`).
 - **Lease, fencing and recovery** — `durable-execution.md` (`⚠ planned`, `S07-17`).
-- **The pure state machine** — the enum and its `allowedTransition` logic (`workflowexecution.domain`, DB-free, unit tested) in `S05-10`.
+- **The pure state machine** — the enum and its `canTransitionTo` logic (`workflowexecution.domain`, DB-free, unit tested) in `S05-10`.
 - **Transition service** — the single point where transitions are applied with the optimistic lock and the append-only event (`S05-11`).
 - **Retry vs permanent** — [`error-taxonomy.md`](error-taxonomy.md).
 - **Canonical names** — [`docs/domain-glossary.md`](../domain-glossary.md) §5.

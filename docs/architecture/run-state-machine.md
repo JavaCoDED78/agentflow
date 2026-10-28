@@ -10,7 +10,7 @@
 > **Purpose:** the run-level state machine of `workflowexecution` — the set of run
 > states, which of them are terminal, the transitions between them, and the event
 > or command that triggers each one with its guard condition. This is the design
-> that S05-01 formalizes; the Java enum and its `allowedTransition` logic are the
+> that S05-01 formalizes; the Java enum and its `canTransitionTo` logic are the
 > downstream implementation (`S05-10`).
 
 ---
@@ -141,7 +141,7 @@ is driven by an explicit event or command, never by an assignment.
   (`⚠ planned`, `S07-17`).
 - **Workflow DSL and graph validation** — the node types, IDs, edges and DAG
   constraints a run executes are in `docs/workflows/dsl-v1.md` (`S05-17`).
-- **The pure state machine** — the enum and its `allowedTransition` logic
+- **The pure state machine** — the enum and its `canTransitionTo` logic
   (`workflowexecution.domain`, DB-free, unit tested) are implemented in `S05-10`.
 - **Transition service** — the single point where transitions are applied with the
   optimistic lock and the append-only event in `S05-11`.
