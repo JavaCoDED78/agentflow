@@ -345,6 +345,26 @@ class SecurityFilterChainTest {
     }
   }
 
+  // --- OpenAPI developer documentation reachable on the secured chain ---
+
+  @Test
+  void open_api_description_reachable_without_a_token_but_business_still_authenticates()
+      throws Exception {
+    // The generated OpenAPI description is non-sensitive developer documentation, so — like the
+    // liveness/readiness/info probes — it is reachable without a token on the secured chain (the
+    // {@code generateOpenApiContract} tool and the Swagger UI read it on the default profile). A
+    // business endpoint is NOT opened by that rule: an anonymous request to it is still rejected at
+    // the security layer with 401 (the default-deny close, S04-08), so the {@code AccessMatrix}
+    // still guards the real API.
+    ResponseEntity<String> docs =
+        rest.getForEntity(baseUrl() + "/api/v1/v3/api-docs", String.class);
+    assertThat(docs.getStatusCode()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+
+    ResponseEntity<String> business =
+        rest.getForEntity(baseUrl() + "/api/v1/workflows", String.class);
+    assertThat(business.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+  }
+
   // --- S04-13: tenant isolation through the secured HTTP boundary (invariant 1 / ADR-007) ---
 
   @Test

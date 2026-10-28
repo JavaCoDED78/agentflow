@@ -1,5 +1,7 @@
 package com.example.agentflow.workflowdefinition.web;
 
+import com.example.agentflow.workflowdefinition.application.GraphValidationResult;
+import com.example.agentflow.workflowdefinition.application.GraphValidationService;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionPageDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionService;
@@ -18,7 +20,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Workflow definition endpoints (S03-13 create, S03-14 list and get).
+ * Workflow definition endpoints (S03-13 create, S03-14 list and get; S05-13 a read-only graph
+ * validation preview).
  *
  * <p>{@code POST /api/v1/workflows} builds a DRAFT definition and returns {@code 201 Created} with
  * the {@link WorkflowDefinitionDto}; a blank {@code name} fails bean validation and is rendered as
@@ -38,15 +41,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class WorkflowDefinitionController {
 
   private final WorkflowDefinitionService service;
+  private final GraphValidationService graphValidationService;
   private final UUID tenantId;
   private final String actor;
 
   public WorkflowDefinitionController(
       WorkflowDefinitionService service,
+      GraphValidationService graphValidationService,
       @Value("${agentflow.local.tenant-id:00000000-0000-0000-0000-000000000000}")
           String tenantIdRaw,
       @Value("${agentflow.local.actor:local}") String actor) {
     this.service = service;
+    this.graphValidationService = graphValidationService;
     this.tenantId = UUID.fromString(tenantIdRaw);
     this.actor = actor;
   }
@@ -91,5 +97,32 @@ public class WorkflowDefinitionController {
   public ResponseEntity<WorkflowDefinitionDto> getDefinition(@PathVariable UUID workflowId) {
     WorkflowDefinition definition = service.getDefinition(tenantId, workflowId);
     return ResponseEntity.ok(WorkflowDefinitionDto.from(definition));
+  }
+
+  /**
+   * Validates a raw graph payload against a definition before a version is created or activated
+   * (S05-13).
+   *
+   * <p>Returns {@code 200} with a {@link GraphValidationResult} for every request — {@code valid =
+   * true} with no violations when the graph is structurally sound, or {@code valid = false} with
+   * the full, ordered list of {@code violations} (each a JSON {@code path} plus a human {@code
+   * message}) when it is not. The request body is the raw graph JSON (client input — treated as
+   * untrusted <em>data</em>, never executed). No version is created and nothing is audited: this is
+   * a read-only preview, so a client can confirm validity or fix its payload before {@code POST
+   * /api/v1/workflows /{id}/versions}. The tenant-scoped definition lookup (see {@code
+   * GraphValidationService#validateGraph}) means a cross-tenant or missing id is reported as a
+   * {@code 404}, and a {@code 503} is returned when no database is wired (the lookup cannot run).
+   *
+   * @param workflowId the definition id (must be a UUID; a non-UUID path value is a {@code 400})
+   * @param rawGraphJson the raw graph JSON to validate
+   * @return {@code 200} with the validation result ({@code valid} plus the ordered {@code
+   *     violations} list)
+   */
+  @PostMapping("/{workflowId}/validate")
+  public ResponseEntity<GraphValidationResult> validate(
+      @PathVariable UUID workflowId, @RequestBody String rawGraphJson) {
+    GraphValidationResult result =
+        graphValidationService.validateGraph(tenantId, workflowId, rawGraphJson);
+    return ResponseEntity.ok(result);
   }
 }

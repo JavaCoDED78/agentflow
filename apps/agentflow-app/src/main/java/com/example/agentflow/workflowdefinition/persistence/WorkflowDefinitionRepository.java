@@ -66,7 +66,7 @@ public class WorkflowDefinitionRepository {
   public Optional<WorkflowDefinition> findByTenantAndId(UUID tenantId, UUID id) {
     List<WorkflowDefinition> results =
         jdbc.query(
-            "SELECT id, tenant_id, name, description, status, created_by, created_at "
+            "SELECT id, tenant_id, name, description, status, version, created_by, created_at "
                 + "FROM "
                 + TABLE
                 + " WHERE id = ? AND tenant_id = ?",
@@ -91,7 +91,7 @@ public class WorkflowDefinitionRepository {
    */
   public List<WorkflowDefinition> listByTenant(UUID tenantId, int limit, int offset) {
     return jdbc.query(
-        "SELECT id, tenant_id, name, description, status, created_by, created_at "
+        "SELECT id, tenant_id, name, description, status, version, created_by, created_at "
             + "FROM "
             + TABLE
             + " WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
