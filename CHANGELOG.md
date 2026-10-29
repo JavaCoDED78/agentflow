@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency, Java code, or existing-schema change.
 
 - **Workflow DSL v1 documentation (`S05-17`).** `docs/workflows/dsl-v1.md` is the human-readable
-  companion to the machine-readable contract [`contracts/workflow-graph/workflow-graph.json`](../contracts/workflow-graph/workflow-graph.json)
+  companion to the machine-readable contract [`contracts/workflow-graph/workflow-graph.json`](contracts/workflow-graph/workflow-graph.json)
   (JSON Schema, draft 2020-12, `$id` `.../workflow-graph/1.0.0.json`): the top-level shape
   (`schemaVersion` const `"1.0.0"`, `nodes`, `edges`), the closed node-type set
   (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`, `FINALIZE`) owned
@@ -137,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workflow graph DAG validation / acyclicity (`S05-06`).** The `workflowdefinition` module's `WorkflowGraphValidator` now enforces the DAG rules that the portable JSON Schema cannot express. `validate` additionally rejects a graph over the contract's limits — more than 200 nodes or 1000 edges — and, most importantly, a **cyclic** graph: it runs Kahn's topological sort and throws the controlled `InvalidGraphException` (`workflowdefinition` validation-error class, HTTP 400 by the global error handler, `S03-11`) with a cycle message when a topological order cannot be produced. A new `WorkflowGraphValidator.topologicalOrder` returns a **deterministic** topological order for a valid (acyclic) graph using a definition-order tie-break (so the order is fully reproducible for a given input). Because the pre-persistence gate (`WorkflowGraphParser.parse`) calls `validate`, a cyclic graph is rejected before a version is persisted or an activated version is created — the `S05-06` acceptance criterion ("cyclic graph is not activated"). The committed `topology/invalid-cyclic.json` fixture is now asserted to fail as a cycle. Verified: `./gradlew :apps:agentflow-app:check` is green (unit `WorkflowGraphValidatorTest` with new linear / branching / cycle / limit cases, the fixtures-driven `WorkflowGraphTopologyTest` rejecting `invalid-cyclic.json` as a cycle, the architecture gates, and `spotless` formatting).
 
 - **Workflow graph edge validation (`S05-05`).** The `workflowdefinition` module's structural gate now rejects the topology violations that the portable JSON Schema cannot express. `WorkflowGraphValidator.validate` (the pre-persistence gate added in `S03-09`) additionally rejects, before a version is persisted or serialized, a **duplicate node id**, a `from`/`to` referencing an **unknown node**, a **duplicate edge**, and a **self-referencing edge** (both endpoints equal) — alongside the existing at-least-one-node / non-blank id & type / known-type checks. Every rejection names the offending JSON path (`nodes[i]`, `nodes[i].id`, `edges[j]`, `edges[j].from`, `edges[j].to`) so a client can locate the problem; the error is the controlled `InvalidGraphException` (`workflowdefinition` validation-error class, HTTP 400 by the global error handler, `S03-11`). Cycles **are** checked now (S05-06): a cyclic graph is rejected before a version is persisted, so a
-cyclic graph is never activated — see the `S05-06` entry above. The input boundary now reads the contract's `edges` (the parser `WorkflowGraphParser` had never done before) into a new value object `WorkflowEdge(from, to)` (`domain` package); `WorkflowGraph` gains an ordered, non-null `edges` list and the codec round-trips it unchanged. Absent or `null` `edges` still default to an empty list (a single-node graph has no ordering constraint); a `nodes` or `edges` that is not an array, or an edge that is not an object, fails closed with `InvalidGraphException`. The four forbidden shapes are the contract of the topology fixtures in [`contracts/workflow-graph/topology/`](../contracts/workflow-graph/topology). Verified: `./gradlew check` is green — unit (`WorkflowGraphParserTest`, `WorkflowGraphCodecTest`, `WorkflowGraphValidatorTest`, and the fixtures-driven `WorkflowGraphTopologyTest` that exercises the committed `topology/` and `valid/` fixtures), the architecture gates (`ArchitectureBoundaryTest` + `NoCyclicModuleDependenciesTest`, cycle-free `workflowdefinition` module), and the OpenAPI contract gate (no new API): 160 tests, 0 skipped. No DB/migration change (the store table is `S05-08`), so the Docker-backed `integrationTest` is out of scope for this change. Updated docs: the new `WorkflowEdge` concept in [`docs/domain-glossary.md`](../docs/domain-glossary.md) §4.
+cyclic graph is never activated — see the `S05-06` entry above. The input boundary now reads the contract's `edges` (the parser `WorkflowGraphParser` had never done before) into a new value object `WorkflowEdge(from, to)` (`domain` package); `WorkflowGraph` gains an ordered, non-null `edges` list and the codec round-trips it unchanged. Absent or `null` `edges` still default to an empty list (a single-node graph has no ordering constraint); a `nodes` or `edges` that is not an array, or an edge that is not an object, fails closed with `InvalidGraphException`. The four forbidden shapes are the contract of the topology fixtures in [`contracts/workflow-graph/topology/`](contracts/workflow-graph/topology). Verified: `./gradlew check` is green — unit (`WorkflowGraphParserTest`, `WorkflowGraphCodecTest`, `WorkflowGraphValidatorTest`, and the fixtures-driven `WorkflowGraphTopologyTest` that exercises the committed `topology/` and `valid/` fixtures), the architecture gates (`ArchitectureBoundaryTest` + `NoCyclicModuleDependenciesTest`, cycle-free `workflowdefinition` module), and the OpenAPI contract gate (no new API): 160 tests, 0 skipped. No DB/migration change (the store table is `S05-08`), so the Docker-backed `integrationTest` is out of scope for this change. Updated docs: the new `WorkflowEdge` concept in [`docs/domain-glossary.md`](docs/domain-glossary.md) §4.
 
 - **Workflow graph parser (`S05-04`).** The `workflowdefinition` module gains a controlled input
   gate for `graph_json`: `WorkflowGraphParser`
@@ -165,7 +165,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   verified graph the row mapper re-reads from `graph_json`.
 
 - **Workflow graph JSON Schema (`S05-03`).**
-  [`contracts/workflow-graph/workflow-graph.json`](../contracts/workflow-graph/workflow-graph.json)
+  [`contracts/workflow-graph/workflow-graph.json`](contracts/workflow-graph/workflow-graph.json)
   is the new machine-readable contract for `graph_json` (`ADR-005`, domain glossary "Workflow DSL /
   graph"): a v1 graph is `{schemaVersion, nodes, edges}` with `schemaVersion` pinned to `1.0.0`, an
   ordered list of `1..200` typed nodes (`{id, type, config?, input?, output?}`) and `0..1000`
@@ -175,14 +175,14 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   The schema enforces everything portable JSON Schema can; the topology rules that cannot be
   expressed portably (unique ids, no dangling/self-referencing/duplicate edges, acyclicity,
   input-reference linkage) are left to the `workflowdefinition` DSL validator (`S05-05`, `S05-06`,
-  `S05-07`) and documented as such. [`contracts/workflow-graph/README.md`](../contracts/workflow-graph/README.md)
+  `S05-07`) and documented as such. [`contracts/workflow-graph/README.md`](contracts/workflow-graph/README.md)
   explains the schema-vs-validator boundary, the chosen limits and the exact `jsonschema` check.
-  Fixtures accompany it: [`valid/`](../contracts/workflow-graph/valid) (a six-node linear pipeline
+  Fixtures accompany it: [`valid/`](contracts/workflow-graph/valid) (a six-node linear pipeline
   covering every node type and a branching DAG that exercises `input`/`output` references) and
-  [`invalid/`](../contracts/workflow-graph/invalid) (wrong/missing `schemaVersion`, unknown node
+  [`invalid/`](contracts/workflow-graph/invalid) (wrong/missing `schemaVersion`, unknown node
   type, malformed edge, bad id pattern, malformed/object input reference and a 201-node
   over-limit graph); each structurally-valid-but-topology-invalid case lives in
-  [`topology/`](../contracts/workflow-graph/topology) for the DSL validator. Verified by the
+  [`topology/`](contracts/workflow-graph/topology) for the DSL validator. Verified by the
   external `jsonschema` validator (Draft 2020-12): every `valid/` fixture passes and every
   `invalid/` fixture fails — the `S05-03` acceptance criterion ("a graph can be checked with an
   external schema validator"). Documentation-only change, no build gate.
