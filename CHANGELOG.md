@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transactional outbox table (`outbox_events`, `S06-03`).**
+  `apps/agentflow-app/src/main/resources/migrations/V3_3_8__create_outbox_events.sql` is the
+  `messaging`-owned migration for the DB-side transactional outbox (glossary §6, plan §8.1,
+  `ADR-004`). It stores the events the workflow/ingestion modules must publish to Kafka after
+  they commit their durable state, so state and the event cannot diverge — *a run is never
+  accepted without its outbox event, and an event is never published without durable state*.
+  The table matches the plan's canonical outbox columns (`event_id`, `aggregate_type`,
+  `aggregate_id`, `topic`, `event_key`, `payload`, `headers`, `created_at`, `published_at`,
+  `publish_attempts`, `last_error`) plus the two columns the `S06-03` task requires — `status`
+  (`PENDING`/`PUBLISHED`/`FAILED`, application-managed by the outbox publisher) and
+  `next_attempt_at` (bounded-retry backoff anchor) — and `tenant_id` → `tenants`, stored
+  directly because `messaging` owns the table and scopes its own pending reads by it (the same
+  pattern as the sibling `workflow_events`, `S05-09`; the envelope `tenantId` is routing only,
+  never an authorization source, invariant 1). `event_id` is the idempotent publish key
+  (`ADR-003`), `event_key` is the stable `tenantId:aggregateId` aggregate key that keeps all of
+  one aggregate's state events in the same partition (S06-02), and `payload`/`headers`/`last_error`
+  are redacted correlation/audit text — never a secret, a full prompt or a full document (invariant 8).
+  One partial index, `outbox_events_pending_idx` on `(created_at) WHERE status = 'PENDING'`, backs
+  the polling publisher's oldest-first bounded scan (S06-07); the atomic claim (`UPDATE ... SET
+  status WHERE id = ? AND status = 'PENDING'`) is fenced by the conditional `WHERE`, so two
+  publishers cannot publish the same row. The migration is forward-only and idempotent
+  (`IF NOT EXISTS`), tagged `S06-03` / `messaging` in the table `COMMENT`, and verified in this
+  change by the `MigrationsTest` integration suite (real `pgvector/pgvector:0.8.6-pg18`,
+  Testcontainers — never `H2` per `AGENTS.md`), which now covers version `3.3.8` — the applied
+  version list, the `outbox_events` base table, the `NOT NULL` columns, the `tenant_id` foreign
+  key, the `outbox_events_pending_idx` index, the `S06-03` table `COMMENT`, and a data-driven
+  acceptance case proving a valid PENDING event lands and the `NOT NULL` / foreign-key guards
+  reject the invalid ones (all rolled back). **Verification:** `./gradlew check` is green (unit +
+  architecture + spotless formatting) and `./gradlew integrationTest --tests *MigrationsTest*` is
+  green against the real `pgvector/pgvector:0.8.6-pg18` Testcontainers image — the full suite (10
+  tests) applies `V3_3_8` in order and proves the schema and every data-level acceptance criterion
+  above (the applied version list, the `outbox_events` base table, the `NOT NULL` columns, the
+  `tenant_id` foreign key, the `outbox_events_pending_idx` index and the `S06-03`/`messaging` table
+  `COMMENT`, plus the acceptance case). No dependency, Java application code, contract, or schema
+  change beyond the migration. Docs: `docs/domain-glossary.md` §6 already names `outbox_events` (no change).
+
 - **Kafka topic catalogue (`S06-02`).** `docs/architecture/kafka-topics.md` is the new canonical
   catalogue of the six `agentflow.*` topics (glossary §6, plan §7): `run-requested`, `step-ready`,
   `run-cancelled`, `run-finished` (key `tenantId:runId`) and `ingestion-requested`, `indexed`

@@ -70,7 +70,8 @@ class MigrationsTest {
         applied.add(versions.getString("version"));
       }
       assertThat(applied)
-          .containsExactly("3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7");
+          .containsExactly(
+              "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8");
     }
   }
 
@@ -87,7 +88,8 @@ class MigrationsTest {
             "workflow_definition_versions",
             "workflow_runs",
             "workflow_step_runs",
-            "workflow_events");
+            "workflow_events",
+            "outbox_events");
   }
 
   /**
@@ -115,6 +117,18 @@ class MigrationsTest {
     assertThat(nullableColumn("workflow_events", "run_id")).isFalse();
     assertThat(nullableColumn("workflow_events", "event_type")).isFalse();
     assertThat(nullableColumn("workflow_events", "occurred_at")).isFalse();
+    // outbox_events (S06-03): the event identity, the tenant, the aggregate, the topic and the
+    // payload are NOT NULL; status and the attempt count carry application defaults.
+    assertThat(nullableColumn("outbox_events", "event_id")).isFalse();
+    assertThat(nullableColumn("outbox_events", "tenant_id")).isFalse();
+    assertThat(nullableColumn("outbox_events", "aggregate_type")).isFalse();
+    assertThat(nullableColumn("outbox_events", "aggregate_id")).isFalse();
+    assertThat(nullableColumn("outbox_events", "topic")).isFalse();
+    assertThat(nullableColumn("outbox_events", "event_key")).isFalse();
+    assertThat(nullableColumn("outbox_events", "payload")).isFalse();
+    assertThat(nullableColumn("outbox_events", "status")).isFalse();
+    assertThat(nullableColumn("outbox_events", "publish_attempts")).isFalse();
+    assertThat(nullableColumn("outbox_events", "created_at")).isFalse();
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
@@ -144,6 +158,9 @@ class MigrationsTest {
     // S05-09: the event is tenant-scoped and pinned to its run, with a nullable step pin.
     assertThat(referencedParents("workflow_events"))
         .contains("tenants", "workflow_runs", "workflow_step_runs");
+    // S06-03: the outbox row is tenant-scoped; the aggregate is addressed by aggregate_type +
+    // aggregate_id, so the only parent FK is the tenant (the generic outbox is not run-specific).
+    assertThat(referencedParents("outbox_events")).contains("tenants");
   }
 
   /** The single genuine secondary index (S03-07) exists on the tenant-list lookup path. */
@@ -166,6 +183,16 @@ class MigrationsTest {
   }
 
   /**
+   * The outbox pending index (S06-03) backs the polling publisher's read of unpublished rows: a
+   * partial index on the pending status, ordered by {@code created_at}, so a bounded oldest-first
+   * poll drains retries in creation order and concurrent publishers scan without a full scan.
+   */
+  @Test
+  void outbox_pending_index_exists() throws SQLException {
+    assertThat(indexes("outbox_events")).contains("outbox_events_pending_idx");
+  }
+
+  /**
    * The <code>COMMENT</code>s record the owning module and sprint task, so ownership is obvious
    * from the schema itself (forward-only, one owning module per migration).
    */
@@ -185,6 +212,9 @@ class MigrationsTest {
     assertThat(tableComment("workflow_step_runs")).contains("S05-08").contains("workflowexecution");
     // S05-09: the append-only event history records its owner (messaging) and the task.
     assertThat(tableComment("workflow_events")).contains("S05-09").contains("messaging");
+    // S06-03: the transactional outbox records its owner (messaging) and the task in its table
+    // COMMENT, so the table's ownership is obvious from the schema itself.
+    assertThat(tableComment("outbox_events")).contains("S06-03").contains("messaging");
   }
 
   /**
@@ -426,6 +456,56 @@ class MigrationsTest {
                                 + "', '"
                                 + tenant
                                 + "', '00000001-0000-0000-0000-000000000001', 'RUNNING')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
+
+        // outbox_events (S06-03): a valid event to publish lands and stays PENDING; a row
+        // missing payload is rejected by NOT NULL, and a row with a missing parent tenant is
+        // rejected by the foreign key (fresh uuid values so a satisfied guard does not fire
+        // first and hide the failure).
+        insert(
+            "INSERT INTO outbox_events (id, event_id, tenant_id, aggregate_type, aggregate_id, "
+                + "topic, event_key, payload, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            uuid(),
+            uuid(),
+            tenant,
+            "run",
+            runId,
+            "agentflow.workflow.run-requested.v1",
+            "tenant:" + tenant + ":" + runId,
+            "{\"aggregateType\":\"run\"}",
+            "PENDING");
+        // a row missing payload is rejected by NOT NULL — tenant_id points at the valid tenant
+        // above so the foreign key is satisfied and only the payload guard fires; the columns
+        // are bound via ? (as with the valid insert), and a fresh id/tenant-scoped event_key keep
+        // this row from colliding with the valid insert above.
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO outbox_events (id, event_id, tenant_id, aggregate_type, "
+                            + "aggregate_id, topic, event_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        uuid(),
+                        uuid(),
+                        tenant,
+                        "run",
+                        runId,
+                        "agentflow.workflow.run-requested.v1",
+                        "tenant:x:" + runId))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("not-null");
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO outbox_events (id, event_id, tenant_id, aggregate_type, "
+                            + "aggregate_id, topic, event_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        uuid(),
+                        uuid(),
+                        "00000001-0000-0000-0000-000000000001",
+                        "run",
+                        uuid(),
+                        "agentflow.workflow.run-requested.v1",
+                        "tenant:x",
+                        "{}"))
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("foreign key");
 
