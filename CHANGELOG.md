@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Event envelope v1 contract (`S06-01`).** `contracts/events/json-schema/` gains
+  [`envelope-v1.json`](contracts/events/json-schema/envelope-v1.json) (JSON Schema, draft
+  2020-12, `$id` `.../event-envelope/1.0.0.json`) and its canonical instance
+  [`envelope-v1.example.json`](contracts/events/json-schema/envelope-v1.example.json). The
+  envelope is the minimal payload every Kafka record carries (glossary §6):
+  `eventId`, `eventType`, `schemaVersion`, `occurredAt`, `tenantId`, `aggregateType`,
+  `aggregateId`, `correlationId`, `causationId`, `payload`. `additionalProperties: false` on
+  the envelope; **required** fields are every one except `causationId` (which is
+  `["string","null"]` — null for the first event in a correlation chain, the triggering
+  event's `eventId` otherwise). `tenantId` is correlation/routing only and is explicitly not
+  an authorization source (invariant 1); the payload is an open object by design because its
+  concrete shape is defined per event (S06-02/S06-16), but the schema documents that it must
+  carry only redacted, non-secret data — no secret, full prompt or full document (invariants 7
+  and 8). **Naming reconciliation:** the plan's task text lists `eventVersion`, but the
+  canonical, already-cited field is `schemaVersion` (glossary §6, `contracts/AGENTS.md`, and
+  the existing `workflow-graph.json` `schemaVersion` const `"1.0.0"`), so the envelope version
+  field is `schemaVersion` (`const "1.0.0"`) and any breaking change to the envelope shape
+  creates a new major schema per `contracts/AGENTS.md`; new *event types* are additive and do
+  not touch this file. **Verification (real, no Gradle gate for a contract-only change):** the
+  example was validated against the schema with the draft-2020-12 validator `ajv` 8.20.0 +
+  `ajv-formats` 3.0.1 — 9/9 checks pass, including the positive example and the negative
+  controls (missing `eventId`, extra property, non-UUID id, wrong `schemaVersion`, non-object
+  payload all rejected). Run: `node validate.js D:/Project/AI/AGENTFLOW` from
+  `C:/Users/andro/AppData/Local/Temp/evt-validate` (see the `RESULT: 9 passed, 0 failed`
+  output). **Docs:** `contracts/events/README.md` restates the envelope and its pending items;
+  the existing `docs/domain-glossary.md` §6 entry already matches (no change needed). **No**
+  dependency, Java code, or existing-schema change.
+
 - **Workflow DSL v1 documentation (`S05-17`).** `docs/workflows/dsl-v1.md` is the human-readable
   companion to the machine-readable contract [`contracts/workflow-graph/workflow-graph.json`](../contracts/workflow-graph/workflow-graph.json)
   (JSON Schema, draft 2020-12, `$id` `.../workflow-graph/1.0.0.json`): the top-level shape

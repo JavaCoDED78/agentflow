@@ -1,0 +1,15 @@
+{
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "eventType": "workflow.run-requested.v1",
+  "schemaVersion": "1.0.0",
+  "occurredAt": "2026-10-29T10:00:00Z",
+  "tenantId": "00000000-0000-0000-0000-000000000001",
+  "aggregateType": "run",
+  "aggregateId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+  "correlationId": "11111111-2222-3333-4444-555566667777",
+  "causationId": null,
+  "payload": {
+    "definitionId": "8a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+    "version": 1
+  }
+}

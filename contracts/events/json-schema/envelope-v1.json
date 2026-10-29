@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentflow.local/schemas/event-envelope/1.0.0.json",
+  "title": "AgentFlow Event Envelope (v1)",
+  "description": "The minimal JSON envelope carried by every Kafka record produced by AgentFlow (glossary §6, task S06-01). It is identical for every event; only {@code eventType} and {@code payload} differ. {@code tenantId} is a routing/correlation field only and is NEVER an authorization source — the consumer re-checks ownership against PostgreSQL (invariant 1). The envelope is versioned independently of the per-event payload vocabulary: breaking envelope changes create a new {@code schemaVersion} (new major schema, see contracts/AGENTS.md), while new event types are additive and never change this file. Secret, full-prompt and full-document data never enter the payload or the headers (invariants 7 and 8); the concrete payload is a typed object with an explicit field allowlist, defined per event in contracts/events/json-schema/ (S06-02).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "tenantId",
+    "aggregateType",
+    "aggregateId",
+    "correlationId",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique, immutable id of this event, assigned by the producer. Used for idempotent outbox publishing (by event_id, S06-07/S06-08) and inbox deduplication (S06-04, S06-10). Exactly-once is never promised (at-least-once, ADR-003).",
+      "examples": ["3fa85f64-5717-4562-b3fc-2c963f66afa6"]
+    },
+    "eventType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9._-]{0,120}$",
+      "description": "The event name. The concrete vocabulary and the topic/version naming (topic-name ending in .v<N>, e.g. agentflow.workflow.run-requested.v1 per glossary §6) are fixed by the topic catalogue (S06-02) and the event catalog (S06-16). New event types are additive; this field never changes an existing event's meaning.",
+      "examples": ["workflow.run-requested.v1", "document.indexed.v1"]
+    },
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "The version of THIS envelope schema (the file, not the event). Bump on any breaking change to the envelope shape — a removed or renamed field, or a change to the required set — following the compatibility rule in contracts/AGENTS.md (new major schema). Adding an optional field is compatible and does not bump this value.",
+      "examples": ["1.0.0"]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC instant at which the event occurred, assigned by the producer and written with the timestamptz column in the outbox (invariant 10). Injectable Clock in tests (S06-14).",
+      "examples": ["2026-10-29T10:00:00Z"]
+    },
+    "tenantId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The owning tenant. CORRELATION AND ROUTING ONLY — never an authorization source. The producer scopes the event to the tenant of the verified security context / stored run, and the consumer re-checks ownership against PostgreSQL before acting (invariant 1); a tenantId arriving in Kafka headers is not trusted for authorization. Read and filter by the (tenantId, aggregateId) pair."
+    },
+    "aggregateType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "description": "The aggregate the event is about (run, step, document, ...). The concrete set and the topic/key strategy per aggregate are fixed by the topic catalogue (S06-02): workflow events key by tenantId:runId, document events by tenantId:documentId."
+    },
+    "aggregateId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The aggregate instance id the event is scoped to: the runId for a run event, the stepRunId for a step event, or the documentId for a document event."
+    },
+    "correlationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Identifies the whole operation/correlation chain, shared by every event of one run from request to completion. Propagated in the Kafka headers alongside the trace parent (S06-12). Not an authorization input.",
+      "examples": ["11111111-2222-3333-4444-555566667777"]
+    },
+    "causationId": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The id of the event that caused this one, enabling replay and diagnostics. Null for the first event in a correlation chain (there is no predecessor); set to the triggering event's eventId otherwise. Propagated in the Kafka headers (S06-12).",
+      "examples": [null, "3fa85f64-5717-4562-b3fc-2c963f66afa6"]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Event-specific DATA. Must contain only redacted, non-secret fields: never a secret, API key, full prompt, full model output, full document, or any untrusted content treated as data (invariants 7 and 8). The concrete shape is a typed object with an explicit field allowlist (additionalProperties: false), defined per event in contracts/events/json-schema/ (S06-02) so a disallowed field is rejected at the payload schema. An empty object is valid for an event with no data. At-least-once delivery means a producer may retry; payload side effects are idempotent (S06-05, S06-10)."
+    }
+  },
+  "examples": [
+    {
+      "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "eventType": "workflow.run-requested.v1",
+      "schemaVersion": "1.0.0",
+      "occurredAt": "2026-10-29T10:00:00Z",
+      "tenantId": "00000000-0000-0000-0000-000000000001",
+      "aggregateType": "run",
+      "aggregateId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+      "correlationId": "11111111-2222-3333-4444-555566667777",
+      "causationId": null,
+      "payload": {
+        "definitionId": "8a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+        "version": 1
+      }
+    }
+  ]
+}
