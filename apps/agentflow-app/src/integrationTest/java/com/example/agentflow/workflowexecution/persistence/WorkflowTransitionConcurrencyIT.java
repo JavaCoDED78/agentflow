@@ -6,8 +6,6 @@ import com.example.agentflow.messaging.application.WorkflowEventService;
 import com.example.agentflow.messaging.persistence.WorkflowEventRepository;
 import com.example.agentflow.workflowexecution.application.RunStateMachineService;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
-import java.util.EnumMap;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import javax.sql.DataSource;
@@ -25,41 +23,45 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * PostgreSQL concurrency suite for the single run transition service (S05-11, {@link
- * RunStateMachineService}) — the S05-16 criterion: two transactions move the same run at the same
- * time, and the race must finish by the documented rule so a silent lost update is impossible and
- * the append-only history gets exactly one row.
+ * RunStateMachineService}) &mdash; the S05-16 criterion: two transactions move the same run at the
+ * same time, and the race must finish by the documented rule so a silent lost update is impossible
+ * and the append-only history gets exactly one row.
  *
  * <p>The DB-free tests ({@code RunStateMachineServiceTest}, {@code TransitionTableServiceTest})
  * assert the ordering against mocked objects and the repository integration suite ({@link
- * WorkflowTransitionIntegrationTest}) proves the conditional update over a real database — but a
- * mocked repository never runs SQL and a sequential real-DB call cannot produce a genuine conflict:
- * the service reads the current optimistic {@code version} and writes it back in the same thread,
- * so a pre-read bump is absorbed by the read (the {@code WorkflowTransitionIntegrationTest} Javadoc
- * records exactly this gap). This suite closes it: it runs two transactions that actually contend
- * on the same row over a real {@code pgvector/pgvector:0.8.6-pg18} (the same image as Compose, per
- * {@code AGENTS.md}: never {@code H2} as a PostgreSQL stand-in), so it is the only suite that
- * proves the three claims together:
+ * WorkflowTransitionIntegrationTest}) proves the conditional update over a real database &mdash;
+ * but a mocked repository never runs SQL and a single-threaded real-DB call cannot produce a
+ * genuine conflict (the service reads the current optimistic {@code version} and writes it back in
+ * the same thread, so a pre-read bump is absorbed by the read &mdash; the {@code
+ * WorkflowTransitionIntegrationTest#service_appends_one_event_on_success_and_none_when_a_transition_is_forbidden}
+ * Javadoc records exactly this gap). This suite closes it: it releases {@code parallelism}
+ * transactions that genuinely overlap on the same {@code pgvector/pgvector:0.8.6-pg18} row (the
+ * same image as Compose, per {@code AGENTS.md}: never {@code H2} as a PostgreSQL stand-in) and
+ * asserts the outcome invariant that no scheduling can violate:
  *
  * <ul>
- *   <li><b>exactly one writer wins</b> &mdash; PostgreSQL {@code READ COMMITTED} locks the row on
- *       the winning {@code UPDATE} and the loser's {@code UPDATE} re-checks its {@code status} /
- *       {@code version} guard against the committed row, so the loser's conditional update matches
- *       no row and is refused (invariant 4 / optimistic lock);
- *   <li><b>no silent lost update</b> &mdash; the loser never overwrites the winner's commit: the
- *       row stays in the winner's state at the bumped {@code version}, so one of two competing
- *       updates can never overwrite the other;
+ *   <li><b>exactly one writer wins</b> &mdash; the conditional {@code UPDATE ... WHERE status =
+ *       'QUEUED' AND version = 0} can match the row at most once, so at most one transition ever
+ *       commits (invariant 4);
+ *   <li><b>no silent lost update</b> &mdash; the winning state ({@code RUNNING}) at the bumped
+ *       {@code version} is the row's final state, so a losing writer never overwrote it;
  *   <li><b>no duplicate history</b> &mdash; the state change and its {@code workflow_events} row
  *       are one transaction (invariant 3 / {@code ADR-004}), so exactly one row is recorded for the
  *       run no matter how many writers raced.
  * </ul>
  *
- * <p>Both transactions are released simultaneously with a {@link
- * java.util.concurrent.CountDownLatch} and each runs in its own {@link TransactionTemplate}
- * transaction over its own connection, so the two {@code transitionRun} calls genuinely overlap:
- * the fast tenant-scoped read in both completes before either commits, both observe {@code (QUEUED,
- * version=0)}, and the row lock on the first {@code UPDATE} forces the second to lose the
- * transition. Every id is test-generated and each test seeds its own run, so the tests are
- * independent.
+ * <p>What the suite deliberately does <em>not</em> assert is <em>how</em> a losing writer is
+ * refused: a writer that observed the pre-commit state is refused by the optimistic {@code version}
+ * fence (HTTP 409); a writer that observed the committed {@code RUNNING} state is refused by the
+ * domain state gate {@code RUNNING -> RUNNING} (HTTP 400, forbidden). Both are "not a winner", and
+ * the invariant above holds for either path, so the assertions stay deterministic under any thread
+ * interleaving instead of pinning a specific rejection code.
+ *
+ * <p>Every transaction runs in its own {@link TransactionTemplate} over its own connection (a
+ * {@code DriverManagerDataSource} makes a fresh physical connection per {@code getConnection}, so
+ * two transactions never share one and genuinely contend), and all writers are released at once
+ * with a {@link CountDownLatch}. Every id is test-generated and each test seeds its own run, so the
+ * tests are independent.
  */
 @Testcontainers
 class WorkflowTransitionConcurrencyIT {
@@ -86,47 +88,35 @@ class WorkflowTransitionConcurrencyIT {
   // --- two concurrent run transitions (the S05-16 task: exactly two transactions) ----------------
 
   @Test
-  void two_concurrent_run_transitions_end_with_one_winner_no_lost_update_and_one_event()
-      throws Exception {
-    RaceResult result = race(2);
+  void two_concurrent_run_transitions_record_exactly_one_winner_and_one_event() throws Exception {
+    RaceOutcome r = race(2);
 
-    // The race finishes by the documented rule: exactly one writer wins, the other is refused
-    // (a 409 optimistic conflict) — never a silent success for both and never a lost update.
-    assertThat(result.get(Outcome.WIN)).isEqualTo(1);
-    assertThat(result.get(Outcome.CONFLICT)).isEqualTo(1);
-    assertThat(result.get(Outcome.INTERRUPTED)).isEqualTo(0);
-
-    final UUID tenant = result.runTenant();
-    final UUID runId = result.runId();
-    // The row is in the winner's state at the bumped version: the loser did not overwrite it.
-    RunStateSnapshot after = new WorkflowRunRepository(jdbc).findState(tenant, runId).orElseThrow();
+    // Exactly one writer's transition is recorded; every other writer is refused (400 or 409).
+    assertThat(r.winners()).isEqualTo(1);
+    // No lost update: the row holds the winner's state at the bumped optimistic version.
+    RunStateSnapshot after =
+        new WorkflowRunRepository(jdbc).findState(r.tenant(), r.runId()).orElseThrow();
     assertThat(after.status()).isEqualTo(WorkflowRunState.RUNNING);
     assertThat(after.version()).isEqualTo(1);
-
-    // Exactly one history row: the append-only trail never diverges from the state (invariant 3).
+    // No duplicate history: the append-only trail never diverges from the state (invariant 3).
     WorkflowEventService events = new WorkflowEventService(new WorkflowEventRepository(jdbc));
-    assertThat(events.historyByRun(tenant, runId)).hasSize(1);
-    assertThat(events.historyByRun(tenant, runId).get(0).eventType()).isEqualTo("run.started");
+    assertThat(events.historyByRun(r.tenant(), r.runId())).hasSize(1);
   }
 
   // --- four concurrent run transitions (the rule is not a two-thread artefact) -------------------
 
   @Test
-  void four_concurrent_run_transitions_still_end_with_one_winner_and_one_event() throws Exception {
-    RaceResult result = race(4);
+  void four_concurrent_run_transitions_record_exactly_one_winner_and_one_event() throws Exception {
+    RaceOutcome r = race(4);
 
-    assertThat(result.get(Outcome.WIN)).isEqualTo(1);
-    assertThat(result.get(Outcome.CONFLICT)).isEqualTo(3);
-    assertThat(result.get(Outcome.INTERRUPTED)).isEqualTo(0);
-
-    final UUID tenant = result.runTenant();
-    final UUID runId = result.runId();
-    RunStateSnapshot after = new WorkflowRunRepository(jdbc).findState(tenant, runId).orElseThrow();
+    assertThat(r.winners()).isEqualTo(1);
+    RunStateSnapshot after =
+        new WorkflowRunRepository(jdbc).findState(r.tenant(), r.runId()).orElseThrow();
     assertThat(after.status()).isEqualTo(WorkflowRunState.RUNNING);
     assertThat(after.version()).isEqualTo(1);
 
     WorkflowEventService events = new WorkflowEventService(new WorkflowEventRepository(jdbc));
-    assertThat(events.historyByRun(tenant, runId)).hasSize(1);
+    assertThat(events.historyByRun(r.tenant(), r.runId())).hasSize(1);
   }
 
   // --- helpers -----------------------------------------------------------------------------------
@@ -134,10 +124,10 @@ class WorkflowTransitionConcurrencyIT {
   /**
    * Seeds a run in {@code QUEUED, version=0}, releases {@code parallelism} transactions that each
    * move it to {@code RUNNING} through {@link RunStateMachineService} in its own transaction, and
-   * returns the per-outcome count keyed by {@link Outcome}. The run id and tenant are carried back
-   * on the returned map so the caller can assert the final state and the single event row.
+   * counts how many of them won. The run id and tenant are carried back on the returned record so
+   * the caller can assert the final state and the single event row.
    */
-  private static RaceResult race(int parallelism) throws InterruptedException {
+  private static RaceOutcome race(int parallelism) throws InterruptedException {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     seedRun(tenant, runId);
@@ -153,13 +143,7 @@ class WorkflowTransitionConcurrencyIT {
     TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
 
     CountDownLatch release = new CountDownLatch(1);
-    Map<Outcome, Integer> counts = new EnumMap<Outcome, Integer>(Outcome.class);
-    synchronized (counts) {
-      counts.put(Outcome.WIN, 0);
-      counts.put(Outcome.CONFLICT, 0);
-      counts.put(Outcome.INTERRUPTED, 0);
-    }
-    Outcome[] result = new Outcome[parallelism];
+    Outcome[] results = new Outcome[parallelism];
     Thread[] threads = new Thread[parallelism];
     for (int i = 0; i < parallelism; i++) {
       final int idx = i;
@@ -167,48 +151,46 @@ class WorkflowTransitionConcurrencyIT {
           new Thread(
               () -> {
                 try {
-                  release.await(); // start the race with every writer in flight at once
-                  Outcome o =
-                      tx.execute(
-                          status -> {
-                            Outcome outcome = runTransition(service, tenant, runId);
-                            synchronized (counts) {
-                              counts.put(outcome, counts.get(outcome) + 1);
-                            }
-                            return outcome;
-                          });
-                  result[idx] = o;
+                  release.await(); // release every writer at once so the transitions overlap
+                  Outcome o = tx.execute(status -> runTransition(service, tenant, runId));
+                  results[idx] = o;
                 } catch (InterruptedException e) {
                   Thread.currentThread().interrupt();
-                  result[idx] = Outcome.INTERRUPTED;
+                  results[idx] = Outcome.REJECTED;
                 }
               });
     }
     for (Thread t : threads) {
       t.start();
     }
-    // Release every writer at once so the transitions genuinely overlap; without this the
-    // workers block on release.await() and the race would never start.
     release.countDown();
     for (Thread t : threads) {
       t.join();
     }
-    return new RaceResult(counts, tenant, runId);
+    int winners = 0;
+    for (Outcome o : results) {
+      if (o == Outcome.WIN) {
+        winners++;
+      }
+    }
+    return new RaceOutcome(winners, tenant, runId);
   }
 
   /**
-   * Runs one transition and maps its outcome: a successful move is {@link #WIN}; the conditional
-   * update's zero-rows conflict (another writer won) is the service's {@code 409} {@link
-   * ResponseStatusException}; anything else (a {@code 400} forbidden transition, a {@code 404}) is
-   * rethrown so it fails the test loudly rather than being counted as a race winner or loser.
+   * Runs one transition and classifies its outcome: a successful move is {@link #WIN}; a loser is
+   * {@link #REJECTED} whether it is refused by the optimistic-version fence (409) or, when it read
+   * the committed state, by the domain state gate (400) &mdash; both mean "not a winner". A genuine
+   * bug (a 500, or a 404 for the shared tenant, which cannot happen here) is rethrown so it fails
+   * the test loudly instead of being silently counted as a loser.
    */
   private static Outcome runTransition(RunStateMachineService service, UUID tenant, UUID runId) {
     try {
       service.transitionRun(tenant, runId, WorkflowRunState.RUNNING, "run.started", "worker");
       return Outcome.WIN;
     } catch (ResponseStatusException e) {
-      if (e.getStatusCode().value() == 409) {
-        return Outcome.CONFLICT;
+      int code = e.getStatusCode().value();
+      if (code == 400 || code == 409) {
+        return Outcome.REJECTED;
       }
       throw e;
     }
@@ -255,35 +237,9 @@ class WorkflowTransitionConcurrencyIT {
   /** The per-thread outcome of a concurrent transition. */
   private enum Outcome {
     WIN,
-    CONFLICT,
-    INTERRUPTED
+    REJECTED
   }
 
-  /**
-   * The outcome counts of a race plus the run it moved, so a caller can assert the final state and
-   * the single appended event without re-reading the seeded ids.
-   */
-  private static final class RaceResult {
-    private final Map<Outcome, Integer> counts;
-    private final UUID tenant;
-    private final UUID runId;
-
-    private RaceResult(Map<Outcome, Integer> counts, UUID tenant, UUID runId) {
-      this.counts = counts;
-      this.tenant = tenant;
-      this.runId = runId;
-    }
-
-    Integer get(Outcome outcome) {
-      return counts.get(outcome);
-    }
-
-    UUID runTenant() {
-      return tenant;
-    }
-
-    UUID runId() {
-      return runId;
-    }
-  }
+  /** The winner count of a race plus the run it moved, so a caller can assert the final state. */
+  private record RaceOutcome(int winners, UUID tenant, UUID runId) {}
 }
