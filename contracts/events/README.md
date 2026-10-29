@@ -4,8 +4,8 @@ JSON Schema and examples for the Kafka event envelope and the documented topics.
 Contracts are versioned; breaking changes create a new major version rather than
 changing an applied contract in place.
 
-Scaffolded in **S01-03**. Envelope v1 was added in **S06-01**; the topic catalogue and
-per-event payloads follow in **S06-02** / **S06-16**.
+Scaffolded in **S01-03**. Envelope v1 was added in **S06-01**; the topic catalogue
+followed in **S06-02**, and the per-event payload schemas in **S06-16**.
 
 ## Envelope v1 (S06-01)
 
@@ -29,11 +29,16 @@ The envelope schema was validated against the example with `ajv` (draft 2020-12)
 commit: the example passes, and a missing `eventId`, an extra property, a non-UUID id, a
 wrong `schemaVersion`, and a non-object payload are all rejected.
 
+## Topic catalogue (S06-02)
+
+`docs/architecture/kafka-topics.md` is the canonical catalogue of the six `agentflow.*`
+topics. Each row names the purpose, the partition key, the consumer owner and the
+retention/partition policy; the envelope every record carries is defined here (`S06-01`).
+The topic names, key strategy (`tenantId:runId` / `tenantId:documentId`), retention and
+consumer owners in that doc are the source the contract tests and the workers agree on.
+
 ## Pending (not yet created)
 
-- **Topic catalogue (S06-02):** `docs/architecture/kafka-topics.md` and
-  `docs/architecture/events/README.md`; topic names, key strategy (`tenantId:runId` /
-  `tenantId:documentId`), retention and consumer owners.
 - **Per-event payload schemas (S06-16):** one JSON Schema per documented event, each with
   `additionalProperties: false` and the redacted field allowlist.
 - **Event contract tests (S06-13):** producer fixtures validate against the schema;
