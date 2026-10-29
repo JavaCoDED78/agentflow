@@ -148,6 +148,5 @@ build and repository, not assumed:
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
 - `durable-execution.md` — run/step state machine, lease + fencing, recovery (`S07-17`).
-- `kafka-topics.md` — topics, partition keys (`S06`).
 - `events/README.md` — event catalogue (`S06`).
 - (none — see the index tables above for the current `⚠ planned` list.)

@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kafka topic catalogue (`S06-02`).** `docs/architecture/kafka-topics.md` is the new canonical
+  catalogue of the six `agentflow.*` topics (glossary §6, plan §7): `run-requested`, `step-ready`,
+  `run-cancelled`, `run-finished` (key `tenantId:runId`) and `ingestion-requested`, `indexed`
+  (key `tenantId:documentId`). Each row documents the topic's purpose, partition key, consumer
+  owner, retention and partition count; `messaging` owns every `agentflow.*` topic's contract
+  (envelope, key, versioning, publisher, consumer, DLQ), and the per-topic consumers live in the
+  `workflowexecution` (`agentflow.workflow-worker`) and `ingestion` (`agentflow.ingestion-worker`)
+  worker roles, plus the DLQ group (`S06-11`). The partition key is a **stable aggregate key**
+  (`tenantId:<aggregateId>`) so all state events of one run land in the same partition and are
+  ordered — `runId` is fixed at run creation, so a re-published record re-routes to the same
+  partition and dedups idempotently (`outbox_events.event_key`); the key orders a **run**, not a
+  tenant. Delivery is documented as **at-least-once with idempotency** (`ADR-003`) — no
+  exactly-once promise — with the transactional outbox (`S06-05`), inbox dedup
+  (`(consumer_name, event_id)`, `S06-10`) and ack-after-durable-commit boundaries the topics carry.
+  Retention/partition counts are recorded as configurable topic policy (dev 1–3 partitions, MVP
+  3–6 per plan §7, production sized by a load test), never guessed. **Acceptance criterion met** —
+  every topic documents its semantics and a consumer owner. **Docs:** the `⚠ planned (S06)` marker
+  in `docs/README.md` (the tree and the "Document type → location" table) is removed;
+  `contracts/events/README.md` moves the topic catalogue out of "Pending"; `error-taxonomy.md` and
+  `module-map.md` split the `kafka-topics.md` / `events/README.md` Related link now that
+  `kafka-topics.md` exists (the `events/README.md` half stays `⚠ planned`, `S06-16`);
+  `docs/domain-glossary.md` §6 already matches (no change). **Verification: documentation-only —
+  there is no `./gradlew check` gate for a docs change.** Link integrity verified: `git diff --check`
+  passes and every relative in-document link in the new and edited files resolves to a present,
+  on-topic destination; `git grep -n 'kafka-topics'` confirms the only remaining references are the
+  plan text, the `contracts/AGENTS.md` rule statement, and the links resolved above. **No**
+  dependency, Java code, contract, or schema change.
+
 - **Event envelope v1 contract (`S06-01`).** `contracts/events/json-schema/` gains
   [`envelope-v1.json`](contracts/events/json-schema/envelope-v1.json) (JSON Schema, draft
   2020-12, `$id` `.../event-envelope/1.0.0.json`) and its canonical instance

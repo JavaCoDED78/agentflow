@@ -50,7 +50,7 @@ docs/
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
-│   ├── kafka-topics.md                ⚠ planned (S06) — topics & partition keys
+│   ├── kafka-topics.md                ← topics & partition keys (S06-02)
 │   ├── events/README.md               ⚠ planned (S06) — event catalogue
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
 │   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
@@ -99,7 +99,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Usage, costs, budgets, audit | `docs/usage-and-costs.md` | ⚠ planned |
 | HTTP API (`/api/v1`) | `contracts/openapi/` | `../contracts/openapi/README.md` |
 | Event envelope & payloads | `contracts/events/json-schema/` | `../contracts/events/README.md` |
-| Kafka topics & roles | `contracts/asyncapi/` | ⚠ planned |
+| Kafka topics & roles | [`architecture/kafka-topics.md`](architecture/kafka-topics.md) (S06-02) · machine roles in `contracts/asyncapi/` (`⚠ planned`, P1) |
 | Contribution & changelog rules | `CONTRIBUTING.md`, `CHANGELOG.md` | `../CHANGELOG.md` |
 
 > ⚠ = planned. The marker marks a section that does not exist yet; remove it

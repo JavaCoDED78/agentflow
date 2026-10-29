@@ -290,5 +290,6 @@ root `AGENTS.md` dependency rules). The resolution (plan open decision §4.2.3):
 - [`docs/threat-model/README.md`](../threat-model/README.md) — assets, attacker goals, mitigations (tenant isolation, prompt injection, SSRF).
 - **`durable-execution.md`** — run/step state machine, lease, recovery (`⚠ planned`, `S07-17`).
 - [`error-taxonomy.md`](./error-taxonomy.md) — error classes and retryability (S02-10).
-- **`kafka-topics.md` / `events/README.md`** — topics, partition keys, event catalogue (`⚠ planned`, `S06`).
+- **`kafka-topics.md`** — topics, partition keys, topics & partition keys (`S06-02`).
+- **`events/README.md`** — event catalogue (`⚠ planned`, `S06-16`).
 - `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` — Sprint 2, `S02-03`.
