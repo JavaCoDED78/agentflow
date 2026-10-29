@@ -116,4 +116,34 @@ class WorkflowRunRepositoryTest {
     verify(ps).setString(4, WorkflowRunState.QUEUED.name());
     verify(ps).setInt(5, 0);
   }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void create_inserts_a_queued_run_against_the_pinned_version() throws SQLException {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowRunRepository repo = new WorkflowRunRepository(jdbc);
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID version = UUID.randomUUID();
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+    UUID created = repo.create(runId, tenant, version);
+
+    verify(jdbc).update(sql.capture(), setter.capture());
+    // only one creation path: a single INSERT with status QUEUED and attempt 1 (S06-05)
+    assertThat(sql.getValue())
+        .contains(
+            "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt, "
+                + "created_by)")
+        .contains("VALUES (?, ?, ?, 'QUEUED', 1, NULL)");
+    setter.getValue().setValues(ps);
+    verify(ps).setObject(1, runId);
+    verify(ps).setObject(2, tenant);
+    verify(ps).setObject(3, version);
+    assertThat(created).isEqualTo(runId);
+  }
 }

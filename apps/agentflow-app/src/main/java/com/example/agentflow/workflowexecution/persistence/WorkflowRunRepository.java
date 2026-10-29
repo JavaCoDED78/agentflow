@@ -115,4 +115,33 @@ public class WorkflowRunRepository {
               + "'");
     }
   }
+
+  /**
+   * Create a new run in status {@code QUEUED} with {@code attempt = 1} (S06-05).
+   *
+   * <p>The run is created against the already-verified {@code workflowVersionId} (the pinned active
+   * version, invariant 13) and {@code tenantId} (invariant 1, verified by the caller before this
+   * call). {@code idempotency_key} and {@code created_by} are left NULL for now — the idempotency
+   * key is filled in S06-06 and the actor recorded there too. The insert is the sole creation path,
+   * so a later duplicate create for the same {@code idempotency_key} (S06-06) collides on the
+   * {@code UNIQUE (tenant_id, idempotency_key)} constraint instead of producing a duplicate run.
+   *
+   * @param runId the run id (also the returned identity)
+   * @param tenantId the owning tenant
+   * @param workflowVersionId the pinned active version the run executes
+   * @return the created run id
+   */
+  public UUID create(UUID runId, UUID tenantId, UUID workflowVersionId) {
+    jdbc.update(
+        "INSERT INTO "
+            + TABLE
+            + " (id, tenant_id, workflow_version_id, status, attempt, created_by) "
+            + "VALUES (?, ?, ?, 'QUEUED', 1, NULL)",
+        ps -> {
+          ps.setObject(1, runId);
+          ps.setObject(2, tenantId);
+          ps.setObject(3, workflowVersionId);
+        });
+    return runId;
+  }
 }

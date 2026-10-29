@@ -177,4 +177,38 @@ public class WorkflowVersionRepository {
         workflowId,
         tenantId);
   }
+
+  /**
+   * The tenant's single active version of a workflow (S06-05), the version a new run is pinned to.
+   *
+   * <p>Verified tenant-scoped through the parent {@code workflow_definitions.tenant_id} (a cross
+   * tenant, or a workflow with no activated version, is {@link Optional#empty()} &mdash; the
+   * application maps both to a 404, so a run can never pin to a missing or foreign version,
+   * invariant 1), and filtered to {@code ACTIVATED} so a run is created only against the immutable
+   * execution contract, never a draft (invariant 13). When more than one version happens to be
+   * activated, the highest version number wins.
+   *
+   * @param tenantId the owning tenant
+   * @param workflowId the parent workflow id
+   * @return the active version, or {@link Optional#empty()} if none is activated for the tenant
+   */
+  @Transactional(readOnly = true)
+  public Optional<WorkflowVersion> findActiveVersion(UUID tenantId, UUID workflowId) {
+    List<WorkflowVersion> rows =
+        template.query(
+            "SELECT "
+                + COLUMN_LIST
+                + " FROM workflow_definition_versions v "
+                + "JOIN workflow_definitions d ON v.workflow_id = d.id "
+                + "WHERE v.workflow_id = ? AND d.tenant_id = ? AND v.status = ? "
+                + "ORDER BY v.version DESC NULLS LAST, v.created_at DESC NULLS LAST "
+                + "LIMIT 1",
+            ps -> {
+              ps.setObject(1, workflowId);
+              ps.setObject(2, tenantId);
+              ps.setString(3, WorkflowVersionStatus.ACTIVATED);
+            },
+            new WorkflowVersionRowMapper());
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+  }
 }

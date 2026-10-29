@@ -226,6 +226,35 @@ public class WorkflowVersionService {
     return WorkflowVersionDto.from(version, codec);
   }
 
+  /**
+   * The tenant's currently active version of a workflow (S06-05), the version a new run is pinned
+   * to.
+   *
+   * <p>There is exactly one active (immutable) execution contract per workflow (invariant 13), and
+   * a run is created against it &mdash; never against a draft, and never against a version another
+   * tenant owns. The lookup is tenant-scoped (invariant 1), so both "no activated version" and "the
+   * activated version is not this tenant's" return {@link Optional#empty()} and are mapped to a
+   * single {@code 404}: a foreign version is indistinguishable from a missing one.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param workflowId the parent workflow id
+   * @return the active version
+   * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
+   *     {@code 404} if the workflow has no active version owned by the tenant
+   */
+  public WorkflowVersionDto getActiveVersion(UUID tenantId, UUID workflowId) {
+    requireRepository();
+    WorkflowVersion version =
+        versionRepo
+            .findActiveVersion(tenantId, workflowId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "no active workflow version for workflow '" + workflowId + "'"));
+    return WorkflowVersionDto.from(version, codec);
+  }
+
   private void requireRepository() {
     if (!isWired()) {
       throw new ResponseStatusException(
