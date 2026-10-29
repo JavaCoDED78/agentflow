@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transactional outbox path for creating a run (`RunService.createRun`, `S06-05`).**
+  A run is started by a single `@Transactional` (default `REQUIRED`) use case that pins it to the
+  tenant's one *active* workflow version and then appends its `workflow.run.requested.v1` event to the
+  transactional outbox — so the run row and the event commit *together* or not at all (invariant 3,
+  the `S06-05` acceptance criterion). The `workflowexecution`-owned `RunService.createRun` returns the
+  run only after the commit; it fails `503` when no database is configured (S01-02, as
+  `RunStateMachineService` does) and `404` when the workflow has no active version — a run is never
+  created against a draft or a foreign version (invariant 13). The new `messaging`-owned boundary
+  `OutboxService.enqueue` writes a `PENDING` `OutboxEvent` through the new `OutboxEventRepository`,
+  inside the caller's transaction, so a broker failure cannot lose the event any sooner than the run.
+  `WorkflowVersionService.getActiveVersion` /
+  `WorkflowVersionRepository.findActiveVersion` resolve the tenant-scoped active version (the `ACTIVATED`
+  row with the highest version number) behind the module boundary; `WorkflowRunRepository.create` is the
+  single creation path (`QUEUED`, `attempt = 1`, pinned to the resolved version). **Tests:** unit
+  `RunServiceTest` / `OutboxEventRepositoryTest` (DB-free) plus the `RunServiceAtomicIT` integration
+  suite (real `pgvector/pgvector:0.8.6-pg18`, Testcontainers) that proves all three faces of the
+  invariant — `create_run_commits_the_run_and_its_outbox_event_together`,
+  `a_failing_outbox_append_rolls_back_the_run`, and
+  `create_run_without_an_active_version_creates_nothing`. **Verification:** `./gradlew
+  :apps:agentflow-app:test` and `./gradlew integrationTest --tests *RunServiceAtomicIT*` are green
+  (307 unit/architecture tests + 3 integration tests, no failures, no skips).
+
 - **Consumer-side inbox dedup table (`inbox_messages`, `S06-04`).**
   `apps/agentflow-app/src/main/resources/migrations/V3_3_9__create_inbox_messages.sql` is the
   `messaging`-owned migration for the consumer-side dedup store (glossary §6, plan §8.1, `ADR-003`).

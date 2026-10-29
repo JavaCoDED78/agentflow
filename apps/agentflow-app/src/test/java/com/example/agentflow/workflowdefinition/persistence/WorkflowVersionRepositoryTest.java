@@ -211,4 +211,47 @@ class WorkflowVersionRepositoryTest {
         .contains("AND d.tenant_id = ?");
     assertThat(next).isEqualTo(2);
   }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void findActiveVersion_scopes_by_tenant_and_filters_to_the_active_version() throws SQLException {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowVersionRepository repo = new WorkflowVersionRepository(jdbc);
+    UUID tenant = UUID.randomUUID();
+    UUID workflow = UUID.randomUUID();
+    WorkflowVersion stored = sample(tenant, workflow);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.query(anyString(), any(PreparedStatementSetter.class), any(RowMapper.class)))
+        .thenReturn(Collections.singletonList(stored));
+
+    Optional<WorkflowVersion> found = repo.findActiveVersion(tenant, workflow);
+
+    verify(jdbc).query(sql.capture(), setter.capture(), any(RowMapper.class));
+    // scoped to the tenant through the parent join AND filtered to the single active version, so a
+    // draft or a foreign version is never pinned (invariant 13 / invariant 1)
+    assertThat(sql.getValue())
+        .contains(COLUMN_LIST)
+        .contains("JOIN workflow_definitions d ON v.workflow_id = d.id")
+        .contains("AND d.tenant_id = ?")
+        .contains("AND v.status = ?")
+        .contains("ORDER BY v.version DESC NULLS LAST, v.created_at DESC NULLS LAST");
+    setter.getValue().setValues(ps);
+    verify(ps).setObject(1, workflow);
+    verify(ps).setObject(2, tenant);
+    verify(ps).setString(3, WorkflowVersionStatus.ACTIVATED);
+    assertThat(found).hasValue(stored);
+  }
+
+  @Test
+  void findActiveVersion_returns_empty_when_no_version_is_active() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowVersionRepository repo = new WorkflowVersionRepository(jdbc);
+    when(jdbc.query(anyString(), any(PreparedStatementSetter.class), any(RowMapper.class)))
+        .thenReturn(Collections.emptyList());
+
+    assertThat(repo.findActiveVersion(UUID.randomUUID(), UUID.randomUUID())).isEmpty();
+  }
 }
