@@ -71,7 +71,8 @@ class MigrationsTest {
       }
       assertThat(applied)
           .containsExactly(
-              "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8");
+              "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
+              "3.3.9");
     }
   }
 
@@ -89,7 +90,8 @@ class MigrationsTest {
             "workflow_runs",
             "workflow_step_runs",
             "workflow_events",
-            "outbox_events");
+            "outbox_events",
+            "inbox_messages");
   }
 
   /**
@@ -129,6 +131,13 @@ class MigrationsTest {
     assertThat(nullableColumn("outbox_events", "status")).isFalse();
     assertThat(nullableColumn("outbox_events", "publish_attempts")).isFalse();
     assertThat(nullableColumn("outbox_events", "created_at")).isFalse();
+    // inbox_messages (S06-04): consumer, event and status are NOT NULL; attempts carries a
+    // default; processed_at / outcome / last_error / next_attempt_at are nullable until used.
+    assertThat(nullableColumn("inbox_messages", "consumer_name")).isFalse();
+    assertThat(nullableColumn("inbox_messages", "event_id")).isFalse();
+    assertThat(nullableColumn("inbox_messages", "status")).isFalse();
+    assertThat(nullableColumn("inbox_messages", "attempts")).isFalse();
+    assertThat(nullableColumn("inbox_messages", "created_at")).isFalse();
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
@@ -193,6 +202,18 @@ class MigrationsTest {
   }
 
   /**
+   * The consumer-side dedup guard (S06-04): the composite {@code (consumer_name, event_id)} PRIMARY
+   * KEY is the DB constraint that prevents two workers from processing one event for the same
+   * consumer. It is declared with a stable, discoverable name so its intent is obvious from the
+   * schema; the data-level duplicate rejection is proved in {@code
+   * acceptance_criteria_hold_against_data}.
+   */
+  @Test
+  void inbox_dedup_primary_key_is_enforced() throws SQLException {
+    assertThat(primaryKeyConstraint("inbox_messages")).contains("inbox_messages_consumer_event");
+  }
+
+  /**
    * The <code>COMMENT</code>s record the owning module and sprint task, so ownership is obvious
    * from the schema itself (forward-only, one owning module per migration).
    */
@@ -215,6 +236,9 @@ class MigrationsTest {
     // S06-03: the transactional outbox records its owner (messaging) and the task in its table
     // COMMENT, so the table's ownership is obvious from the schema itself.
     assertThat(tableComment("outbox_events")).contains("S06-03").contains("messaging");
+    // S06-04: the consumer-side inbox records its owner (messaging) and the task in its table
+    // COMMENT, so the table's ownership is obvious from the schema itself.
+    assertThat(tableComment("inbox_messages")).contains("S06-04").contains("messaging");
   }
 
   /**
@@ -509,6 +533,27 @@ class MigrationsTest {
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("foreign key");
 
+        // inbox_messages (S06-04): a consumer claims an event — a valid (consumer_name, event_id)
+        // row lands and stays PENDING. A second insert with the SAME pair is rejected by the
+        // composite PRIMARY KEY, so a duplicate Kafka delivery cannot re-run the business change
+        // (the S06-04 acceptance criterion: the DB constraint prevents two workers processing one
+        // event for the same consumer). A shared event id makes the second insert a true duplicate.
+        String event = uuid();
+        insert(
+            "INSERT INTO inbox_messages (consumer_name, event_id, status) VALUES (?, ?, ?)",
+            "workflowexecution:step-LLM_PLAN",
+            event,
+            "PENDING");
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO inbox_messages (consumer_name, event_id, status) VALUES (?, ?, ?)",
+                        "workflowexecution:step-LLM_PLAN",
+                        event,
+                        "PENDING"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
+
         connection.rollback();
       } catch (SQLException e) {
         connection.rollback();
@@ -612,6 +657,27 @@ class MigrationsTest {
       Set<String> names = new LinkedHashSet<>();
       while (rs.next()) {
         names.add(rs.getString("constraint_name"));
+      }
+      return names;
+    }
+  }
+
+  /**
+   * The primary-key constraint name of {@code table} (there is exactly one). Used to assert the
+   * {@code (consumer_name, event_id)} inbox dedup guard declared in {@code V3_3_9}.
+   */
+  private static Set<String> primaryKeyConstraint(String table) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT c.conname AS primary_key "
+                    + "FROM pg_constraint c "
+                    + "WHERE c.conrelid = '"
+                    + table
+                    + "'::regclass AND c.contype = 'p'")) {
+      Set<String> names = new LinkedHashSet<>();
+      while (rs.next()) {
+        names.add(rs.getString("primary_key"));
       }
       return names;
     }

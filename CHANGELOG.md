@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Consumer-side inbox dedup table (`inbox_messages`, `S06-04`).**
+  `apps/agentflow-app/src/main/resources/migrations/V3_3_9__create_inbox_messages.sql` is the
+  `messaging`-owned migration for the consumer-side dedup store (glossary §6, plan §8.1, `ADR-003`).
+  It holds one row per `(consumer_name, event_id)` pair a consumer processes, so a business change
+  and its inbox record write in the *same* PostgreSQL transaction (inbox dedup in the transaction,
+  `S06-10`). Kafka delivers at-least-once (`ADR-003`), so the same event can arrive many times; the
+  composite `PRIMARY KEY (consumer_name, event_id)` makes a second insert of the same pair fail the
+  unique constraint, so a duplicate delivery can never re-run the side effect — only the first claim
+  proceeds, which is exactly the `S06-04` acceptance criterion: the DB constraint prevents two
+  workers from processing one event for the same consumer. The table matches the glossary's canonical
+  inbox shape (`consumer_name`, `event_id`, `processed_at`, `outcome`; PK `(consumer_name, event_id)`)
+  plus the columns the `S06-04` task requires for transient-error behaviour and the `S06-03` sibling's
+  retry scaffolding — a processing-`status` (`PENDING`/`PROCESSED`/`FAILED`, application-managed by the
+  inbox consumer/dedup helper), `attempts` (bumped on retry), `next_attempt_at` (bounded-retry backoff
+  anchor, NULL while still PENDING) and `last_error` (redacted, never a secret — invariant 8). A
+  transient fault bumps `attempts` and advances `next_attempt_at` but leaves the row `PENDING` and
+  `processed_at` NULL, so it stays retryable (`S06-10`: never mark a transient failure processed);
+  `processed_at`/`outcome` are set only when the row durably reaches `PROCESSED`. The table stores no
+  `tenant_id` / FK: the inbox is keyed by `(consumer, event)`, not by tenant, and tenant isolation is
+  enforced by the consumer, which processes in its own tenant context (invariant 1); the composite PK
+  doubles as its own backing index for the dedup INSERT, so no secondary index is required. The
+  migration is forward-only and idempotent (`IF NOT EXISTS`), tagged `S06-04` / `messaging` in the
+  table `COMMENT`, and verified in this change by the `MigrationsTest` integration suite (real
+  `pgvector/pgvector:0.8.6-pg18`, Testcontainers — never `H2` per `AGENTS.md`), which now covers
+  version `3.3.9` — the applied version list, the `inbox_messages` base table, the `NOT NULL` columns,
+  the composite `inbox_messages_consumer_event` primary key, and a data-driven acceptance case proving
+  a valid `PENDING` inbox row lands and a duplicate `(consumer_name, event_id)` is rejected by the
+  unique constraint (all rolled back). **Verification:** `./gradlew integrationTest --tests *MigrationsTest*`
+  is green against the real `pgvector/pgvector:0.8.6-pg18` Testcontainers image — all 11 tests apply
+  `V3_3_9` in order and prove the schema, the `NOT NULL` columns, the composite primary key and the
+  acceptance case; `./gradlew check` is green (unit + architecture + spotless formatting + OpenAPI
+  contract gate). No dependency, Java application code, contract, or schema change beyond the
+  migration. Docs: `docs/domain-glossary.md` §6 already names `inbox_messages` with `(consumer_name,
+  event_id, processed_at, outcome)` and `PK (consumer_name, event_id)` (no change);
+  `docs/architecture/kafka-topics.md`, `docs/adr/ADR-003-at-least-once-idempotency.md` and
+  `docs/architecture/module-map.md` already reference the inbox (no change).
+
 - **Transactional outbox table (`outbox_events`, `S06-03`).**
   `apps/agentflow-app/src/main/resources/migrations/V3_3_8__create_outbox_events.sql` is the
   `messaging`-owned migration for the DB-side transactional outbox (glossary §6, plan §8.1,
