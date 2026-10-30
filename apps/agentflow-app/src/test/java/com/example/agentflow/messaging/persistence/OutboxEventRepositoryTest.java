@@ -10,11 +10,14 @@ import static org.mockito.Mockito.when;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementSetter;
+import org.springframework.jdbc.core.RowMapper;
 
 /**
  * DB-free tests for the {@code outbox_events} write path (S06-05): the insert writes every column
@@ -78,5 +81,107 @@ class OutboxEventRepositoryTest {
     verify(ps).setObject(12, null); // next_attempt_at (first time)
     verify(ps).setString(13, null); // last_error
     assertThat(persisted).isEqualTo(id);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void select_for_claim_reads_a_bounded_oldest_first_batch_of_due_rows() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+
+    repo.selectForClaim(50);
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object> first = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> second = ArgumentCaptor.forClass(Object.class);
+    // args for jdbc.query(sql, rowMapper, dueInstant, batchSize): the due bound, then the batch
+    // bound
+    verify(jdbc).query(sql.capture(), anyRowMapper(), first.capture(), second.capture());
+    assertThat(sql.getValue())
+        .contains("FROM outbox_events")
+        .contains("WHERE status = 'PENDING'")
+        .contains("(next_attempt_at IS NULL OR next_attempt_at <= ?)")
+        .contains("ORDER BY created_at ASC LIMIT ?");
+    // the due instant is bounded by now() and the batch is a fixed bound — both from config
+    assertThat(first.getValue()).isInstanceOf(OffsetDateTime.class);
+    assertThat(second.getValue()).isEqualTo(50);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void claim_atomicly_fences_on_status_pending_and_returns_only_claimed_rows() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    UUID a = UUID.randomUUID();
+    UUID b = UUID.randomUUID();
+
+    repo.claim(List.of(a, b));
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object> idsArg = ArgumentCaptor.forClass(Object.class);
+    verify(jdbc).query(sql.capture(), anyRowMapper(), idsArg.capture());
+    // the claim is a conditional UPDATE … WHERE status = 'PENDING': atomic (S06-07 acceptance),
+    // it bumps publish_attempts and RETURNINGs the updated row(s)
+    assertThat(sql.getValue())
+        .contains(
+            "UPDATE outbox_events SET status = 'CLAIMED', publish_attempts = publish_attempts + 1")
+        .contains("WHERE id = ANY (?) AND status = 'PENDING' RETURNING");
+    // exactly one argument, the id list, bound as a single ARRAY
+    Object[] ids = (Object[]) idsArg.getValue();
+    assertThat(ids).hasSize(2);
+    assertThat(ids[0]).isEqualTo(a);
+    assertThat(ids[1]).isEqualTo(b);
+  }
+
+  @Test
+  void mark_sent_fences_on_claimed_status() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    UUID id = UUID.randomUUID();
+
+    repo.markSent(id);
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object> arg = ArgumentCaptor.forClass(Object.class);
+    verify(jdbc).update(sql.capture(), arg.capture());
+    assertThat(sql.getValue())
+        .contains("UPDATE outbox_events SET status = 'SENT', published_at = now()")
+        .contains("WHERE id = ? AND status = 'CLAIMED'");
+    // a single bound id (the ? in the fence)
+    assertThat(arg.getValue()).isEqualTo(id);
+  }
+
+  @Test
+  void mark_failed_fences_on_claimed_status_and_records_attempts_error_and_retry_instant() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    UUID id = UUID.randomUUID();
+
+    repo.markFailed(id, 3, OffsetDateTime.now().plusSeconds(30), "broker transient");
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object> attempts = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> nextAttemptAt = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> lastError = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> capturedId = ArgumentCaptor.forClass(Object.class);
+    verify(jdbc)
+        .update(
+            sql.capture(),
+            attempts.capture(),
+            nextAttemptAt.capture(),
+            lastError.capture(),
+            capturedId.capture());
+    assertThat(sql.getValue())
+        .contains(
+            "UPDATE outbox_events SET status = 'FAILED', publish_attempts = ?, next_attempt_at = ?, last_error = ?")
+        .contains("WHERE id = ? AND status = 'CLAIMED'");
+    assertThat(attempts.getValue()).isEqualTo(3);
+    assertThat(nextAttemptAt.getValue()).isInstanceOf(OffsetDateTime.class);
+    assertThat(lastError.getValue()).isEqualTo("broker transient");
+    assertThat(capturedId.getValue()).isEqualTo(id);
+  }
+
+  private static RowMapper<?> anyRowMapper() {
+    return any(RowMapper.class);
   }
 }

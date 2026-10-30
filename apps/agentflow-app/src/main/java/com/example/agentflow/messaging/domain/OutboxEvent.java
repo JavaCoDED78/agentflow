@@ -8,12 +8,16 @@ import java.util.UUID;
  * {@code messaging} module (S06-05 outbox write path, S06-07 publisher).
  *
  * <p>An {@code outbox_events} row is written in the same database transaction as the business
- * change it describes and is only ever {@code PENDING} until the publisher (S06-07) hands it to
- * Kafka; a consumer's acknowledgement is recorded separately in {@code inbox_messages} (S06-10).
- * This value mirrors the persisted columns one-to-one so the repository maps it without a
- * translation layer. The {@code tenant_id} is stored directly because {@code messaging} owns the
- * table and scopes its own reads by it, so a cross-tenant id is indistinguishable from a missing
- * row (invariant 1). Values are immutable; state transitions return new instances.
+ * change it describes and is {@code PENDING} until the publisher (S06-07) claims it. The publisher
+ * moves it to {@code CLAIMED} with an atomic conditional update (so two publishers can never claim
+ * the same row), publishes it outside any database transaction, and then records the broker outcome
+ * &mdash; {@code SENT} on delivery (awaiting the consumer's acknowledgement, S06-08), {@code
+ * FAILED} on a transient or permanent failure with a bounded-retry {@code next_attempt_at}. A
+ * consumer's acknowledgement is recorded separately in {@code inbox_messages} (S06-10). This value
+ * mirrors the persisted columns one-to-one so the repository maps it without a translation layer.
+ * The {@code tenant_id} is stored directly because {@code messaging} owns the table and scopes its
+ * own reads by it, so a cross-tenant id is indistinguishable from a missing row (invariant 1).
+ * Values are immutable; state transitions return new instances.
  */
 public record OutboxEvent(
     UUID id,
@@ -36,6 +40,12 @@ public record OutboxEvent(
   public enum State {
     /** Queued, not yet published to Kafka. */
     PENDING,
+    /**
+     * Claimed by the outbox publisher (S06-07): the row has been moved out of {@link #PENDING} by
+     * the atomic claim and is being published to the broker; it is not yet delivered, so a crash
+     * before the outcome update leaves it for a later recovery pass (S06-08 / S06-14).
+     */
+    CLAIMED,
     /** Delivered to Kafka but not yet acknowledged by a consumer. */
     SENT,
     /** Last publish attempt failed; retried at {@code nextAttemptAt}. */

@@ -52,6 +52,14 @@ agentflow:
     # (see application-kubernetes.yml and the local .env).
     issuer-uri: ${AGENTFLOW_KEYCLOAK_ISSUER_URI:https://keycloak.example/realms/agentflow}
     audience: agentflow-api
+  # Polling outbox publisher (S06-07). Bounded batch claimed per poll; bounded-retry
+  # exponential backoff (capped) before a row is held terminal for the DLQ (S06-11).
+  outbox:
+    publisher:
+      batch-size: 50
+      max-attempts: 5
+      base-delay-seconds: 1
+      max-delay-seconds: 60
 
 # Health endpoints (S01-18).
 #
