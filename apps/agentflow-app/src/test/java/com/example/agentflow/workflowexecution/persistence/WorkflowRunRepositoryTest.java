@@ -131,19 +131,26 @@ class WorkflowRunRepositoryTest {
         ArgumentCaptor.forClass(PreparedStatementSetter.class);
     when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
-    UUID created = repo.create(runId, tenant, version);
+    UUID key = UUID.randomUUID();
+    String fingerprint = "abcdef0123";
+    String actor = "alice";
+    UUID created = repo.create(runId, tenant, version, key, fingerprint, actor);
 
     verify(jdbc).update(sql.capture(), setter.capture());
-    // only one creation path: a single INSERT with status QUEUED and attempt 1 (S06-05)
+    // one creation path: a single INSERT of a QUEUED run with attempt 1 (S06-05), carrying the
+    // idempotency key, its payload fingerprint and the actor (S06-06); status/attempt are literals
     assertThat(sql.getValue())
         .contains(
             "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt, "
-                + "created_by)")
-        .contains("VALUES (?, ?, ?, 'QUEUED', 1, NULL)");
+                + "idempotency_key, idempotency_fingerprint, created_by)")
+        .contains("VALUES (?, ?, ?, 'QUEUED', 1, ?, ?, ?)");
     setter.getValue().setValues(ps);
     verify(ps).setObject(1, runId);
     verify(ps).setObject(2, tenant);
     verify(ps).setObject(3, version);
+    verify(ps).setObject(4, key);
+    verify(ps).setString(5, fingerprint);
+    verify(ps).setString(6, actor);
     assertThat(created).isEqualTo(runId);
   }
 }

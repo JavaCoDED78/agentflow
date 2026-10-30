@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Idempotent create-run under `Idempotency-Key` (`S06-06`).** `POST /api/v1/runs` now answers
+  idempotently: a repeat with the same key *and* the same request payload returns the original run,
+  and a repeat with the same key but a *different* payload is a permanent `409 conflict` (never a
+  silent overwrite). The controller (`workflowexecution.web.WorkflowRunController`, new) resolves the
+  key from the `Idempotency-Key` request header when present, otherwise from the body's
+  `idempotencyKey` (`CreateRunRequest`); it feeds the resolved key back into the request and
+  fingerprints the *resolved* request as the lowercase-hex SHA-256 via the new opaque
+  `common.Fingerprint` (invariant 8 — a one-way digest, never a secret, a full prompt or a full
+  document, and never an authorization source). **The idempotency decision is owned by
+  `IdempotencyKeyService`** (`workflowexecution.application`, new; named in `docs/architecture/module-api.md`
+  as the create-run idempotency service): on a key its {@code findByIdempotencyKey} looks the run up
+  by `(tenant_id, idempotency_key)`, and its {@code answerReplay} replays a stored run with a
+  matching fingerprint (the original `RunDto`, no second run, no second event — a client that retries
+  a lost response succeeds cleanly) or rejects a stored run with a mismatching fingerprint as
+  `409 Conflict`. `RunService.createRun` (`workflowexecution.application`, rewritten for the target
+  contract) delegates the lookup and the replay/mismatch decision to that service and is only the
+  *creation* boundary: a missing run falls through to the sole creation path — `WorkflowRunRepository.create(tenantId, versionId, key,
+  fingerprint, actor)` now stores the key and fingerprint alongside the `QUEUED / attempt 1` row, so
+  a concurrent duplicate create collides on the `UNIQUE (tenant_id, idempotency_key)`; the
+  `at-least-once` winner-resolution (re-resolve + answer the replay rather than surface the raw
+  constraint error) also flows through `IdempotencyKeyService` (at-least-once,
+  `ADR-003`/`ADR-004`). A create with no key stores `NULL` for both and is not deduplicated. The
+  durable half is the forward-only, idempotent `migrations/V3_3_10__add_run_idempotency_fingerprint.sql`
+  (S06-06 / `workflowexecution`, verified by `MigrationsTest` now covering version `3.3.10` and the
+  new `run_idempotency_columns_are_nullable` assertion — the key and the fingerprint are nullable, the
+  fingerprint carries its own `S06-06` column `COMMENT`). **Target-contract alignment:** the create
+  entry point is `RunService.createRun(tenantId, createdBy, CreateRunRequest, payloadFingerprint)`,
+  matching `docs/architecture/module-api.md` — the controller builds the `CreateRunRequest`, the
+  service owns the idempotency rule, and the repository is the single keyed creation path. **Tests:** unit `WorkflowRunControllerTest` (new, MockMvc + the real `GlobalExceptionHandler`: `202` echoes
+  the key/fingerprint, `409` renders as `conflict`, `400` on malformed JSON), `RunServiceTest`
+  (creation boundary + delegation through `IdempotencyKeyService`: replay/id/409/concurrent-duplicate),
+  `IdempotencyKeyServiceTest` (new, DB-free — `findByIdempotencyKey` delegates to the repository,
+  matching fingerprint replays, mismatching is `409`, and `503` with no database), and the
+  `RunServiceAtomicIT` integration suite on real `pgvector/pgvector:0.8.6-pg18`
+  (Testcontainers) — same-key replay returns the original run and creates nothing new (invariant 6), a
+  different payload under the same key is `409` without overwriting, plus the `S06-05` atomic-create
+  and cross-tenant cases. **Verification:** `./gradlew :apps:agentflow-app:test` and
+  `./gradlew integrationTest --tests *RunServiceAtomicIT* --tests *MigrationsTest*` are green; the
+  OpenAPI contract (`contracts/openapi/openapi.json`, regenerated via
+  `./gradlew generateOpenApiContract`) now documents `/api/v1/runs` with `202` / `400` / `409` /
+  `503` and the `Idempotency-Key` parameter (the `OpenApiContractCheckTest` gate passes — the
+  `/runs` path is additive). **Docs:** `docs/architecture/module-api.md` records the target
+  `createRun` contract; `CHANGELOG.md` (`Unreleased`) documents it; `docs/architecture/run-state-machine.md`
+  references the idempotent create. No dependency change.
+
 - **Transactional outbox path for creating a run (`RunService.createRun`, `S06-05`).**
   A run is started by a single `@Transactional` (default `REQUIRED`) use case that pins it to the
   tenant's one *active* workflow version and then appends its `workflow.run.requested.v1` event to the

@@ -144,6 +144,75 @@
         }
       }
     },
+    "/api/v1/runs" : {
+      "post" : {
+        "tags" : [ "workflow-run-controller" ],
+        "summary" : "Start a workflow run (idempotent under Idempotency-Key)",
+        "description" : "Starts a run pinned to the tenant's active version and returns it in status QUEUED (202 Accepted — the workflow is starting, not complete, invariant 11). Idempotent under Idempotency-Key (S06-06): a repeat with the same payload returns the original run; a repeat with a different payload under the same key is a 409 conflict; neither is a silent overwrite.",
+        "operationId" : "create_1",
+        "parameters" : [ {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "description" : "A client-chosen idempotency key. A repeat with the same payload under this key returns the original run (S06-06); a different payload under the same key is a 409 conflict. Omit for an unkeyed create.",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "type" : "string"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "202" : {
+            "description" : "the run started, or the original run replayed when the key matches the payload",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "the body is not the workflowId-carrying JSON the contract expects",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "a reused Idempotency-Key carries a different request payload",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workflows/{workflowId}" : {
       "get" : {
         "tags" : [ "workflow-definition-controller" ],
@@ -268,6 +337,30 @@
           },
           "message" : {
             "type" : "string"
+          }
+        }
+      },
+      "RunDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "workflowVersionId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "status" : {
+            "type" : "string"
+          },
+          "attempt" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
           }
         }
       },
