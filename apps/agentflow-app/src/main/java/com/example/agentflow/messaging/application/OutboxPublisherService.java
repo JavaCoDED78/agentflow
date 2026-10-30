@@ -46,6 +46,16 @@ import org.springframework.web.server.ResponseStatusException;
  * no deliverer the poll is a no-op and the rows stay {@code PENDING}, never lost. The repository is
  * also optional so the artifact boots without a database (S01-02); when a deliverer is present but
  * no database is configured the poll fails loudly with {@code 503}, mirroring the write path.
+ *
+ * <p>Delivery is ack-bound (S06-08): the publisher records {@code SENT} — and stamps {@code
+ * published_at} — only when {@link MessageDeliverer.DeliverResult#DELIVERED} (the broker confirmed
+ * the envelope). An ambiguous outcome ({@link MessageDeliverer.DeliverResult#AMBIGUOUS}, e.g. a
+ * producer timeout) is <b>never</b> marked sent; the row is re-published at a bounded-backoff
+ * instant, so a re-publish can duplicate a delivered envelope (inbox-deduped, S06-10) but never
+ * loses it. A publisher that crashes after the broker received the envelope but before the outcome
+ * update leaves the row {@code CLAIMED}; {@link OutboxEventRepository#selectForClaim} re-selects
+ * such a stale claim (older than {@code claim-timeout-seconds}) and the publisher re-publishes it —
+ * duplicate, not loss. No row is ever deleted before the broker confirms (invariant 6).
  */
 @Service
 public class OutboxPublisherService {
@@ -59,6 +69,7 @@ public class OutboxPublisherService {
   private final int maxAttempts;
   private final long baseDelaySeconds;
   private final long maxDelaySeconds;
+  private final long claimTimeoutSeconds;
 
   /**
    * @param repository the outbox read/claim/write path, or {@code null} when no database is
@@ -67,7 +78,8 @@ public class OutboxPublisherService {
    *     (S06-09)
    * @param clock the injectable clock for bounded-retry instants (invariant 10), or {@code
    *     Clock.systemUTC()} when none is available
-   * @param properties the validated publisher tuning (batch size, retry bound, backoff)
+   * @param properties the validated publisher tuning (batch size, retry bound, backoff, stale-claim
+   *     timeout)
    */
   @Autowired
   public OutboxPublisherService(
@@ -82,6 +94,7 @@ public class OutboxPublisherService {
     this.maxAttempts = properties.getOutbox().getPublisher().getMaxAttempts();
     this.baseDelaySeconds = properties.getOutbox().getPublisher().getBaseDelaySeconds();
     this.maxDelaySeconds = properties.getOutbox().getPublisher().getMaxDelaySeconds();
+    this.claimTimeoutSeconds = properties.getOutbox().getPublisher().getClaimTimeoutSeconds();
   }
 
   /**
@@ -109,7 +122,8 @@ public class OutboxPublisherService {
     if (candidates.isEmpty()) {
       return 0;
     }
-    List<OutboxEvent> claimed = repository.claim(candidates.stream().map(OutboxEvent::id).toList());
+    List<OutboxEvent> claimed =
+        repository.claim(candidates.stream().map(OutboxEvent::id).toList(), claimTimeoutSeconds);
     if (claimed.isEmpty()) {
       // Every candidate was claimed by a concurrent publisher since the read; nothing to publish.
       return 0;
@@ -120,6 +134,7 @@ public class OutboxPublisherService {
       switch (deliverer.deliver(event)) {
         case DELIVERED -> repository.markSent(event.id());
         case TRANSIENT_FAILURE -> handleTransientFailure(event);
+        case AMBIGUOUS -> handleAmbiguous(event);
         case PERMANENT_FAILURE -> handlePermanentFailure(event);
       }
       published++;
@@ -156,6 +171,42 @@ public class OutboxPublisherService {
         event.eventId(),
         next,
         attempts);
+  }
+
+  /**
+   * Record an ambiguous (undetermined) broker outcome: the producer returned no confirmation (a
+   * timeout / connection reset), so we cannot know whether the broker holds the envelope (S06-08).
+   * The row must <b>never</b> be marked {@code SENT} or stamped {@code published_at}; it is
+   * re-published at a bounded-backoff instant. A re-publish of a row the broker already delivered
+   * is a <b>duplicate</b> (deduped by the inbox, S06-10), never a loss. Within the bound the row is
+   * scheduled for retry; on exhaustion it is held terminal for the DLQ ({@code S06-11}) &mdash;
+   * visible, never silently dropped, so the event is not lost.
+   */
+  private void handleAmbiguous(OutboxEvent event) {
+    int attempts = event.publishAttempts();
+    String reason =
+        "publish outcome ambiguous (broker did not confirm within timeout) after "
+            + attempts
+            + " attempt(s)";
+    if (attempts >= maxAttempts) {
+      repository.markFailed(event.id(), attempts, null, reason);
+      log.warn(
+          "outbox event {} ambiguous publish outcome; exhausted {} attempts; held terminal for "
+              + "DLQ (S06-11) — a duplicate delivery may have occurred, but the event is not lost: {}",
+          event.eventId(),
+          maxAttempts,
+          reason);
+      return;
+    }
+    OffsetDateTime next = nextAttemptAt(attempts);
+    repository.markFailed(event.id(), attempts, next, reason);
+    log.warn(
+        "outbox event {} ambiguous publish outcome (timeout); re-publish at {} (attempt {}, "
+            + "may duplicate — at-least-once, S06-08): {}",
+        event.eventId(),
+        next,
+        attempts,
+        reason);
   }
 
   /**

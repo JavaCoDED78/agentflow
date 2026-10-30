@@ -94,43 +94,63 @@ class OutboxEventRepositoryTest {
     ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<Object> first = ArgumentCaptor.forClass(Object.class);
     ArgumentCaptor<Object> second = ArgumentCaptor.forClass(Object.class);
-    // args for jdbc.query(sql, rowMapper, dueInstant, batchSize): the due bound, then the batch
-    // bound
-    verify(jdbc).query(sql.capture(), anyRowMapper(), first.capture(), second.capture());
+    ArgumentCaptor<Object> third = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> fourth = ArgumentCaptor.forClass(Object.class);
+    // args for jdbc.query(sql, rowMapper, dueInstant, claimTimeoutSeconds, dueInstant, batchSize):
+    // the due instant (PENDING/FAILED next_attempt_at bound), the stale-claim timeout, the due
+    // instant again, and the batch bound
+    verify(jdbc)
+        .query(
+            sql.capture(),
+            anyRowMapper(),
+            first.capture(),
+            second.capture(),
+            third.capture(),
+            fourth.capture());
     assertThat(sql.getValue())
         .contains("FROM outbox_events")
-        .contains("WHERE status = 'PENDING'")
-        .contains("(next_attempt_at IS NULL OR next_attempt_at <= ?)")
+        .contains("(status = 'PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))")
+        .contains("(status = 'CLAIMED' AND claimed_at <= now() - (INTERVAL '1 second' * ?))")
+        .contains("(status = 'FAILED' AND next_attempt_at <= ?)")
         .contains("ORDER BY created_at ASC LIMIT ?");
-    // the due instant is bounded by now() and the batch is a fixed bound — both from config
+    // the due instant and the stale-claim timeout come from config/now; the batch is a fixed bound
     assertThat(first.getValue()).isInstanceOf(OffsetDateTime.class);
-    assertThat(second.getValue()).isEqualTo(50);
+    assertThat(second.getValue()).isEqualTo(300L);
+    assertThat(third.getValue()).isInstanceOf(OffsetDateTime.class);
+    assertThat(fourth.getValue()).isEqualTo(50);
   }
 
   @Test
   @SuppressWarnings("unchecked")
-  void claim_atomicly_fences_on_status_pending_and_returns_only_claimed_rows() {
+  void claim_reclaims_due_pending_failed_and_stale_claimed_rows_only() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     OutboxEventRepository repo = new OutboxEventRepository(jdbc);
     UUID a = UUID.randomUUID();
     UUID b = UUID.randomUUID();
 
-    repo.claim(List.of(a, b));
+    repo.claim(List.of(a, b), 300L);
 
     ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<Object> idsArg = ArgumentCaptor.forClass(Object.class);
-    verify(jdbc).query(sql.capture(), anyRowMapper(), idsArg.capture());
-    // the claim is a conditional UPDATE … WHERE status = 'PENDING': atomic (S06-07 acceptance),
-    // it bumps publish_attempts and RETURNINGs the updated row(s)
+    ArgumentCaptor<Object> timeoutArg = ArgumentCaptor.forClass(Object.class);
+    verify(jdbc).query(sql.capture(), anyRowMapper(), idsArg.capture(), timeoutArg.capture());
+    // the claim transitions a PENDING/FAILED row or a stale CLAIMED row (claimed_at older than the
+    // timeout), bumps attempts and stamps claimed_at, fenced by id = ANY(?) + status so two
+    // publishers never claim the same row, and a stale claim is re-claimed (S06-08); RETURNING the
+    // updated row(s)
     assertThat(sql.getValue())
         .contains(
-            "UPDATE outbox_events SET status = 'CLAIMED', publish_attempts = publish_attempts + 1")
-        .contains("WHERE id = ANY (?) AND status = 'PENDING' RETURNING");
-    // exactly one argument, the id list, bound as a single ARRAY
+            "UPDATE outbox_events SET status = 'CLAIMED', publish_attempts = publish_attempts + 1, claimed_at = now()")
+        .contains("WHERE id = ANY(?)")
+        .contains("AND status IN ('PENDING', 'CLAIMED', 'FAILED')")
+        .contains("AND (status <> 'CLAIMED' OR claimed_at <= now() - (INTERVAL '1 second' * ?))")
+        .contains("RETURNING");
+    // two arguments: the id list (bound as a single ARRAY) and the stale-claim timeout
     Object[] ids = (Object[]) idsArg.getValue();
     assertThat(ids).hasSize(2);
     assertThat(ids[0]).isEqualTo(a);
     assertThat(ids[1]).isEqualTo(b);
+    assertThat(timeoutArg.getValue()).isEqualTo(300L);
   }
 
   @Test

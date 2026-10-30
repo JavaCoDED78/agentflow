@@ -60,6 +60,11 @@ agentflow:
       max-attempts: 5
       base-delay-seconds: 1
       max-delay-seconds: 60
+      # Stale-claim timeout (S06-08): a CLAIMED row un-acked longer than this is treated as a
+      # publisher that crashed after claiming (crash-after-publish-before-DB-update window) and is
+      # re-published. Generous on purpose so a live, slow publisher keeps its claim; re-publishing a
+      # row the broker already holds is a duplicate (inbox-deduped, S06-10), never a loss.
+      claim-timeout-seconds: 300
 
 # Health endpoints (S01-18).
 #

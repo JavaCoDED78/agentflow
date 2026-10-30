@@ -139,6 +139,14 @@ The topics exist to carry the boundary that the durable engine closes (`S06-05`�
   written in **one transaction**; the publisher polls `outbox_events` and publishes —
   it never writes the row and publishes later. Publish is **idempotent by `event_id`**
   (`outbox_events.event_id`), so a publisher restart after a crash is safe.
+- **Ack-bound publish (S06-08).** The publisher records the row as delivered — and stamps
+  `published_at` — only when the broker **confirms** the envelope; an **ambiguous** broker
+  outcome (a timeout or missing producer confirmation) is re-published at a bounded-backoff
+  instant, so a re-publish can duplicate a delivered envelope (inbox-deduped, `S06-10`) but
+  never loses it. A publisher that crashes after claiming a row but before recording the
+  outcome leaves it `CLAIMED`; the poll re-selects a **stale** claim (older than
+  `claim-timeout-seconds`) and re-publishes it. No row is ever marked published or deleted
+  before the broker confirms (invariant 6).
 - **At-least-once, never exactly-once.** A crash between the PostgreSQL commit and the
   broker `ack` can re-deliver a record. Consumers **deduplicate** with
   `(consumer_name, event_id)` in `inbox_messages`, written in the **same transaction**

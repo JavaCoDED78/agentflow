@@ -230,6 +230,18 @@ public class AgentFlowProperties {
       private long maxDelaySeconds = 60;
 
       /**
+       * How long a {@code CLAIMED} row may remain un-acked before the poll treats it as a <b>stale
+       * claim</b> — its publisher crashed after claiming but before recording the broker outcome
+       * (the S06-08 crash window) — and re-publishes it. A live, slow publisher legitimately holds
+       * a claim longer, so the bound is generous (default 300s). Re-publishing a row the broker
+       * already delivered is a duplicate, not a loss (at-least-once, ADR-003 / S06-08).
+       */
+      @Min(
+          value = 1,
+          message = "agentflow.outbox.publisher.claim-timeout-seconds must be at least 1")
+      private long claimTimeoutSeconds = 300;
+
+      /**
        * @return the batch size bound (default {@code 50})
        */
       public int getBatchSize() {
@@ -255,6 +267,14 @@ public class AgentFlowProperties {
        */
       public long getMaxDelaySeconds() {
         return maxDelaySeconds;
+      }
+
+      /**
+       * @return the stale-claim timeout in seconds before a {@code CLAIMED} row is re-published
+       *     (default {@code 300})
+       */
+      public long getClaimTimeoutSeconds() {
+        return claimTimeoutSeconds;
       }
     }
   }
