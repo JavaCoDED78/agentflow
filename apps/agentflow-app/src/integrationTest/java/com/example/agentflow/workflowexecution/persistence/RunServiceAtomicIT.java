@@ -10,6 +10,8 @@ import com.example.agentflow.messaging.persistence.OutboxEventRepository;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowDefinitionRepository;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowVersionRepository;
+import com.example.agentflow.workflowexecution.application.CreateRunRequest;
+import com.example.agentflow.workflowexecution.application.IdempotencyKeyService;
 import com.example.agentflow.workflowexecution.application.RunDto;
 import com.example.agentflow.workflowexecution.application.RunService;
 import java.nio.charset.StandardCharsets;
@@ -33,7 +35,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * PostgreSQL integration suite proving the S06-05 acceptance criterion: a run is created and its
  * {@code workflow.run.requested.v1} event written <em>atomically</em> &mdash; a run can never be
  * committed without its outbox event and an event can never be committed without a durable run,
- * because both writes happen in one transaction (invariant 3 / {@code ADR-004}).
+ * because both writes happen in one transaction (invariant 3 / {@code ADR-004}). It also proves the
+ * S06-06 idempotency contract for a keyed create-run: a repeat with the same payload returns the
+ * original run, and a repeat with a different payload under the same key is a {@code 409} — neither
+ * is a silent duplicate or overwrite.
  *
  * <p>The DB-free {@link RunServiceTest} proves the code emits the pin / create / append calls in
  * order, but a mocked service never commits and a single real-DB call cannot observe the commit
@@ -53,7 +58,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *       1);
  *   <li>when the outbox append fails, the run is <b>rolled back</b> too &mdash; no run commits
  *       without its event;
- *   <li>when there is no active version, neither a run nor an event is created (404).
+ *   <li>when there is no active version, neither a run nor an event is created (404);
+ *   <li>a keyed create-run repeat with the <b>same</b> payload returns the <b>original</b> run and
+ *       creates neither a second run nor a second event (idempotent, invariant 6); and
+ *   <li>a keyed create-run repeat with a <b>different</b> payload under the same key is a permanent
+ *       {@code 409} and creates neither a second run nor a second event (a reused key claims the
+ *       payload).
  * </ul>
  *
  * <p>Every id is test-generated and each test seeds its own rows, so the tests are independent.
@@ -88,7 +98,11 @@ class RunServiceAtomicIT {
     UUID versionId = seedActiveVersion(tenant, workflow);
 
     RunService service = runService();
-    RunDto run = transaction().execute(status -> service.createRun(tenant, workflow, "alice"));
+    RunDto run =
+        transaction()
+            .execute(
+                status ->
+                    service.createRun(tenant, "alice", new CreateRunRequest(workflow, null), null));
 
     // The run row: QUEUED, attempt 1, pinned to the active version, tenant-scoped.
     String status =
@@ -123,7 +137,12 @@ class RunServiceAtomicIT {
     RunService service = runService();
 
     assertThatThrownBy(
-            () -> transaction().execute(status -> service.createRun(tenant, workflow, "alice")))
+            () ->
+                transaction()
+                    .execute(
+                        status ->
+                            service.createRun(
+                                tenant, "alice", new CreateRunRequest(workflow, null), null)))
         .extracting(t -> ((ResponseStatusException) t).getStatusCode().value())
         .isEqualTo(404);
     assertThat(runCount(tenant)).isEqualTo(0);
@@ -141,10 +160,96 @@ class RunServiceAtomicIT {
     RunService service = runServiceWithFailingOutbox();
 
     assertThatThrownBy(
-            () -> transaction().execute(status -> service.createRun(tenant, workflow, "alice")))
+            () ->
+                transaction()
+                    .execute(
+                        status ->
+                            service.createRun(
+                                tenant, "alice", new CreateRunRequest(workflow, null), null)))
         .satisfies(t -> assertThat(rootMessage(t)).contains("broker failure"));
     assertThat(runCount(tenant)).isEqualTo(0);
     assertThat(eventCount(tenant)).isEqualTo(0);
+  }
+
+  // --- S06-06 idempotency --------------------------------------------------
+
+  @Test
+  void a_keyed_repeat_with_the_same_payload_returns_the_same_run_and_creates_nothing_new() {
+    UUID tenant = UUID.randomUUID();
+    UUID workflow = UUID.randomUUID();
+    UUID versionId = seedActiveVersion(tenant, workflow);
+    UUID key = UUID.randomUUID();
+    String payload = "{\"workflowId\":\"" + workflow + "\"}";
+
+    RunService service = runService();
+
+    RunDto first =
+        transaction()
+            .execute(
+                status ->
+                    service.createRun(
+                        tenant, "alice", new CreateRunRequest(workflow, key), sha256Hex(payload)));
+    RunDto second =
+        transaction()
+            .execute(
+                status ->
+                    service.createRun(
+                        tenant, "alice", new CreateRunRequest(workflow, key), sha256Hex(payload)));
+
+    // A repeat with the same key and the same payload returns the original run — the id is
+    // identical
+    // — and produces neither a second run nor a second outbox event (idempotent, invariant 6).
+    assertThat(first.id()).isEqualTo(second.id());
+    assertThat(runCount(tenant)).isEqualTo(1);
+    assertThat(eventCount(tenant)).isEqualTo(1);
+    // The stored run carries the payload fingerprint alongside the key.
+    String storedFingerprint =
+        jdbc.queryForObject(
+            "SELECT idempotency_fingerprint FROM workflow_runs WHERE id = ?",
+            String.class,
+            first.id());
+    assertThat(storedFingerprint).isEqualTo(sha256Hex(payload));
+  }
+
+  @Test
+  void a_keyed_repeat_with_a_different_payload_is_a_conflict_and_creates_nothing_new() {
+    UUID tenant = UUID.randomUUID();
+    UUID workflow = UUID.randomUUID();
+    seedActiveVersion(tenant, workflow);
+    UUID key = UUID.randomUUID();
+
+    RunService service = runService();
+
+    String payload1 = "{\"workflowId\":\"" + workflow + "\"}";
+    String payload2 = "{\"workflowId\":\"" + workflow + "\",\"extra\":true}";
+    // The fingerprint is over the payload (the idempotency key is the dedup scope, not the
+    // payload),
+    // exactly as the controller computes it before handing it to the service.
+    String fp1 = sha256Hex(payload1);
+    String fp2 = sha256Hex(payload2);
+
+    // First create under the key succeeds...
+    RunDto first =
+        transaction()
+            .execute(
+                status ->
+                    service.createRun(tenant, "alice", new CreateRunRequest(workflow, key), fp1));
+    // ...a second create under the same key but a different payload (different fingerprint) is a
+    // permanent conflict.
+    assertThatThrownBy(
+            () ->
+                transaction()
+                    .execute(
+                        status ->
+                            service.createRun(
+                                tenant, "alice", new CreateRunRequest(workflow, key), fp2)))
+        .extracting(t -> ((ResponseStatusException) t).getStatusCode().value())
+        .isEqualTo(409);
+
+    // The conflict does not create a second run or event: a reused key claims the payload too.
+    assertThat(first.id()).isNotNull();
+    assertThat(runCount(tenant)).isEqualTo(1);
+    assertThat(eventCount(tenant)).isEqualTo(1);
   }
 
   // --- helpers -----------------------------------------------------------------
@@ -152,6 +257,7 @@ class RunServiceAtomicIT {
   private static RunService runService() {
     return new RunService(
         new WorkflowRunRepository(liveJdbc()),
+        new IdempotencyKeyService(new WorkflowRunRepository(liveJdbc())),
         new OutboxService(new OutboxEventRepository(liveJdbc())),
         new WorkflowVersionService(
             new WorkflowDefinitionRepository(jdbc),
@@ -170,6 +276,7 @@ class RunServiceAtomicIT {
         };
     return new RunService(
         new WorkflowRunRepository(liveJdbc()),
+        new IdempotencyKeyService(new WorkflowRunRepository(liveJdbc())),
         failing,
         new WorkflowVersionService(
             new WorkflowDefinitionRepository(jdbc),

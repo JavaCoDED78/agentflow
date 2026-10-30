@@ -2,6 +2,10 @@ package com.example.agentflow.workflowexecution.persistence;
 
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -117,31 +121,98 @@ public class WorkflowRunRepository {
   }
 
   /**
-   * Create a new run in status {@code QUEUED} with {@code attempt = 1} (S06-05).
+   * Create a new run in status {@code QUEUED} with {@code attempt = 1} (S06-05, idempotent create
+   * keyed by {@code idempotencyKey} in S06-06).
    *
    * <p>The run is created against the already-verified {@code workflowVersionId} (the pinned active
    * version, invariant 13) and {@code tenantId} (invariant 1, verified by the caller before this
-   * call). {@code idempotency_key} and {@code created_by} are left NULL for now — the idempotency
-   * key is filled in S06-06 and the actor recorded there too. The insert is the sole creation path,
-   * so a later duplicate create for the same {@code idempotency_key} (S06-06) collides on the
-   * {@code UNIQUE (tenant_id, idempotency_key)} constraint instead of producing a duplicate run.
+   * call). {@code idempotency_key}, {@code idempotency_fingerprint} and {@code created_by} are
+   * written with the row: a keyed create stores the client's {@code idempotency_key} and the
+   * SHA-256 of the request payload, so a repeated create for the same {@code (tenant_id,
+   * idempotency_key)} collides on the {@code UNIQUE (tenant_id, idempotency_key)} constraint
+   * instead of producing a duplicate run. {@code idempotency_key} / {@code idempotency_fingerprint}
+   * are {@code null} when the request carried no key, so only keyed creates participate in dedup
+   * and mismatch detection.
    *
    * @param runId the run id (also the returned identity)
    * @param tenantId the owning tenant
    * @param workflowVersionId the pinned active version the run executes
+   * @param idempotencyKey the client's idempotency key, or {@code null} for an unkeyed create
+   * @param payloadFingerprint the lowercase-hex SHA-256 of the request payload, or {@code null}
+   * @param createdBy the actor, recorded for the audit trail (nullable)
    * @return the created run id
    */
-  public UUID create(UUID runId, UUID tenantId, UUID workflowVersionId) {
+  public UUID create(
+      UUID runId,
+      UUID tenantId,
+      UUID workflowVersionId,
+      UUID idempotencyKey,
+      String payloadFingerprint,
+      String createdBy) {
     jdbc.update(
         "INSERT INTO "
             + TABLE
-            + " (id, tenant_id, workflow_version_id, status, attempt, created_by) "
-            + "VALUES (?, ?, ?, 'QUEUED', 1, NULL)",
+            + " (id, tenant_id, workflow_version_id, status, attempt, "
+            + "idempotency_key, idempotency_fingerprint, created_by) "
+            + "VALUES (?, ?, ?, 'QUEUED', 1, ?, ?, ?)",
         ps -> {
           ps.setObject(1, runId);
           ps.setObject(2, tenantId);
           ps.setObject(3, workflowVersionId);
+          bindNullableKey(ps, 4, idempotencyKey);
+          bindNullableString(ps, 5, payloadFingerprint);
+          bindNullableString(ps, 6, createdBy);
         });
     return runId;
+  }
+
+  /**
+   * Read the row stored under a {@code (tenant_id, idempotency_key)} pair &mdash; the single source
+   * of truth for a keyed create-run replay (S06-06). The {@code tenant_id} predicate is part of the
+   * {@code WHERE} clause (invariant 1), so a cross-tenant key is indistinguishable from a missing
+   * one.
+   *
+   * @param tenantId the owning tenant
+   * @param idempotencyKey the key to look up
+   * @return the stored {@link IdempotentRunView}, or {@link Optional#empty()} when no run matches
+   */
+  public Optional<IdempotentRunView> findByIdempotencyKey(UUID tenantId, UUID idempotencyKey) {
+    List<IdempotentRunView> results =
+        jdbc.query(
+            "SELECT id, workflow_version_id, status, attempt, created_at, idempotency_fingerprint "
+                + "FROM "
+                + TABLE
+                + " WHERE tenant_id = ? AND idempotency_key = ?",
+            (rs, rowNum) ->
+                new IdempotentRunView(
+                    (UUID) rs.getObject("id"),
+                    (UUID) rs.getObject("workflow_version_id"),
+                    rs.getString("status"),
+                    rs.getInt("attempt"),
+                    rs.getObject("created_at", OffsetDateTime.class),
+                    rs.getString("idempotency_fingerprint")),
+            tenantId,
+            idempotencyKey);
+    return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
+  }
+
+  /** Binds a nullable {@code UUID} so an absent key is stored as SQL {@code NULL}. */
+  private static void bindNullableKey(PreparedStatement ps, int index, UUID value)
+      throws SQLException {
+    if (value == null) {
+      ps.setNull(index, Types.OTHER);
+    } else {
+      ps.setObject(index, value);
+    }
+  }
+
+  /** Binds a nullable {@code String} so an absent value is stored as SQL {@code NULL}. */
+  private static void bindNullableString(PreparedStatement ps, int index, String value)
+      throws SQLException {
+    if (value == null) {
+      ps.setNull(index, Types.VARCHAR);
+    } else {
+      ps.setString(index, value);
+    }
   }
 }

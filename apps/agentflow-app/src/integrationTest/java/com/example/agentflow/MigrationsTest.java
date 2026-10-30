@@ -72,7 +72,7 @@ class MigrationsTest {
       assertThat(applied)
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
-              "3.3.9");
+              "3.3.9", "3.3.10");
     }
   }
 
@@ -138,6 +138,24 @@ class MigrationsTest {
     assertThat(nullableColumn("inbox_messages", "status")).isFalse();
     assertThat(nullableColumn("inbox_messages", "attempts")).isFalse();
     assertThat(nullableColumn("inbox_messages", "created_at")).isFalse();
+  }
+
+  /**
+   * The idempotency columns the run-creation path relies on are nullable, exactly as {@code
+   * V3_3_10} declares them: {@code workflow_runs.idempotency_key} (the dedup key) and {@code
+   * idempotency_fingerprint} (the payload hash the mismatch-against-same-key compares). A create
+   * without an {@code Idempotency-Key} stores {@code NULL} for both, so only keyed creates
+   * participate in dedup / mismatch detection (invariant 11, S06-06); a missing value must be
+   * tolerated, not rejected by the database. The fingerprint column carries its own column {@code
+   * COMMENT} attributing the column to S06-06.
+   */
+  @Test
+  void run_idempotency_columns_are_nullable() throws SQLException {
+    // S05-08: the idempotency key the plan fixes is nullable (a run without a key is still valid).
+    assertThat(nullableColumn("workflow_runs", "idempotency_key")).isTrue();
+    // S06-06: the payload fingerprint is nullable and carries its own S06-06 column COMMENT.
+    assertThat(nullableColumn("workflow_runs", "idempotency_fingerprint")).isTrue();
+    assertThat(columnComment("workflow_runs", "idempotency_fingerprint")).contains("S06-06");
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
