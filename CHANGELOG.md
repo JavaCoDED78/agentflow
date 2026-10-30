@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Polling outbox publisher (`OutboxPublisherService`, `S06-07`).** The `messaging`-owned
+  publisher drains the `outbox_events` table to the broker in bounded batches without ever holding
+  a database transaction across a network call. One poll (`pollOnce`) does four isolated steps:
+  select a bounded, oldest-first batch of due rows (`PENDING`, plus a `FAILED` row whose bounded
+  retry instant has arrived) via
+  `OutboxEventRepository.selectForClaim(int)` — the partial
+  `outbox_events_pending_idx` backs the scan, never a full table scan — then claim them atomically
+  with `OutboxEventRepository.claim(List)` (a single conditional `UPDATE ... SET status='CLAIMED'
+  WHERE id = ANY(?) AND status='PENDING'`, so two publishers can never claim the same row, which is
+  exactly the `S06-07` acceptance criterion), then publish each claimed row OUTSIDE any transaction
+  through the new transport-agnostic `MessageDeliverer` port, then record the outcome: `SENT` on
+  delivery (`markSent`) or `FAILED` with a bounded-retry `next_attempt_at` on a transient fault and
+  terminal for the DLQ (`S06-11`) on exhaustion / a permanent fault (`markFailed`). Retry is
+  bounded — exponential backoff `min(baseDelaySeconds shl (attempts-1), maxDelaySeconds)` capped at
+  `maxDelaySeconds` — so a stuck broker drains slowly instead of forever, and the config lives in
+  `AgentFlowProperties.Outbox.Publisher` (`batch-size`, `max-attempts`, `base-delay-seconds`,
+  `max-delay-seconds`, `@Valid`/`@Min`) rather than the code. The deliverer is optional (the Kafka
+  producer is wired in `S06-09`; with none the poll is a no-op and the rows stay `PENDING`, never
+  lost) and the repository is optional (boots without a database, `S01-02`); a present deliverer
+  with no database fails loudly with `503`, mirroring the write path. **Invariant 6:** the attempt
+  is persisted before the call and an ambiguous broker outcome is recorded in `last_error`, never
+  treated as exactly-once. **Tests:** DB-free `OutboxPublisherServiceTest` (new) covers
+  claim→deliver→sent, transient-failure retry, permanent-failure terminal, no-op when no deliverer,
+  and the `503` with no database; `OutboxEventRepositoryTest`/`OutboxEventRowMapperTest` cover the
+  bounded oldest-first scan and the claim/mark SQL. **The `S06-07` acceptance criterion is proven
+  end-to-end on a real database** by the new `OutboxPublisherConcurrencyIT` integration suite on
+  `pgvector/pgvector:0.8.6-pg18` (Testcontainers, never `H2` per `AGENTS.md`): with Flyway
+  migrating the schema in the test, 4 concurrent publisher instances drain 200 seeded pending rows
+  and the suite asserts every event is delivered exactly once (no loss, no duplicate) and that at
+  least two instances made progress — proving two publishers neither lose pending events nor
+  serialise onto one. **Placement (two-tier split, S03-15):** the DB-free unit tests
+  (`OutboxPublisherServiceTest`, `OutboxEventRepositoryTest`, `OutboxEventRowMapperTest`) live in
+  `src/test`, while the `OutboxPublisherConcurrencyIT` concurrency suite lives in
+  `src/integrationTest` beside the other `*IT` suites — so the Docker-backed suite never slows the
+  fast `check` gate. **Verification:** both tiers are green — the `messaging` DB-free unit package
+  (22 tests) passes on `./gradlew check`, and the moved concurrency IT (1 test, real
+  `pgvector/pgvector:0.8.6-pg18`) passes on `./gradlew integrationTest --tests
+  *OutboxPublisherConcurrencyIT*`. No dependency, contract, or schema change beyond the new
+  publisher, port and tests. **Docs:** `docs/architecture/module-api.md` records `OutboxPublisherService`
+  (the target-contract publisher), its `MessageDeliverer` port and the `OutboxEventRepository`/
+  `OutboxEventRowMapper` persistence classes; `docs/adr/ADR-004-transactional-outbox.md` already
+  references the polling publisher.
+
 - **Idempotent create-run under `Idempotency-Key` (`S06-06`).** `POST /api/v1/runs` now answers
   idempotently: a repeat with the same key *and* the same request payload returns the original run,
   and a repeat with the same key but a *different* payload is a permanent `409 conflict` (never a

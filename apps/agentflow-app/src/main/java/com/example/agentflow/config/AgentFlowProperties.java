@@ -31,6 +31,7 @@ public class AgentFlowProperties {
   @Valid private final Http http = new Http();
   @Valid private final Graph graph = new Graph();
   @Valid private final Security security = new Security();
+  @Valid private final Outbox outbox = new Outbox();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -178,6 +179,83 @@ public class AgentFlowProperties {
      */
     public String getAudience() {
       return audience;
+    }
+  }
+
+  /**
+   * @return the validated outbox publisher settings
+   */
+  public Outbox getOutbox() {
+    return outbox;
+  }
+
+  /**
+   * Outbox publisher tuning (S06-07). Bound from {@code agentflow.outbox.*}; retry and batch limits
+   * live in configuration, not in code (apps/agentflow-app AGENTS.md).
+   */
+  public static class Outbox {
+    private final Publisher publisher = new Publisher();
+
+    /**
+     * @return the validated outbox publisher settings
+     */
+    public Publisher getPublisher() {
+      return publisher;
+    }
+
+    /** Bounded-batch poll + bounded-retry backoff for the outbox publisher (S06-07). */
+    public static class Publisher {
+      /**
+       * Maximum rows claimed per poll. Bounded so one poll publishes a limited batch and never
+       * locks a burst of work onto a single publisher instance. Default 50.
+       */
+      @Min(value = 1, message = "agentflow.outbox.publisher.batch-size must be at least 1")
+      private int batchSize = 50;
+
+      /**
+       * Maximum publish attempts before a row is held terminal for the DLQ ({@code S06-11}) instead
+       * of retrying forever. Default 5.
+       */
+      @Min(value = 1, message = "agentflow.outbox.publisher.max-attempts must be at least 1")
+      private int maxAttempts = 5;
+
+      /** Base retry delay in seconds; the backoff grows exponentially from it (0 allowed). */
+      @Min(
+          value = 0,
+          message = "agentflow.outbox.publisher.base-delay-seconds must be non-negative")
+      private long baseDelaySeconds = 1;
+
+      /** Maximum retry delay in seconds; the exponential backoff is capped at this value. */
+      @Min(value = 1, message = "agentflow.outbox.publisher.max-delay-seconds must be at least 1")
+      private long maxDelaySeconds = 60;
+
+      /**
+       * @return the batch size bound (default {@code 50})
+       */
+      public int getBatchSize() {
+        return batchSize;
+      }
+
+      /**
+       * @return the maximum publish attempts before a permanent hold (default {@code 5})
+       */
+      public int getMaxAttempts() {
+        return maxAttempts;
+      }
+
+      /**
+       * @return the base retry delay in seconds (default {@code 1})
+       */
+      public long getBaseDelaySeconds() {
+        return baseDelaySeconds;
+      }
+
+      /**
+       * @return the capped maximum retry delay in seconds (default {@code 60})
+       */
+      public long getMaxDelaySeconds() {
+        return maxDelaySeconds;
+      }
     }
   }
 }
