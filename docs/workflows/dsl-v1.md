@@ -2,7 +2,7 @@
 
 The declarative, typed language for the graphs that AgentFlow runs. This document describes
 **DSL v1**, the only version defined by the machine-readable contract
-[`contracts/workflow-graph/workflow-graph.json`](../contracts/workflow-graph/workflow-graph.json)
+[`contracts/workflow-graph/workflow-graph.json`](../../contracts/workflow-graph/workflow-graph.json)
 (JSON Schema, draft 2020-12, `$id` `.../workflow-graph/1.0.0.json`).
 
 A graph is a **directed acyclic graph (DAG)** of typed steps and the edges that order them. It is
@@ -91,7 +91,7 @@ are **execution order** — the two are independent.
 
 ## 4. The canonical valid examples
 
-The canonical examples live in [`contracts/workflow-graph/`](../contracts/workflow-graph/) and pass
+The canonical examples live in [`contracts/workflow-graph/`](../../contracts/workflow-graph/) and pass
 the current validator (verified below). They cover the whole vocabulary.
 
 **Linear pipeline** (`valid/example-linear.json`, all six node types, one path):
@@ -247,7 +247,7 @@ Every example in §4 and §5 passes (or is rejected for the documented reason) b
 validator that the project ships. The DSL validator is a pure domain gate in the `workflowdefinition`
 module — it never touches the database, Kafka or a model — so the authoritative way to verify a
 graph is the project's own test suite, which runs against the built classes and the canonical
-fixtures in [`contracts/workflow-graph/`](../contracts/workflow-graph/):
+fixtures in [`contracts/workflow-graph/`](../../contracts/workflow-graph/):
 
 ```bash
 ./gradlew :apps:agentflow-app:test \
