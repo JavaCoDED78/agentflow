@@ -81,8 +81,13 @@ class OutboxPublisherConcurrencyIT {
     jdbc = new JdbcTemplate(ds);
     repository = new OutboxEventRepository(jdbc);
 
-    // A valid tenant row (outbox_events.tenant_id has a FK to tenants(id)).
-    jdbc.update("INSERT INTO tenants (id, slug) VALUES (?, ?)", UUID.randomUUID(), "tenant-it");
+    // A valid tenant row (outbox_events.tenant_id has a FK to tenants(id)). The insert is
+    // idempotent (ON CONFLICT): the @BeforeEach fixture can run once per test method without
+    // colliding with the unique tenants.slug, so multiple tests in one JVM don't fail to seed it.
+    jdbc.update(
+        "INSERT INTO tenants (id, slug) VALUES (?, ?) ON CONFLICT (slug) DO NOTHING",
+        UUID.randomUUID(),
+        "tenant-it");
 
     // Initialize the registry before the lambda captures it.
     deliveries = new ConcurrentHashMap<>();
@@ -182,6 +187,51 @@ class OutboxPublisherConcurrencyIT {
     assertThat(activePublishers)
         .as("multiple publisher instances drained concurrently", activePublishers)
         .isGreaterThanOrEqualTo(2);
+  }
+
+  /**
+   * S06-08 crash-window recovery on a real database: a publisher that crashed after claiming a row
+   * (row left in {@code CLAIMED} with an old {@code claimed_at}) but before recording the outcome
+   * would otherwise leave the row stuck forever. The poll re-selects such a stale claim and
+   * re-publishes it, so the event is delivered (no loss) — a duplicate, never a loss, because the
+   * consumer-side inbox dedups a re-delivered envelope (S06-10).
+   */
+  @Test
+  void a_stale_claimed_row_is_reclaimed_and_delivered_after_a_publisher_crash() {
+    UUID tenant = jdbc.queryForObject("SELECT id FROM tenants", UUID.class);
+    UUID id = UUID.randomUUID();
+    UUID eventId = UUID.randomUUID();
+    UUID run = UUID.randomUUID();
+    repository.insert(
+        OutboxEvent.pending(
+            id,
+            eventId,
+            "workflow.run.requested.v1",
+            "agentflow.workflow.run-requested.v1",
+            "workflow_run",
+            run,
+            tenant,
+            "{\"runId\":\"" + run + "\"}",
+            null));
+    // Simulate the crash-after-publish-before-DB-update window (S06-08): the row is CLAIMED with an
+    // old claimed_at and no outcome recorded — exactly what a crashed publisher leaves behind.
+    jdbc.update(
+        "UPDATE outbox_events SET status = 'CLAIMED', publish_attempts = 1, "
+            + "claimed_at = now() - INTERVAL '1 day' WHERE id = ?",
+        id);
+
+    // claim-timeout-seconds defaults to 300; the row's claimed_at is a day old, so it is stale.
+    AgentFlowProperties props = new AgentFlowProperties();
+    OutboxPublisherService publisher =
+        new OutboxPublisherService(repository, deliverer, null, props);
+
+    int published = publisher.pollOnce();
+
+    // The stale claim is re-published (no loss): the event is delivered exactly once and the row
+    // ends SENT, so the outbox drains instead of losing the event after the crash.
+    assertThat(published).isEqualTo(1);
+    assertThat(deliveries.get(eventId)).isEqualTo(1);
+    assertThat(repository.selectForClaim(1000)).isEmpty();
   }
 
   /** True when nothing is due for publish anymore. */

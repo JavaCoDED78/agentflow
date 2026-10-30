@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mark the outbox `published` only on broker ack, re-publish on an ambiguous outcome (S06-08).**
+  The polling publisher now records a row as delivered — and stamps `published_at` — only on a
+  broker **confirmation** (`MessageDeliverer.DeliverResult.DELIVERED`); an **ambiguous** broker
+  outcome (`AMBIGUOUS`, e.g. a producer timeout or connection reset where the producer did not
+  confirm whether the broker holds the envelope) is **never** treated as delivered: the row is
+  re-published at a bounded-backoff instant (`min(baseDelaySeconds shl (attempts-1), maxDelaySeconds)`,
+  capped at `maxDelaySeconds`, bounded by `maxAttempts`), so a re-publish of a delivered envelope is
+  a **duplicate** (deduped by the consumer-side inbox, `S06-10`) but never a **loss** (at-least-once,
+  ADR-003, invariant 6). When the bound is exhausted the row is held terminal (`next_attempt_at`
+  NULL) for the auto-poll and visible to the DLQ (`S06-11`) — never silently dropped. A publisher
+  that crashes **after claiming** a row but **before** recording the outcome leaves it `CLAIMED`; the
+  poll now re-selects such a **stale** claim (older than `claim-timeout-seconds`) and re-publishes it.
+  The `claimed_at` column (new migration `V3_3_11__add_claimed_at_to_outbox_events.sql`) is stamped
+  by the publisher on every claim to identify a stale claim. `OutboxEventRepository` gained
+  `selectForClaim` (re-selects a stale `CLAIMED` row older than the timeout, plus the
+  `PENDING`/`FAILED` retries, oldest-first, bounded) and a fenced `claim` that can reclaim a stale
+  `CLAIMED` row. No row is ever deleted before the broker confirms (invariant 6); the outbox is a
+  **bounded** re-publisher, not a retry forever. Configurable via `AgentFlowProperties.Outbox.Publisher`
+  (`batch-size`, `max-attempts`, `base-delay-seconds`, `max-delay-seconds`, and `claim-timeout-seconds`,
+  default `300`, `@Min(1)`). **Tests:** DB-free `OutboxPublisherServiceTest` covers the retry-on-ambiguous
+  outcome (within the bound) and the terminal hold after exhaustion (both assert the row is never marked
+  `SENT`); the `OutboxEventRepositoryTest` asserts the fenced claim SQL and the stale-claim re-select.
+  The crash-window recovery — a stale `CLAIMED` row (simulating a crashed publisher) is reclaimed and
+  delivered, **no loss** — is proven end-to-end on a real database by
+  `OutboxPublisherConcurrencyIT` (`OutboxPublisherConcurrencyIT.a_stale_claimed_row_is_reclaimed_and_delivered_after_a_publisher_crash`,
+  Testcontainers on `pgvector/pgvector:0.8.6-pg18`). **Placement:** DB-free unit tests in
+  `src/test`; the crash-window/concurrency suite in `src/integrationTest` beside the other `*IT`
+  suites, so the Docker-backed suite never slows the fast `check` gate. **Docs:**
+  `docs/architecture/module-api.md` (the ack-bound publisher and the `AMBIGUOUS` delivery result) and
+  `docs/architecture/kafka-topics.md` (the ack-bound publish rule) record the S06-08 contract. No
+  change to the `OutboxEvent` domain record.
+
 - **Polling outbox publisher (`OutboxPublisherService`, `S06-07`).** The `messaging`-owned
   publisher drains the `outbox_events` table to the broker in bounded batches without ever holding
   a database transaction across a network call. One poll (`pollOnce`) does four isolated steps:
