@@ -32,6 +32,7 @@ public class AgentFlowProperties {
   @Valid private final Graph graph = new Graph();
   @Valid private final Security security = new Security();
   @Valid private final Outbox outbox = new Outbox();
+  @Valid private final Inbox inbox = new Inbox();
   @Valid private final Kafka kafka = new Kafka();
 
   /**
@@ -320,6 +321,34 @@ public class AgentFlowProperties {
    * a profile (local / kubernetes). The bootstrap servers carry a local placeholder default only
    * for development; it must be overridden from the environment for any real deployment.
    */
+  public static class Inbox {
+
+    /**
+     * The maximum number of <b>local attempts</b> a transient {@code InboxConsumerAction} failure
+     * is retried within {@link com.example.agentflow.messaging.application.InboxDedupService}
+     * before the row is marked {@code FAILED}. The first attempt counts as one; the default of 3
+     * keeps a transient fault from failing immediately while staying bounded. The bounded retry
+     * uses a single savepoint re-rolled before each attempt, so it needs at most one savepoint
+     * regardless of this value.
+     */
+    private int maxAttempts = 3;
+
+    /**
+     * @return the maximum local attempts on a transient {@code InboxConsumerAction} failure (at
+     *     least 1)
+     */
+    public int getMaxAttempts() {
+      return maxAttempts;
+    }
+
+    /**
+     * @param maxAttempts the maximum local attempts on a transient failure
+     */
+    public void setMaxAttempts(int maxAttempts) {
+      this.maxAttempts = maxAttempts;
+    }
+  }
+
   public static class Kafka {
 
     private final Producer producer = new Producer();
