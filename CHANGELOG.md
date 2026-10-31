@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Consumer-side inbox error policy + DLQ (S06-11).** The messaging consumer error policy
+  (plan §6.4, invariant 12) is now complete: a transient fault is retried with a bounded immediate
+  retry, a permanent or malformed event short-circuits straight to a dead-letter, and neither path
+  reprocesses or loses work. `InboxErrorPolicy` (new, `messaging.application`, stateless — a plain
+  `defaults()` factory, no bean) classifies the failure thrown by the business change:
+  `IllegalArgumentException` / `IllegalStateException` / `NullPointerException` are
+  `PERMANENT` (bad input / contract violation — retrying identical input cannot succeed);
+  every other throwable is `TRANSIENT` (e.g. a downstream DB / provider / broker fault).
+  `InboxConsumerService` (new, the single orchestrating entry point a `workflowexecution` consumer
+  builds — **not** a Spring bean, so the skeleton boots without Kafka, `S01-02`) wires the policy into
+  the dedup helper: on `PERMANENT` it short-circuits the bounded immediate retry entirely and records the claim row `FAILED` (a duplicate redelivery of the same envelope is deduped as `OTHER_CLAIMED`, never a retry loop); on `TRANSIENT` it retries up to `agentflow.inbox.max-attempts` (default `3`,
+  `AgentFlowProperties.Inbox.MaxAttempts`) using a **single savepoint re-rolled before each attempt**,
+  rolling the partial change back while the claim row is kept, so nothing is ever marked `PROCESSED`
+  on a failure (invariant 3). When the transient attempts are exhausted — or a permanent failure
+  short-circuits — the consumer appends a `DlqMessage` (new domain record, `Status` `RETRY` /
+  `DEAD_LETTER`) via the new `DlqService`, which records the disposition in the new
+  `dlq_messages` table (`apps/agentflow-app/src/main/resources/migrations/V3_3_12__create_dlq_messages.sql`,
+  `messaging`-owned, glossary §6) — one row per `(consumer_name, event_id)` (the **same** dedup key as
+  the inbox), so a duplicate append is a no-op (`ON CONFLICT (consumer_name, event_id) DO NOTHING`,
+  at-least-once, `ADR-003`, so an event is never dead-lettered twice). `dlq_messages` is the
+  PostgreSQL side of the policy (invariant 2 — the consumer's authoritative disposition stays in
+  `inbox_messages`, set through the dedup helper); it carries no `tenant_id` (the inbox is keyed by
+  `(consumer, event)`, and tenant isolation is enforced by the consumer, invariant 1), `last_error` is
+  redacted (invariant 8), and the composite `UNIQUE (consumer_name, event_id)` doubles as its own
+  backing index. `InboxConsumeResult` now carries `RETRY` / `DEAD_LETTER` (the `FAILED` value from
+  `S06-10` is removed — the disposition is `RETRY` for a retryable transient fault, `DEAD_LETTER` for
+  the investigation path). `DlqService` and `DlqMessageRepository` are
+  `@ConditionalOnBean(DataSource)` (optional), so the skeleton boots without a database. **Tests:**
+  DB-free unit suite — `InboxErrorPolicyTest` (permanent vs. transient classification —
+  `IllegalArgumentException`/`IllegalStateException`/`NullPointerException` are permanent, everything
+  else transient), `InboxConsumerServiceTest` (permanent → short-circuit to `DEAD_LETTER`, never
+  retried; transient → bounded immediate retry that rolls the change back while keeping the claim,
+  never `PROCESSED`; a transient exhaustion → `RETRY`, never reprocessed), `DlqServiceTest` (idempotent
+  append), `DlqMessageRowMapperTest`, `DlqMessageRepositoryTest` (mocked `JdbcTemplate`); the
+  `dlq_messages` table is proven on a **real PostgreSQL** by `DlqMessageRepositoryIT`
+  (`src/integrationTest`, Testcontainers on `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`):
+  the migration applies, a valid `RETRY` row lands, a duplicate `(consumer_name, event_id)` is
+  rejected by the unique constraint (idempotent), and `last_error` is nullable. `MigrationsTest`
+  also covers version `3.3.12` and a `dlq_messages` acceptance case (a valid `RETRY` row lands and
+  a duplicate `(consumer_name, event_id)` is rejected by the composite unique). **Verification:**
+  `./gradlew :apps:agentflow-app:test --tests "com.example.agentflow.messaging.*"` is green (65
+  messaging unit tests, 0 failures, 0 skips) and `./gradlew integrationTest --tests
+  *DlqMessageRepositoryIT*` is green (4 tests, real PostgreSQL); `./gradlew :apps:agentflow-app:check`
+  is green (unit + architecture + spotless formatting). **Placement:** the DB-free unit tests live in
+  `src/test`; the DB-backed suite lives in `src/integrationTest` beside the other `*IT` suites, so the
+  Docker-backed suite never slows the fast `check` gate. **No new external contract** — the policy
+  reuses the existing `outbox_events` envelope + `event_id`, and `InboxErrorPolicy` / `InboxConsumerService`
+  / `DlqService` / `DlqMessage` are internal `application`-port types (not in OpenAPI / the event JSON
+  schema). **Docs:** `docs/domain-glossary.md` §6 adds `dlq_messages`; `docs/architecture/module-api.md`
+  and `docs/architecture/kafka-topics.md` already document the consumer retry/DLQ policy (no change);
+  `CHANGELOG.md` (`Unreleased`) records it. No dependency, Java module-boundary, or OpenAPI change.
+
 - **Consumer-side inbox dedup helper (S06-10).** The application-facing `InboxPort` is
   implemented by `InboxDedupService`, a single-transaction boundary a `workflowexecution` consumer
   uses to apply a business state change atomically with the inbox dedup claim (invariant 3): it
@@ -22,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default `3`, `AgentFlowProperties.Inbox.MaxAttempts`) using a **single savepoint re-rolled
   before each attempt**, so the partial change is rolled back while the claim row is kept; nothing
   is ever marked `PROCESSED` on a failure (invariant 3), and after the attempts are exhausted the
-  row is recorded `FAILED` (never `PROCESSED`) for the consumer retry / DLQ policy (S06-11). The
+  row is recorded `FAILED` (never `PROCESSED`) and the returned disposition is `RETRY` for the consumer retry / DLQ policy (S06-11). The
   business change is applied through the owning module's repository/service, never arbitrary or
   model-generated code (invariant 7); model output, uploaded documents and tool results handled by
   the change are untrusted data, and a redacted failure summary is stored on the row (`last_error`,
@@ -30,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OutboxPublisherService`), so the skeleton still boots without a database. **Tests:** DB-free unit
   tests for the control flow (`InboxDedupServiceTest`, a mocked `TransactionTemplate`/`TransactionStatus`
   driving the callback against a mocked `InboxMessageRepository` — claim runs first, the business
-  change runs at most once, a transient failure marks `FAILED`/never `PROCESSED`), the claim write
+  change runs at most once, a transient failure marks `RETRY`/never `PROCESSED`), the claim write
   and the `DuplicateKeyException` → `false` rejection (`InboxMessageRepositoryTest`), and the row
   mapping (`InboxMessageRowMapperTest`); the acceptance criterion is proven on a **real PostgreSQL**
   by `InboxDedupConcurrencyIT` (`src/integrationTest`, Testcontainers): N concurrent deliveries of

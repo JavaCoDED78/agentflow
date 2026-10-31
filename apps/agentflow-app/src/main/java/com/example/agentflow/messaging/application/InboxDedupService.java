@@ -26,10 +26,18 @@ import org.springframework.util.Assert;
  *
  * <p>Every {@link InboxConsumerAction#execute} call is guarded by a bounded local retry within the
  * same claim: a transient failure's partial changes are rolled back to a single savepoint while the
- * claim row is kept, and the change is retried up to {@code maxAttempts} times. Nothing is ever
- * marked {@code PROCESSED} on a failure (the invariant: a transient failure is never marked
- * processed). After the attempts are exhausted the row is recorded {@code FAILED} &mdash; held for
- * the consumer retry / DLQ policy (S06-11) &mdash; never {@code PROCESSED}.
+ * claim row is kept, and the change is retried up to {@code maxAttempts} times. A failure is first
+ * classified by {@link InboxErrorPolicy} (S06-11): a <b>permanent</b> / malformed event ({@link
+ * InboxErrorClassification#PERMANENT}) <b>short-circuits</b> the bounded immediate retry &mdash;
+ * the row is recorded {@code FAILED} and returned as {@link InboxConsumeResult#DEAD_LETTER}, never
+ * retried, so a malformed event cannot cycle the consumer forever. A <b>transient</b> failure
+ * ({@link InboxErrorClassification#TRANSIENT}) runs the bounded immediate retry; when it is
+ * exhausted the row is recorded {@code FAILED} and returned as {@link InboxConsumeResult#RETRY}.
+ * Nothing is ever marked {@code PROCESSED} on a failure (the invariant: a transient failure is
+ * never marked processed). The {@code RETRY} / {@code DEAD_LETTER} dispositions are held for the
+ * consumer retry / DLQ policy (S06-11), which records them and acknowledges the Kafka offset only
+ * after a durable {@link InboxConsumeResult#PROCESSED} / {@link InboxConsumeResult#OTHER_CLAIMED}
+ * outcome.
  *
  * <p>The business change is applied through the owning module's repository/service (for example a
  * {@code workflowexecution} run/step transition); this helper only owns the inbox claim and its
@@ -45,6 +53,7 @@ public class InboxDedupService {
 
   private final com.example.agentflow.messaging.persistence.InboxMessageRepository inbox;
   private final TransactionTemplate transactionTemplate;
+  private final InboxErrorPolicy errorPolicy;
 
   /**
    * Default maximum local attempts when a business change fails transiently before the bounded
@@ -64,10 +73,27 @@ public class InboxDedupService {
       com.example.agentflow.messaging.persistence.InboxMessageRepository inbox,
       TransactionTemplate transactionTemplate,
       int maxAttempts) {
+    this(inbox, transactionTemplate, maxAttempts, InboxErrorPolicy.defaults());
+  }
+
+  /**
+   * @param inbox the inbox write/read path
+   * @param transactionTemplate the transactional boundary (a {@code DataSourceTransactionManager}
+   *     template); the claim, the business change and the mark commit or roll back together
+   * @param maxAttempts the maximum local attempts on a transient failure (at least 1)
+   * @param errorPolicy the transient/permanent classifier (S06-11); a {@code null} policy defaults
+   *     to {@link InboxErrorPolicy#defaults()}
+   */
+  public InboxDedupService(
+      com.example.agentflow.messaging.persistence.InboxMessageRepository inbox,
+      TransactionTemplate transactionTemplate,
+      int maxAttempts,
+      InboxErrorPolicy errorPolicy) {
     Assert.state(maxAttempts >= 1, "maxAttempts must be at least 1");
     this.inbox = inbox;
     this.transactionTemplate = transactionTemplate;
     this.maxAttempts = maxAttempts;
+    this.errorPolicy = errorPolicy != null ? errorPolicy : InboxErrorPolicy.defaults();
   }
 
   /**
@@ -78,8 +104,10 @@ public class InboxDedupService {
    * @param claim the fresh {@link InboxMessage.Status#PENDING} claim to insert before the change
    * @param action the business state change to run atomically with the claim
    * @return {@link InboxConsumeResult#OTHER_CLAIMED} (a duplicate delivery skipped the change),
-   *     {@link InboxConsumeResult#PROCESSED} (the change ran once) or {@link
-   *     InboxConsumeResult#FAILED} (the bounded retry was exhausted; never {@code PROCESSED})
+   *     {@link InboxConsumeResult#PROCESSED} (the change ran once) or, once a business change has
+   *     failed, {@link InboxConsumeResult#RETRY} (a transient fault exhausted the bounded retry) or
+   *     {@link InboxConsumeResult#DEAD_LETTER} (a permanent / malformed event short-circuited the
+   *     retry) &mdash; never {@code PROCESSED} on a failure
    */
   public InboxConsumeResult consume(
       String consumerName, InboxMessage claim, InboxConsumerAction action) {
@@ -94,8 +122,9 @@ public class InboxDedupService {
    * @param claim the fresh {@link InboxMessage.Status#PENDING} claim to insert before the change
    * @param action the business state change to run atomically with the claim
    * @param maxAttempts the maximum local attempts on a transient failure (at least 1)
-   * @return {@link InboxConsumeResult#OTHER_CLAIMED}, {@link InboxConsumeResult#PROCESSED} or
-   *     {@link InboxConsumeResult#FAILED}
+   * @return {@link InboxConsumeResult#OTHER_CLAIMED}, {@link InboxConsumeResult#PROCESSED}, {@link
+   *     InboxConsumeResult#RETRY} (transient fault, bounded retry exhausted) or {@link
+   *     InboxConsumeResult#DEAD_LETTER} (permanent / malformed event, retry short-circuited)
    */
   public InboxConsumeResult consume(
       String consumerName, InboxMessage claim, InboxConsumerAction action, int maxAttempts) {
@@ -128,19 +157,29 @@ public class InboxDedupService {
                   return InboxConsumeResult.PROCESSED;
                 } catch (Exception failure) {
                   lastError = redact(failure);
+                  // Undo this attempt's (partial) change before deciding the disposition, so a
+                  // permanent fault never leaves a half-applied change committed (S06-11).
                   try {
                     status.rollbackToSavepoint(savepoint);
                   } catch (Exception rollbackError) {
                     // The retry proceeds regardless of a savepoint rollback hiccup.
                   }
+                  // Classify the fault (S06-11): a permanent / malformed event short-circuits the
+                  // bounded immediate retry &mdash; it is held for the DLQ, never retried, so a
+                  // malformed event cannot cycle the consumer forever. A transient fault runs the
+                  // bounded immediate retry up to {@code maxAttempts}.
+                  if (errorPolicy.classify(failure) == InboxErrorClassification.PERMANENT) {
+                    inbox.markFailed(consumerName, claim.eventId(), attempt, null, lastError);
+                    return InboxConsumeResult.DEAD_LETTER;
+                  }
                   if (attempt >= maxAttempts) {
                     inbox.markFailed(consumerName, claim.eventId(), attempt, null, lastError);
-                    return InboxConsumeResult.FAILED;
+                    return InboxConsumeResult.RETRY;
                   }
                 }
               }
-              // Unreachable: the loop returns PROCESSED or FAILED on every path.
-              return InboxConsumeResult.FAILED;
+              // Unreachable: the loop returns PROCESSED, DEAD_LETTER or RETRY on every path.
+              return InboxConsumeResult.RETRY;
             });
   }
 

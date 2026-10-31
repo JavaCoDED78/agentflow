@@ -85,7 +85,7 @@ class InboxDedupServiceTest {
   }
 
   @Test
-  void consume_transient_failure_marks_failed_and_never_marks_processed() {
+  void consume_transient_failure_records_failed_and_returns_retry() {
     when(inbox.claim(any(InboxMessage.class))).thenReturn(true);
     doNothing().when(inbox).markFailed(anyString(), any(), anyInt(), any(), anyString());
     when(status.createSavepoint()).thenReturn(new Object());
@@ -96,10 +96,11 @@ class InboxDedupServiceTest {
         };
 
     // the single attempt failed; the bounded local retry rolls the (partial) change back to the
-    // savepoint and records the row FAILED (never PROCESSED), held for the retry / DLQ policy.
+    // savepoint and records the row FAILED (never PROCESSED); the outcome is RETRY (transient),
+    // held for the retry / DLQ policy (S06-11).
     InboxConsumeResult result = serviceWithMaxAttempts(1).consume("agent:run:step", claim, failing);
 
-    assertThat(result).isEqualTo(InboxConsumeResult.FAILED);
+    assertThat(result).isEqualTo(InboxConsumeResult.RETRY);
     verify(inbox).claim(claim);
     verify(inbox, never()).markProcessed(any(), any(), anyString());
     verify(inbox).markFailed(eq("agent:run:step"), any(), anyInt(), any(), anyString());
@@ -139,7 +140,7 @@ class InboxDedupServiceTest {
   }
 
   @Test
-  void consume_bounded_retry_exhausted_marks_failed_and_never_marks_processed() {
+  void consume_bounded_retry_exhausted_returns_retry_and_never_marks_processed() {
     when(inbox.claim(any(InboxMessage.class))).thenReturn(true);
     doNothing().when(inbox).markProcessed(anyString(), any(), anyString());
     doNothing().when(inbox).markFailed(anyString(), any(), anyInt(), any(), anyString());
@@ -155,10 +156,40 @@ class InboxDedupServiceTest {
                   throw new RuntimeException("transient broker fault");
                 });
 
-    // the bounded local retry was exhausted; the row is FAILED (never PROCESSED) for the retry /
-    // DLQ
-    assertThat(result).isEqualTo(InboxConsumeResult.FAILED);
+    // the bounded local retry was exhausted; the row is FAILED (never PROCESSED); the outcome is
+    // RETRY, held for the retry / DLQ policy (S06-11).
+    assertThat(result).isEqualTo(InboxConsumeResult.RETRY);
     verify(inbox, never()).markProcessed(any(), any(), anyString());
     verify(inbox).markFailed(eq("agent:run:step"), any(), anyInt(), any(), anyString());
+  }
+
+  @Test
+  void consume_permanent_failure_short_circuits_to_dead_letter_and_never_retries() {
+    when(inbox.claim(any(InboxMessage.class))).thenReturn(true);
+    doNothing().when(inbox).markFailed(anyString(), any(), anyInt(), any(), anyString());
+    when(status.createSavepoint()).thenReturn(new Object());
+    doNothing().when(status).rollbackToSavepoint(any());
+
+    AtomicInteger calls = new AtomicInteger();
+    InboxConsumerAction malformed =
+        () -> {
+          calls.incrementAndGet();
+          throw new IllegalArgumentException("malformed envelope");
+        };
+
+    // IllegalArgumentException is classified as permanent (S06-11): the change is rolled back to
+    // the savepoint and the outcome is DEAD_LETTER on the very first attempt &mdash; no bounded
+    // retry, so a permanent / malformed event cannot cycle the consumer forever.
+    InboxConsumeResult result =
+        serviceWithMaxAttempts(3).consume("agent:run:step", claim, malformed);
+
+    assertThat(result).isEqualTo(InboxConsumeResult.DEAD_LETTER);
+    assertThat(calls.get()).isEqualTo(1); // failed immediately, never retried
+    verify(inbox, never()).markProcessed(any(), any(), anyString());
+    verify(inbox).markFailed(eq("agent:run:step"), any(), anyInt(), any(), anyString());
+    // the change was rolled back to the savepoint before the DEAD_LETTER decision (no half-applied
+    // change; invariant 4)
+    verify(status, atLeastOnce()).createSavepoint();
+    verify(status, atLeastOnce()).rollbackToSavepoint(any());
   }
 }

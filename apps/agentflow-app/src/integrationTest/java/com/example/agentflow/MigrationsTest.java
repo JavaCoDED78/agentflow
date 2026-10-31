@@ -72,7 +72,7 @@ class MigrationsTest {
       assertThat(applied)
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
-              "3.3.9", "3.3.10", "3.3.11");
+              "3.3.9", "3.3.10", "3.3.11", "3.3.12");
     }
   }
 
@@ -91,7 +91,8 @@ class MigrationsTest {
             "workflow_step_runs",
             "workflow_events",
             "outbox_events",
-            "inbox_messages");
+            "inbox_messages",
+            "dlq_messages");
   }
 
   /**
@@ -569,6 +570,30 @@ class MigrationsTest {
                         "workflowexecution:step-LLM_PLAN",
                         event,
                         "PENDING"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
+
+        // dlq_messages (S06-11): a failed consumer outcome is held for investigation — a valid
+        // (consumer_name, event_id) row lands with a RETRY disposition. A second insert with the
+        // SAME pair is rejected by the composite UNIQUE constraint, so a duplicate delivery never
+        // dead-letters the event twice (at-least-once, ADR-003); last_error is nullable.
+        String dlqEvent = uuid();
+        insert(
+            "INSERT INTO dlq_messages (event_id, topic, consumer_name, status, attempts) VALUES (?, ?, ?, ?, ?)",
+            dlqEvent,
+            "agentflow.workflow.run-requested.v1",
+            "workflowexecution:step-LLM_PLAN",
+            "RETRY",
+            3);
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO dlq_messages (event_id, topic, consumer_name, status, attempts) VALUES (?, ?, ?, ?, ?)",
+                        dlqEvent,
+                        "agentflow.workflow.run-requested.v1",
+                        "workflowexecution:step-LLM_PLAN",
+                        "RETRY",
+                        3))
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("unique constraint");
 
