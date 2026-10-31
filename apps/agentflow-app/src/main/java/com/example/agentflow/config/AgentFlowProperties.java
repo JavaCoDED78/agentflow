@@ -32,6 +32,7 @@ public class AgentFlowProperties {
   @Valid private final Graph graph = new Graph();
   @Valid private final Security security = new Security();
   @Valid private final Outbox outbox = new Outbox();
+  @Valid private final Kafka kafka = new Kafka();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -190,6 +191,13 @@ public class AgentFlowProperties {
   }
 
   /**
+   * @return the validated Kafka producer settings (S06-09)
+   */
+  public Kafka getKafka() {
+    return kafka;
+  }
+
+  /**
    * Outbox publisher tuning (S06-07). Bound from {@code agentflow.outbox.*}; retry and batch limits
    * live in configuration, not in code (apps/agentflow-app AGENTS.md).
    */
@@ -275,6 +283,215 @@ public class AgentFlowProperties {
        */
       public long getClaimTimeoutSeconds() {
         return claimTimeoutSeconds;
+      }
+    }
+  }
+
+  /**
+   * Kafka producer settings (S06-09). Bound from {@code agentflow.kafka.*}.
+   *
+   * <p>These configure the outbound producer that forwards a claimed {@code outbox_events} envelope
+   * to the broker ({@link com.example.agentflow.messaging.worker.KafkaMessageDeliverer}). They are
+   * the standard Kafka producer client settings, documented by Spring Kafka, tuned for
+   * <b>reliability</b> rather than throughput:
+   *
+   * <ul>
+   *   <li><b>acks=all</b> &mdash; the broker only confirms once every in-sync replica has the
+   *       record, so a delivered envelope is durable before the publisher marks it {@code SENT}.
+   *   <li><b>delivery-timeout</b> &mdash; the total time a send waits for the broker to confirm
+   *       before the outcome is treated as <b>ambiguous</b> (the broker may or may not hold it) and
+   *       the row is re-published at a bounded-backoff instant &mdash; a duplicate, never a loss
+   *       (at-least-once, ADR-003).
+   *   <li><b>retries + retry-backoff</b> &mdash; the producer retries a request-failed fault
+   *       internally; the publisher applies its own <i>bounded</i> retry on top, so a stuck broker
+   *       drains slowly instead of forever (S06-07).
+   *   <li><b>batching</b> ({@code batch-size}, {@code linger-ms}, {@code buffer-memory}) &mdash;
+   *       records are grouped for efficiency; the values are generous but bounded so a poll never
+   *       buffers unbounded work.
+   * </ul>
+   *
+   * <p><b>Not a substitute for the overall PostgreSQL/Kafka transaction (invariant 3).</b> Kafka
+   * transactions or {@code enable.idempotence} are <b>not</b> used as the end-to-end safety net:
+   * delivery is at-least-once, and correctness comes from the transactional outbox (ADR-004) plus
+   * the consumer-side inbox dedup (S06-10), never from exactly-once Kafka processing.
+   *
+   * <p>The producer is disabled by default (the skeleton boots without Kafka, S01-02); enable it
+   * with {@code agentflow.kafka.producer.enabled=true} and a reachable {@code bootstrap-servers} in
+   * a profile (local / kubernetes). The bootstrap servers carry a local placeholder default only
+   * for development; it must be overridden from the environment for any real deployment.
+   */
+  public static class Kafka {
+
+    private final Producer producer = new Producer();
+
+    /**
+     * @return the validated Kafka producer settings
+     */
+    public Producer getProducer() {
+      return producer;
+    }
+
+    /**
+     * Producer client reliability tuning (S06-09). All values have safe defaults so a profile only
+     * needs to set {@code enabled} and {@code bootstrap-servers} to start forwarding events.
+     */
+    public static class Producer {
+
+      /**
+       * Whether the outbound producer adapter is active. {@code false} by default so the skeleton
+       * boots without Kafka (S01-02); set {@code true} in a profile once a reachable {@code
+       * bootstrap-servers} is supplied (local / kubernetes). When false the outbox publisher's
+       * {@link com.example.agentflow.messaging.application.MessageDeliverer} stays un-wired and
+       * rows stay {@code PENDING}, never lost.
+       */
+      private boolean enabled = false;
+
+      /**
+       * The broker contact point, bound from {@code agentflow.kafka.producer.bootstrap-servers}
+       * (typically {@code ${AGENTFLOW_KAFKA_BOOTSTRAP:...}} from the environment). The value here
+       * is only a local development placeholder and must be overridden for any real deployment; it
+       * is only read when {@link #enabled} is {@code true}.
+       */
+      private String bootstrapServers = "localhost:9092";
+
+      /**
+       * Number of replicas that must acknowledge a write before it is considered successful (Kafka
+       * {@code acks}). {@code all} is the safest: the broker confirms only once every in-sync
+       * replica holds the record, so a delivered envelope is durable before the publisher marks it
+       * {@code SENT}.
+       */
+      private String acks = "all";
+
+      /**
+       * Maximum time, in seconds, the producer waits for a send to complete before the outcome is
+       * treated as <b>ambiguous</b> (Kafka {@code delivery.timeout.ms}, converted to milliseconds).
+       * An ambiguous outcome is never marked delivered: the row is re-published at a
+       * bounded-backoff instant (S06-08 / S06-11). The value must be at least {@code linger.ms +
+       * request.timeout.ms} (Kafka rejects a smaller {@code delivery.timeout.ms}); 60 s leaves
+       * comfortable margin over the Kafka defaults (linger 5 ms + request.timeout 30 s).
+       */
+      @Min(
+          value = 1,
+          message = "agentflow.kafka.producer.delivery-timeout-seconds must be at least 1")
+      private long deliveryTimeoutSeconds = 60;
+
+      /**
+       * Number of times a request-failed fault is retried internally by the producer (Kafka {@code
+       * retries}). Combined with the publisher's own bounded retry (S06-07); not a promise of
+       * exactly-once delivery.
+       */
+      @Min(value = 0, message = "agentflow.kafka.producer.retries must be non-negative")
+      private int retries = 3;
+
+      /** Pause, in milliseconds, between internal retries (Kafka {@code retry.backoff.ms}). */
+      @Min(value = 0, message = "agentflow.kafka.producer.retry-backoff-ms must be non-negative")
+      private long retryBackoffMs = 100;
+
+      /**
+       * Size, in bytes, of the batch of records sent in one request (Kafka {@code batch.size}).
+       * Small batches keep poll latency low; larger batches improve throughput.
+       */
+      @Min(value = 1, message = "agentflow.kafka.producer.batch-size must be at least 1")
+      private int batchSize = 16_384;
+
+      /**
+       * Time, in milliseconds, the producer waits before sending a batch (Kafka {@code linger.ms}).
+       * A small value keeps envelopes on the move; a larger value batches more per request.
+       */
+      @Min(value = 0, message = "agentflow.kafka.producer.linger-ms must be non-negative")
+      private long lingerMs = 5;
+
+      /**
+       * Total bytes the producer buffers for in-flight requests (Kafka {@code buffer.memory}).
+       * Bounded so a slow broker cannot grow the buffer without limit.
+       */
+      @Min(value = 1, message = "agentflow.kafka.producer.buffer-memory must be at least 1")
+      private int bufferMemory = 33_554_432;
+
+      /**
+       * Compression codec for produced records (Kafka {@code compression.type}). {@code none} by
+       * default; enable {@code gzip}/{@code snappy}/{@code lz4} to reduce network volume.
+       */
+      private String compressionType = "none";
+
+      public boolean isEnabled() {
+        return enabled;
+      }
+
+      public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+      }
+
+      public String getBootstrapServers() {
+        return bootstrapServers;
+      }
+
+      public void setBootstrapServers(String bootstrapServers) {
+        this.bootstrapServers = bootstrapServers;
+      }
+
+      public String getAcks() {
+        return acks;
+      }
+
+      public void setAcks(String acks) {
+        this.acks = acks;
+      }
+
+      public long getDeliveryTimeoutSeconds() {
+        return deliveryTimeoutSeconds;
+      }
+
+      public void setDeliveryTimeoutSeconds(long deliveryTimeoutSeconds) {
+        this.deliveryTimeoutSeconds = deliveryTimeoutSeconds;
+      }
+
+      public int getRetries() {
+        return retries;
+      }
+
+      public void setRetries(int retries) {
+        this.retries = retries;
+      }
+
+      public long getRetryBackoffMs() {
+        return retryBackoffMs;
+      }
+
+      public void setRetryBackoffMs(long retryBackoffMs) {
+        this.retryBackoffMs = retryBackoffMs;
+      }
+
+      public int getBatchSize() {
+        return batchSize;
+      }
+
+      public void setBatchSize(int batchSize) {
+        this.batchSize = batchSize;
+      }
+
+      public long getLingerMs() {
+        return lingerMs;
+      }
+
+      public void setLingerMs(long lingerMs) {
+        this.lingerMs = lingerMs;
+      }
+
+      public int getBufferMemory() {
+        return bufferMemory;
+      }
+
+      public void setBufferMemory(int bufferMemory) {
+        this.bufferMemory = bufferMemory;
+      }
+
+      public String getCompressionType() {
+        return compressionType;
+      }
+
+      public void setCompressionType(String compressionType) {
+        this.compressionType = compressionType;
       }
     }
   }

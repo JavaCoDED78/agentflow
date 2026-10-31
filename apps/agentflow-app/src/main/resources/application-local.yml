@@ -31,6 +31,27 @@ agentflow:
     # profile.
     issuer-uri: ${AGENTFLOW_KEYCLOAK_ISSUER_URI:http://localhost:8083/realms/agentflow}
     audience: agentflow-api
+  # Kafka outbound producer (S06-09). Enabled for local runs; disabled by default in the base and
+  # test profiles (the skeleton boots without Kafka, S01-02). The bootstrap servers come from the
+  # git-ignored local .env (AGENTFLOW_KAFKA_BOOTSTRAP); the localhost default is local development
+  # only and is never shipped to a real profile. The reliability settings match
+  # AgentFlowProperties.Kafka.Producer (acks / delivery-timeout / retry / batching).
+  kafka:
+    producer:
+      enabled: true
+      bootstrap-servers: ${AGENTFLOW_KAFKA_BOOTSTRAP:localhost:9092}
+      acks: all
+      # delivery.timeout.ms must exceed linger.ms + request.timeout.ms (Kafka's default
+      # request.timeout.ms is 30s, linger.ms 5); 60s keeps a comfortable margin. Setting 30s
+      # here would make the KafkaProducer constructor reject the config
+      # (ConfigException) and fail the bean.
+      delivery-timeout-seconds: 60
+      retries: 3
+      retry-backoff-ms: 100
+      batch-size: 16384
+      linger-ms: 5
+      buffer-memory: 33554432
+      compression-type: none
 
 # Log levels for the local profile (S01-19). The JSON layout lives in
 # logback-spring.xml; this only picks the level per logger. Our code runs at
