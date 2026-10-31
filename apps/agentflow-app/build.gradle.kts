@@ -74,6 +74,10 @@ dependencies {
     // (JSON/YAML) and Swagger UI for local exploration; the generated spec is checked in under
     // contracts/openapi/. Version comes from the catalog; nothing pinned inline.
     implementation(libs.springdoc.openapi.starter.webmvc.ui)
+    // Kafka client (S06-09): the bare kafka-clients library the outbound producer adapter uses to
+    // forward an outbox envelope to the broker. BOM-managed by the Spring Boot BOM, so no version
+    // is pinned inline and the app never pins a client version that diverges from Spring Kafka.
+    implementation(libs.kafka.clients)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Nimbus JOSE (com.nimbusds) is already on the test classpath transitively via the
@@ -99,6 +103,10 @@ dependencies {
     // JUnit 5 platform needs to discover @ArchTest fields. Consumed through the
     // version catalog; no version pinned here.
     testImplementation(libs.archunit.junit5)
+    // Testcontainers Kafka (S06-09): an in-process KRaft broker for the outbound producer
+    // integration suite (KafkaMessageDelivererIT), on the same apache/kafka image as Compose. The
+    // coordinate is `org.testcontainers:kafka` in the 2.x line; BOM-managed by the Spring Boot BOM.
+    testImplementation(libs.testcontainers.kafka)
 }
 
 // The application plugin provides `run` / `bootRun`; the Boot plugin makes

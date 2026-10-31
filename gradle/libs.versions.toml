@@ -53,6 +53,22 @@ archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref
 # Consumed through the version catalog so the version is pinned in one place; it
 # is not part of the Spring Boot BOM.
 springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
+# Kafka client (S06-09): the bare `kafka-clients` library (KafkaProducer /
+# ProducerRecord / RecordHeader / RecordMetadata) the outbound producer adapter
+# uses to forward an outbox envelope to the broker. Only the client library is
+# needed — no spring-kafka, no autoconfiguration; the producer is built from the
+# same configuration keys Spring Kafka documents, but owned explicitly so the
+# publisher controls send/confirmation and retry. Version is BOM-managed by the
+# Spring Boot BOM; nothing is pinned inline.
+kafka-clients = { module = "org.apache.kafka:kafka-clients" }
+# Testcontainers Kafka (S06-09): an in-process KRaft broker for the outbound
+# producer integration suite, on the same apache/kafka image as Compose. The
+# 2.x published module is `org.testcontainers:kafka`, but the Spring Boot BOM's
+# Testcontainers import manages the historical artifactId
+# `org.testcontainers:testcontainers-kafka` (same as testcontainers-postgresql,
+# which depends on the BOM-managed name). We use that BOM-managed coordinate so
+# no version is pinned inline. No H2 and no hardcoded broker — AGENTS.md.
+testcontainers-kafka = { module = "org.testcontainers:testcontainers-kafka" }
 
 [plugins]
 # Gradle plugin versions live here too, so a module applies the Boot plugin

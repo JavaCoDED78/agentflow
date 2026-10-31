@@ -139,6 +139,18 @@ The topics exist to carry the boundary that the durable engine closes (`S06-05`�
   written in **one transaction**; the publisher polls `outbox_events` and publishes —
   it never writes the row and publishes later. Publish is **idempotent by `event_id`**
   (`outbox_events.event_id`), so a publisher restart after a crash is safe.
+- **Reliable producer (S06-09).** The outbound adapter
+  (`com.example.agentflow.messaging.worker.KafkaMessageDeliverer`) builds its client from
+  `AgentFlowProperties.Kafka.Producer`. `acks=all` means the broker confirms only once every
+  in-sync replica holds the record, so a row is marked `SENT` only on a durable send. A send
+  that does not confirm within `delivery-timeout-seconds` is **ambiguous** (the broker may or
+  may not hold the envelope): it is re-published at a bounded-backoff instant, never treated as
+  delivered — a duplicate, never a loss. `retries`/`retry-backoff-ms` bound the producer's own
+  request-fault retries; `batch-size`/`linger-ms`/`buffer-memory` bound batching so a poll never
+  buffers unbounded work. The producer is disabled by default (the skeleton boots without Kafka)
+  and enabled in the `local`/`kubernetes` profiles; Kafka transactions are deliberately **not**
+  used as the end-to-end safety net — delivery is at-least-once, and correctness comes from the
+  outbox (`ADR-004`) plus inbox dedup (`S06-10`), never from exactly-once Kafka.
 - **Ack-bound publish (S06-08).** The publisher records the row as delivered — and stamps
   `published_at` — only when the broker **confirms** the envelope; an **ambiguous** broker
   outcome (a timeout or missing producer confirmation) is re-published at a bounded-backoff

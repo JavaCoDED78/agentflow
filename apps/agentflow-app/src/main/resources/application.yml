@@ -65,6 +65,15 @@ agentflow:
       # re-published. Generous on purpose so a live, slow publisher keeps its claim; re-publishing a
       # row the broker already holds is a duplicate (inbox-deduped, S06-10), never a loss.
       claim-timeout-seconds: 300
+  # Kafka outbound producer (S06-09). Disabled by default: the skeleton boots without Kafka (S01-02),
+  # and the KafkaMessageDeliverer bean only exists when agentflow.kafka.producer.enabled=true. Enable
+  # it in a profile (local / kubernetes) with a reachable agentflow.kafka.producer.bootstrap-servers;
+  # the reliability tuning (acks / delivery-timeout / retry / batching) lives in
+  # AgentFlowProperties.Kafka.Producer. The producer is commented out so the base profile stays
+  # disabled and never tries to connect to a broker that is not configured.
+  # kafka:
+  #   producer:
+  #     enabled: false
 
 # Health endpoints (S01-18).
 #

@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kafka producer reliability tuning for the outbound outbox adapter (S06-09).** The
+  transport-agnostic `MessageDeliverer` port now has a real Kafka-backed implementation,
+  `KafkaMessageDeliverer` (a `@Service`, `@ConditionalOnProperty("agentflow.kafka.producer.enabled")`
+  so the skeleton still boots without Kafka, `S01-02`). The producer client properties are bound
+  from the new typed `AgentFlowProperties.Kafka.Producer` (validated `@Valid`/`@Min`): `acks=all`
+  (durable before the publisher marks the row `SENT`), `delivery.timeout.ms` (a send that does not
+  confirm in the bound is classified **ambiguous**, re-published at a bounded-backoff instant — a
+  duplicate, never a loss, at-least-once `ADR-003`), `retries` + `retry.backoff.ms` (the producer
+  retries a request-fault internally, on top of the publisher's bounded retry), and bounded
+  batching (`batch.size`, `linger.ms`, `buffer.memory`). `delivery-timeout-seconds`
+  is `60`, above the Kafka `delivery.timeout.ms >= linger.ms + request.timeout.ms`
+  bound (`request.timeout.ms` defaults to 30s, so a lower value makes the `KafkaProducer`
+  constructor reject the config with a `ConfigException`). The envelope is sent to
+  `outbox_events.topic` with `outbox_events.event_key` as the partition key (per-aggregate
+  ordering) and the row's correlation headers intact. `agentflow.kafka.producer.enabled` is
+  **disabled** in the base profile and enabled in `local`/`kubernetes` with the bootstrap servers
+  from the `AGENTFLOW_KAFKA_BOOTSTRAP` Secret. Only the bare `kafka-clients` client and the BOM-
+  managed `testcontainers-kafka` are added (nothing pinned inline, BOM-managed); Kafka
+  transactions are deliberately **not** used as the end-to-end safety net (invariant 3 — the
+  transactional outbox `ADR-004` plus consumer-side inbox dedup `S06-10` provide correctness, not
+  exactly-once Kafka). **Tests:** DB-free verification that the typed config maps to valid producer
+  client properties is in the unit suite; the delivery contract is proven on a real KRaft broker by
+  `KafkaMessageDelivererIT` (`src/integrationTest`) — envelope with the right topic/key/value/
+  correlation headers, an unreachable broker classified `TRANSIENT_FAILURE` (never a hang), and
+  producer construction validating the bound config. **Placement:** the `worker` package is internal
+  (behind the `application` port) per the `messaging` `AGENTS.md`. **Docs:** the producer reliability
+  settings are recorded in `docs/architecture/kafka-topics.md`. No change to the `OutboxEvent`
+  domain record.
+
 - **Mark the outbox `published` only on broker ack, re-publish on an ambiguous outcome (S06-08).**
   The polling publisher now records a row as delivered — and stamps `published_at` — only on a
   broker **confirmation** (`MessageDeliverer.DeliverResult.DELIVERED`); an **ambiguous** broker
