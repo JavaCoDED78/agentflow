@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Consumer-side inbox dedup helper (S06-10).** The application-facing `InboxPort` is
+  implemented by `InboxDedupService`, a single-transaction boundary a `workflowexecution` consumer
+  uses to apply a business state change atomically with the inbox dedup claim (invariant 3): it
+  **claims** the event by inserting its `(consumer_name, event_id)` row as `PENDING` (the composite
+  `PRIMARY KEY` rejects a second insert of the same pair, so a concurrent duplicate Kafka delivery
+  — at-least-once, `ADR-003` — is skipped and never re-runs the change, so N concurrent duplicates
+  create exactly one domain transition), **executes** the `InboxConsumerAction` business change in
+  the same transaction, and on success **marks** the row `PROCESSED` (fenced to `PENDING`). The
+  `TransactionCallback` cannot declare a checked exception, so every `InboxConsumerAction#execute`
+  call is guarded here: a transient failure is retried up to `agentflow.inbox.max-attempts`
+  (default `3`, `AgentFlowProperties.Inbox.MaxAttempts`) using a **single savepoint re-rolled
+  before each attempt**, so the partial change is rolled back while the claim row is kept; nothing
+  is ever marked `PROCESSED` on a failure (invariant 3), and after the attempts are exhausted the
+  row is recorded `FAILED` (never `PROCESSED`) for the consumer retry / DLQ policy (S06-11). The
+  business change is applied through the owning module's repository/service, never arbitrary or
+  model-generated code (invariant 7); model output, uploaded documents and tool results handled by
+  the change are untrusted data, and a redacted failure summary is stored on the row (`last_error`,
+  invariant 8). The bean is wired at the `worker` layer (constructed by the consumer, like
+  `OutboxPublisherService`), so the skeleton still boots without a database. **Tests:** DB-free unit
+  tests for the control flow (`InboxDedupServiceTest`, a mocked `TransactionTemplate`/`TransactionStatus`
+  driving the callback against a mocked `InboxMessageRepository` — claim runs first, the business
+  change runs at most once, a transient failure marks `FAILED`/never `PROCESSED`), the claim write
+  and the `DuplicateKeyException` → `false` rejection (`InboxMessageRepositoryTest`), and the row
+  mapping (`InboxMessageRowMapperTest`); the acceptance criterion is proven on a **real PostgreSQL**
+  by `InboxDedupConcurrencyIT` (`src/integrationTest`, Testcontainers): N concurrent deliveries of
+  the same pair run the business change exactly once and leave exactly one `PROCESSED` row. **No new
+  external contract** — the helper reuses the existing `outbox_events` envelope + `event_id`, and
+  `InboxConsumeResult` / `InboxConsumerAction` are internal `application`-port types (not in
+  OpenAPI / the event JSON schema).
+
 - **Kafka producer reliability tuning for the outbound outbox adapter (S06-09).** The
   transport-agnostic `MessageDeliverer` port now has a real Kafka-backed implementation,
   `KafkaMessageDeliverer` (a `@Service`, `@ConditionalOnProperty("agentflow.kafka.producer.enabled")`
