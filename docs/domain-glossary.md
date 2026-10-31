@@ -138,6 +138,7 @@ each step transition appends a `workflow_events` row.
 | **Event envelope** | Kafka record payload (`eventId`, `eventType`, `schemaVersion`, `occurredAt`, `tenantId`, `aggregateType`, `aggregateId`, `correlationId`, `causationId`, `payload`) | The minimal envelope for all events. `tenantId` is for routing/correlation only — the worker still re-checks ownership against PostgreSQL. |
 | **Outbox** | table `outbox_events` | The DB-side outbox: state and the outbox record are written in the same transaction; publishing is idempotent by `event_id`. |
 | **Inbox** | table `inbox_messages` (`consumer_name`, `event_id`, `status`, `attempts`, `next_attempt_at`, `last_error`, `outcome`, `processed_at`, `created_at`); PK `(consumer_name, event_id)` | Consumer-side dedup: a business change and its inbox record are written in the same transaction. |
+| **DLQ message** | table `dlq_messages` (`event_id`, `topic`, `consumer_name`, `status`, `attempts`, `last_error`, `recorded_at`); UNIQUE `(consumer_name, event_id)` | The durable, held-for-investigation copy of a failed consumer outcome (S06-11). Appended once per `(consumer, event)` by the `messaging` `DlqService` when a consumer records a `RETRY` (a transient fault exhausted its bounded immediate retry) or `DEAD_LETTER` (a permanent / malformed event short-circuited the retry); a duplicate append is a no-op (at-least-once, `ADR-003`). PostgreSQL is the source of truth for the disposition (invariant 2); records are evidence for investigation, not reprocessed by default. `last_error` is redacted (invariant 8). |
 | **Topic** | `agentflow.workflow.run-requested.v1`, `.../step-ready.v1`, `.../run-cancelled.v1`, `agentflow.document.ingestion-requested.v1`, `.../indexed.v1`, `.../run-finished.v1` | Versioned (`topic-name.vN`) topics. `run-requested`/`step-ready`/`run-cancelled` keys are `tenantId:runId`; document topics key by `tenantId:documentId`. |
 
 **Guarantee:** at-least-once delivery **with idempotency** (`ADR-003`). Exactly
@@ -239,7 +240,7 @@ One owner per concept, matching the module map:
 | Tool | `toolexecution` | `tool_definitions` |
 | Workflow definition / version | `workflowdefinition` | `workflow_definitions`, `workflow_definition_versions` |
 | Run / step / attempt | `workflowexecution` | `workflow_runs`, `workflow_step_runs` |
-| Event / envelope / outbox / inbox | `messaging` | `workflow_events`, `outbox_events`, `inbox_messages` |
+| Event / envelope / outbox / inbox / DLQ | `messaging` | `workflow_events`, `outbox_events`, `inbox_messages`, `dlq_messages` |
 | Knowledge base / document / chunk | `knowledgebase` (+ `ingestion`) | `knowledge_bases`, `documents`, `document_chunks` |
 | Approval | `workflowexecution` | `approvals` |
 | Usage / budget / quota | `usage` | `usage_records`, `tenant_budgets` |
