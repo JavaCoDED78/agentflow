@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Event envelope contract tests (`S06-13`).** The committed envelope contract is now a
+  checked-in CI gate rather than a schema sitting on disk: producer fixtures validate against
+  [`contracts/events/json-schema/envelope-v1.json`](contracts/events/json-schema/envelope-v1.json)
+  (draft 2020-12), and a breaking schema change fails `./gradlew check`. `EventContractTest`
+  (`com.example.agentflow.eventcontract`) loads the schema once and validates the canonical
+  producer fixture (`envelope-v1.example.json`) plus mutated variants: the fixture is accepted;
+  each of the nine required fields is enforced (a parameterized test removes one at a time and
+  asserts rejection); an unauthorized property is rejected (`additionalProperties: false`); the
+  `schemaVersion` `const` is enforced as the envelope version-bump gate; a non-object payload and
+  a non-UUID `tenantId` are rejected; the optional `causationId` is valid when absent or `null`;
+  and the schema declares draft 2020-12. `EnvelopeContractValidator` is a pure test utility on the
+  application's Jackson 3 (`tools.jackson`) line, so it runs the same code path as the rest of the
+  app. **Build:** the test reads the committed schema directory from `-Pvent.contract.dir`, used on
+  purpose — Gradle silently drops `-D` system properties carrying two or more dots, so a dotted key
+  like `vent.contract.dir` would be ignored; the resolved path is passed to the forked test JVM as a
+  plain `vent.contract.dir` system property, defaulting to `contracts/events/json-schema` when the
+  Gradle property is absent (and skipping the suite via `@EnabledIfSystemProperty` on an IDE run).
+  The dependency is test-only, pinned in the catalog (`com.networknt:json-schema-validator:3.0.8`),
+  and excludes `com.fasterxml.jackson.*` so the Jackson 3 namespace stays unambiguous on the test
+  classpath (no split package). **Scope:** the guard only covers the *envelope* shape against its
+  committed schema; per-event payload schemas (`S06-16`) and the topic catalogue (`S06-02`) are
+  separate. **Verification:** `./gradlew :apps:agentflow-app:test` and `:check` are green; a
+  tampered `const` (`1.0.0` → `9.9.9`) or `additionalProperties: false` → `true` fails the suite,
+  while the committed schema passes 16/16.
+
 - **Correlation metadata propagation (S06-12).** A run's correlation context now travels with
   its event from the producer to the persisted envelope instead of `null`: `CorrelationHeaders`
   (new, `messaging.application`, immutable value type) builds the outbox `headers` from exactly the

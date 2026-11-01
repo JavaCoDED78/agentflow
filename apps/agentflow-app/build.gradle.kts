@@ -107,6 +107,14 @@ dependencies {
     // integration suite (KafkaMessageDelivererIT), on the same apache/kafka image as Compose. The
     // coordinate is `org.testcontainers:kafka` in the 2.x line; BOM-managed by the Spring Boot BOM.
     testImplementation(libs.testcontainers.kafka)
+    // Event contract schema tests (S06-13): the networknt JSON Schema validator (draft 2020-12),
+    // on the Jackson 3 (`tools.jackson`) line to match the application's Jackson 3 and avoid a
+    // split package on the test classpath. Test-only; the version is pinned in the catalog (S01-06).
+    // Exclude every `com.fasterxml.jackson.*` transitive (the Jackson 2.x YAML/JSR310 modules pull
+    // jackson-databind 2.x) so only tools.jackson 3.x provides `com.fasterxml.jackson.databind`.
+    testImplementation(libs.json.schema.validator) {
+      exclude(group = "com.fasterxml.jackson")
+    }
 }
 
 // The application plugin provides `run` / `bootRun`; the Boot plugin makes
@@ -194,6 +202,19 @@ tasks.named<Test>("test") {
     // only against inline JSON.
     val graphFixtures = File(rootProject.projectDir, "contracts/workflow-graph")
     systemProperty("workflow.graph.fixtures", graphFixtures.absolutePath)
+    // Event envelope contract fixtures (S06-13): hand the contract test the path to the committed
+    // envelope schema and its producer fixture so the envelope contract is validated against the
+    // checked-in schema, not inline JSON. The value is overridable via -Pvent.contract.dir (e.g.
+    // an IDE run or a dedicated baseline), otherwise it defaults to the checked-in schema directory.
+    // A Gradle project property (not a -D system property) is used on purpose: Gradle forwards
+    // -D system properties only up to one dot, so a dotted key like vent.contract.dir would be
+    // silently dropped; -P preserves the dotted name. The resolved value is passed to the test
+    // JVM as a system property (a plain string, no dots in the key), which the test reads.
+    val eventContractDir =
+        providers.gradleProperty("vent.contract.dir")
+            .orElse(providers.systemProperty("vent.contract.dir"))
+            .getOrElse(File(rootProject.projectDir, "contracts/events/json-schema").absolutePath)
+    systemProperty("vent.contract.dir", eventContractDir)
 }
 
 // The integration-test source set (S03-15). Created explicitly so Gradle makes
