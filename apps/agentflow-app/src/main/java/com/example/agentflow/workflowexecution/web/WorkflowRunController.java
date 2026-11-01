@@ -111,6 +111,15 @@ public class WorkflowRunController {
                       + "same key is a 409 conflict. Omit for an unkeyed create.")
           @RequestHeader(value = "Idempotency-Key", required = false)
           String idempotencyKey,
+      @Parameter(
+              description =
+                  "An optional W3C Trace-Context trace-parent header (e.g. "
+                      + "\"00-<traceId>-<spanId>-<flags>\"). It is threaded verbatim into the run "
+                      + "request event's correlation headers so the trace survives across Kafka "
+                      + "(S06-12); it is a trace label only and never an authorization input "
+                      + "(invariant 1). Omit for an untraced create.")
+          @RequestHeader(value = "traceparent", required = false)
+          String traceparent,
       @RequestBody String rawBody) {
     CreateRunRequest parsed = parse(rawBody);
     UUID effectiveKey = resolveKey(idempotencyKey, parsed);
@@ -118,7 +127,7 @@ public class WorkflowRunController {
     // key is already folded in when the header is absent); the fingerprint is over that request.
     CreateRunRequest request = new CreateRunRequest(parsed.workflowId(), effectiveKey);
     String fingerprint = effectiveKey == null ? null : Fingerprint.sha256Hex(canonical(request));
-    RunDto run = runService.createRun(tenantId, actor, request, fingerprint);
+    RunDto run = runService.createRun(tenantId, actor, request, fingerprint, traceparent);
     return ResponseEntity.status(HttpStatus.ACCEPTED).body(run);
   }
 

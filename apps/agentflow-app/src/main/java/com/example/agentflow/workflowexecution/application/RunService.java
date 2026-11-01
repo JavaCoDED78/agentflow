@@ -1,5 +1,6 @@
 package com.example.agentflow.workflowexecution.application;
 
+import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
@@ -95,10 +96,41 @@ public class RunService {
   @Transactional
   public RunDto createRun(
       UUID tenantId, String createdBy, CreateRunRequest request, String payloadFingerprint) {
+    // No incoming trace context: the request event still carries its correlation chain id and its
+    // (null) causation, only the optional traceparent is absent (S06-12).
+    return createRun(tenantId, createdBy, request, payloadFingerprint, null);
+  }
+
+  /**
+   * Start a new run pinned to the tenant's active workflow version, atomically with its outbox
+   * event (S06-05), idempotently under the request {@code idempotencyKey} (S06-06), and tagged with
+   * the request's W3C trace parent (S06-12).
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param createdBy the actor, e.g. an email (never a token); recorded on the run row
+   * @param request the run request ({@code workflowId} plus an optional {@code idempotencyKey})
+   * @param payloadFingerprint the lowercase-hex SHA-256 of the request payload, or {@code null}
+   *     when the request carried no idempotency key
+   * @param traceparent the W3C trace-parent header of the request, or {@code null} when absent;
+   *     threaded into the event's correlation headers so tracing survives, never as an
+   *     authorization input (invariant 1)
+   * @return the created run, with its id and initial {@code QUEUED / attempt 1} state; on an
+   *     idempotent replay the original run is returned, never a duplicate
+   * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
+   *     {@code 404} if the workflow has no active version owned by the tenant, {@code 409} if a
+   *     reused {@code idempotencyKey} carries a different payload
+   */
+  @Transactional
+  public RunDto createRun(
+      UUID tenantId,
+      String createdBy,
+      CreateRunRequest request,
+      String payloadFingerprint,
+      String traceparent) {
     requireRepository(runRepository);
     UUID idempotencyKey = request.idempotencyKey();
     if (idempotencyKey == null) {
-      return createAndPin(tenantId, createdBy, request, null);
+      return createAndPin(tenantId, createdBy, request, null, traceparent);
     }
     // Keyed create: the idempotency decision (lookup + replay/mismatch) is owned by
     // IdempotencyKeyService, to which this delegates.
@@ -108,7 +140,7 @@ public class RunService {
       return idempotencyKeyService.answerReplay(existing.get(), payloadFingerprint, idempotencyKey);
     }
     try {
-      return createAndPin(tenantId, createdBy, request, payloadFingerprint);
+      return createAndPin(tenantId, createdBy, request, payloadFingerprint, traceparent);
     } catch (DataIntegrityViolationException duplicate) {
       // A concurrent keyed create already committed the row: resolve the winner instead of
       // surfacing the raw constraint error (at-least-once, never a duplicate run).
@@ -127,7 +159,11 @@ public class RunService {
    * (S06-05), storing the idempotency key and payload fingerprint alongside the row.
    */
   private RunDto createAndPin(
-      UUID tenantId, String createdBy, CreateRunRequest request, String payloadFingerprint) {
+      UUID tenantId,
+      String createdBy,
+      CreateRunRequest request,
+      String payloadFingerprint,
+      String traceparent) {
     // Pin to the single active (immutable) version of the workflow (invariant 13). A draft or a
     // foreign version is a 404, so a run can never start against anything but the locked contract.
     WorkflowVersionDto version = versionService.getActiveVersion(tenantId, request.workflowId());
@@ -136,7 +172,11 @@ public class RunService {
     runRepository.create(
         runId, tenantId, version.id(), request.idempotencyKey(), payloadFingerprint, createdBy);
     // Append the request event in the SAME transaction as the run: neither commits without the
-    // other (invariant 3). The payload is redacted correlation metadata, never a secret/prompt.
+    // other (invariant 3). The payload is redacted correlation metadata, never a secret/prompt. The
+    // run is the whole correlation chain for a request event, so correlationId = runId and
+    // causationId is null (there is no predecessor event); the request's traceparent is threaded
+    // through when present (S06-12). The tenant is scoped through outbox_events.tenant_id (a real
+    // FK), never through these correlation headers (invariant 1).
     OutboxEvent event =
         OutboxEvent.pending(
             runId,
@@ -147,7 +187,7 @@ public class RunService {
             runId,
             tenantId,
             payloadJson(runId, version.id()),
-            null);
+            CorrelationHeaders.of(runId.toString(), null, traceparent).toJson());
     outboxService.enqueue(event);
     return new RunDto(runId, version.id(), WorkflowRunState.QUEUED.name(), 1, OffsetDateTime.now());
   }

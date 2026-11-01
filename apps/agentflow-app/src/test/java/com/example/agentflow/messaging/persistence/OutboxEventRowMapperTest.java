@@ -97,4 +97,39 @@ class OutboxEventRowMapperTest {
     assertThat(mapped.status()).isEqualTo(OutboxEvent.State.SENT);
     assertThat(mapped.publishedAt().toInstant().toEpochMilli()).isEqualTo(published.toEpochMilli());
   }
+
+  @Test
+  void maps_an_event_with_persisted_correlation_headers() throws SQLException {
+    OutboxEventRowMapper mapper = new OutboxEventRowMapper();
+    ResultSet rs = mock(ResultSet.class);
+    // correlationId + traceparent persisted in outbox_events.headers (S06-12); causationId is null
+    // for the first event of a chain, so the producer omits it.
+    String correlationId = UUID.randomUUID().toString();
+    String headers =
+        "{\"correlationId\":\""
+            + correlationId
+            + "\",\"traceparent\":\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\"}";
+    when(rs.getObject("id", UUID.class)).thenReturn(UUID.randomUUID());
+    when(rs.getObject("event_id", UUID.class)).thenReturn(UUID.randomUUID());
+    when(rs.getObject("tenant_id", UUID.class)).thenReturn(UUID.randomUUID());
+    when(rs.getString("aggregate_type")).thenReturn("workflow_run");
+    when(rs.getObject("aggregate_id", UUID.class)).thenReturn(UUID.randomUUID());
+    when(rs.getString("topic")).thenReturn("agentflow.workflow.run-requested.v1");
+    when(rs.getString("event_key")).thenReturn(UUID.randomUUID() + ":" + UUID.randomUUID());
+    when(rs.getString("payload")).thenReturn("{\"runId\":\"" + UUID.randomUUID() + "\"}");
+    when(rs.getString("headers")).thenReturn(headers);
+    when(rs.getString("status")).thenReturn("SENT");
+    when(rs.getInt("publish_attempts")).thenReturn(1);
+    when(rs.getTimestamp("next_attempt_at")).thenReturn(null);
+    when(rs.getString("last_error")).thenReturn(null);
+    when(rs.getTimestamp("created_at")).thenReturn(new Timestamp(Instant.now().toEpochMilli()));
+    when(rs.getTimestamp("published_at")).thenReturn(new Timestamp(Instant.now().toEpochMilli()));
+
+    OutboxEvent mapped = mapper.mapRow(rs, 1);
+
+    // The correlation metadata the producer wrote survives the round-trip unchanged (invariant: the
+    // chain is carried by the stored headers, not re-derived).
+    assertThat(mapped.headersJson()).isEqualTo(headers);
+    assertThat(mapped.headersJson()).contains("\"correlationId\":\"" + correlationId + "\"");
+  }
 }

@@ -22,6 +22,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
@@ -52,6 +53,9 @@ class RunServiceTest {
   private final UUID versionId = UUID.randomUUID();
   private final UUID key = UUID.randomUUID();
   private final String payload = "{\"workflowId\":\"" + workflow + "\"}";
+  // A W3C Trace-Context trace-parent, threaded verbatim into the event headers when present.
+  private static final String TRACE_PARENT =
+      "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
   @BeforeEach
   void setUp() {
@@ -74,6 +78,47 @@ class RunServiceTest {
     verify(runRepository).create(any(UUID.class), eq(tenant), eq(versionId), any(), any(), any());
     // The request event was appended to the outbox.
     verify(outboxService).enqueue(any(OutboxEvent.class));
+  }
+
+  @Test
+  void create_run_without_traceparent_keeps_the_run_id_correlation_and_omits_traceparent() {
+    when(versionService.getActiveVersion(tenant, workflow))
+        .thenReturn(new WorkflowVersionDto(versionId, workflow, 1, "{}", "c", "ACTIVATED"));
+
+    RunDto result = service.createRun(tenant, "alice", new CreateRunRequest(workflow, null), null);
+
+    ArgumentCaptor<OutboxEvent> eventCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+    verify(outboxService).enqueue(eventCaptor.capture());
+    OutboxEvent event = eventCaptor.getValue();
+
+    // The run is the whole correlation chain for a request event: correlationId = runId, no
+    // causation (there is no predecessor event). The tenant is scoped through the stored FK, never
+    // through these correlation headers (invariant 1).
+    assertThat(event.eventId()).isEqualTo(result.id());
+    assertThat(event.tenantId()).isEqualTo(tenant);
+    assertThat(event.headersJson()).contains("\"correlationId\":\"" + result.id() + "\"");
+    assertThat(event.headersJson()).doesNotContain("traceparent");
+    assertThat(event.headersJson()).doesNotContain("causationId");
+    assertThat(event.headersJson()).doesNotContain("tenant");
+  }
+
+  @Test
+  void create_run_threads_the_request_traceparent_into_the_event_headers() {
+    when(versionService.getActiveVersion(tenant, workflow))
+        .thenReturn(new WorkflowVersionDto(versionId, workflow, 1, "{}", "c", "ACTIVATED"));
+
+    RunDto result =
+        service.createRun(
+            tenant, "alice", new CreateRunRequest(workflow, null), null, TRACE_PARENT);
+
+    ArgumentCaptor<OutboxEvent> eventCaptor = ArgumentCaptor.forClass(OutboxEvent.class);
+    verify(outboxService).enqueue(eventCaptor.capture());
+    OutboxEvent event = eventCaptor.getValue();
+
+    // The trace parent is threaded verbatim (a trace label only, not an authorization input).
+    assertThat(event.eventId()).isEqualTo(result.id());
+    assertThat(event.headersJson()).contains("\"correlationId\":\"" + result.id() + "\"");
+    assertThat(event.headersJson()).contains("\"traceparent\":\"" + TRACE_PARENT + "\"");
   }
 
   @Test
