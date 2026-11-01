@@ -69,6 +69,14 @@ kafka-clients = { module = "org.apache.kafka:kafka-clients" }
 # which depends on the BOM-managed name). We use that BOM-managed coordinate so
 # no version is pinned inline. No H2 and no hardcoded broker — AGENTS.md.
 testcontainers-kafka = { module = "org.testcontainers:testcontainers-kafka" }
+# Event contract tests (S06-13): a JSON Schema validator for the committed envelope contract
+# (`contracts/events/json-schema/`). Uses the Jackson 3 (`tools.jackson`) line (3.0.8) to match the
+# application's Jackson 3 (tools.jackson) — pairing it with Jackson 2 would introduce a split package
+# (`com.fasterxml.jackson.databind` present in both Jackson 2 and Jackson 3) on the test classpath.
+# Supports draft 2020-12 (the envelope's `$schema`) via the `SchemaRegistry` / `Schema` / `Result`
+# API. Test-only: it validates producer fixtures against the schema, so a breaking envelope change
+# fails CI. Apache-2.0.
+json-schema-validator = { module = "com.networknt:json-schema-validator", version = "3.0.8" }
 
 [plugins]
 # Gradle plugin versions live here too, so a module applies the Boot plugin
