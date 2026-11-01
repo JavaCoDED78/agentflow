@@ -67,7 +67,7 @@ class WorkflowRunControllerTest {
   @Test
   void create_without_key_returns_202_accepted_with_a_queued_run() throws Exception {
     RunDto run = queuedRun();
-    when(runService.createRun(any(), any(), any(), isNull())).thenReturn(run);
+    when(runService.createRun(any(), any(), any(), isNull(), isNull())).thenReturn(run);
 
     MockHttpServletRequestBuilder request =
         post("/api/v1/runs").contentType(MediaType.APPLICATION_JSON).content(body());
@@ -78,8 +78,10 @@ class WorkflowRunControllerTest {
         .andExpect(jsonPath("$.id").value(run.id().toString()))
         .andExpect(jsonPath("$.status").value("QUEUED"));
 
-    // An unkeyed create carries no idempotency key and no fingerprint to the service.
-    verify(runService).createRun(eq(TENANT), eq("local"), requestCaptor.capture(), isNull());
+    // An unkeyed create carries no idempotency key, no fingerprint and no trace parent to the
+    // service (all three are null on the 5-arg call the controller now makes).
+    verify(runService)
+        .createRun(eq(TENANT), eq("local"), requestCaptor.capture(), isNull(), isNull());
     assertThat(requestCaptor.getValue().idempotencyKey()).isNull();
     assertThat(requestCaptor.getValue().workflowId()).isEqualTo(WORKFLOW);
   }
@@ -88,7 +90,7 @@ class WorkflowRunControllerTest {
   void create_with_idempotency_key_header_passes_the_key_and_a_fingerprint() throws Exception {
     UUID key = UUID.randomUUID();
     RunDto run = queuedRun();
-    when(runService.createRun(any(), any(), any(), notNull())).thenReturn(run);
+    when(runService.createRun(any(), any(), any(), notNull(), isNull())).thenReturn(run);
 
     mockMvc
         .perform(
@@ -98,17 +100,41 @@ class WorkflowRunControllerTest {
                 .content(body()))
         .andExpect(status().isAccepted());
 
-    // The header key is deduplicated under, and a payload fingerprint is computed alongside it.
+    // The header key is deduplicated under, and a payload fingerprint is computed alongside it; no
+    // trace parent is sent, so it arrives null.
     verify(runService)
-        .createRun(any(), any(), requestCaptor.capture(), fingerprintCaptor.capture());
+        .createRun(any(), any(), requestCaptor.capture(), fingerprintCaptor.capture(), isNull());
     assertThat(requestCaptor.getValue().idempotencyKey()).isEqualTo(key);
     assertThat(requestCaptor.getValue().workflowId()).isEqualTo(WORKFLOW);
     assertThat(fingerprintCaptor.getValue()).isNotBlank();
   }
 
   @Test
+  void a_traceparent_header_is_threaded_verbatim_into_the_service() throws Exception {
+    // A W3C Trace-Context trace-parent: <version>-<traceId>-<spanId>-<flags>. The controller
+    // forwards it untouched to the service so the trace survives into the outbox event headers.
+    String trace = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    RunDto run = queuedRun();
+    when(runService.createRun(any(), any(), any(), any(), eq(trace))).thenReturn(run);
+
+    mockMvc
+        .perform(
+            post("/api/v1/runs")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("traceparent", trace)
+                .content(body()))
+        .andExpect(status().isAccepted());
+
+    ArgumentCaptor<String> traceCaptor = ArgumentCaptor.forClass(String.class);
+    verify(runService)
+        .createRun(eq(TENANT), eq("local"), requestCaptor.capture(), any(), traceCaptor.capture());
+    assertThat(traceCaptor.getValue()).isEqualTo(trace);
+    assertThat(requestCaptor.getValue().idempotencyKey()).isNull();
+  }
+
+  @Test
   void a_conflict_from_the_service_is_rendered_as_conflict() throws Exception {
-    when(runService.createRun(any(), any(), any(), any()))
+    when(runService.createRun(any(), any(), any(), any(), any()))
         .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT));
 
     mockMvc
@@ -122,7 +148,7 @@ class WorkflowRunControllerTest {
 
     // The service is invoked exactly once with the keyed request and raises the conflict; the
     // controller renders it as a 409 without retrying (a conflict is terminal, non-retryable).
-    verify(runService).createRun(any(), any(), any(), any());
+    verify(runService).createRun(any(), any(), any(), any(), any());
   }
 
   @Test

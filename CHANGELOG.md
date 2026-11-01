@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Correlation metadata propagation (S06-12).** A run's correlation context now travels with
+  its event from the producer to the persisted envelope instead of `null`: `CorrelationHeaders`
+  (new, `messaging.application`, immutable value type) builds the outbox `headers` from exactly the
+  present fields — `correlationId`, `causationId`, `traceparent` — in a stable key order, omitting
+  any that are absent (a `run-requested` event is the first of its chain, so its `causationId` is
+  `null` and never serialized), and never emitting an empty header. The `workflowexecution` producer
+  (`RunService`) is the sole writer: its `createAndPin` is now a 5-argument method that threads an
+  optional `traceparent` (a W3C Trace-Context label, forwarded verbatim — a trace label only, never
+  an authorization input, invariant 1), sets `correlationId` to the new `runId` and leaves
+  `causationId` empty, and writes `CorrelationHeaders.toJson()` into `OutboxEvent.headersJson` inside
+  the same transaction that appends the run row (invariant 3). `createRun(tenant, createdBy, request, fingerprint)`
+  is retained as a no-traceparent overload that delegates. `WorkflowRunController` reads an optional
+  HTTP `traceparent` header (absent → `null` → omitted) and passes it straight through to the
+  service. **Scope:** the correlation value is `correlationId` / `causationId` / `traceparent`
+  only — a correlation label, never a secret, the full prompt, or the full document (invariants 7/8),
+  and the `tenantId` is *not* a header (it is the outbox row's own column; isolation stays enforced by
+  the consumer, invariant 1). The **consumer-side inbox path is out of scope** — no inbox worker or
+  consumer listener exists in `src/main`, so nothing reads these headers yet; this change only makes
+  the data *reachable*, and the producer test asserts `causationId` survives the Kafka round-trip
+  so the future consumer inherits the whole chain. **Tests:** `CorrelationHeadersTest` (DB-free:
+  stable field order; null causation omitted for the first event; traceparent threaded while the chain
+  id is kept; a blank traceparent is treated as absent; equivalent inputs yield byte-identical JSON),
+  `RunServiceTest` additions (the request event carries `correlationId = runId`, `tenantId` from the
+  stored FK and **no** `tenant` header; a request without `traceparent` omits `traceparent` and
+  `causationId`; with `traceparent` it is threaded verbatim), and `OutboxEventRowMapperTest`
+  (the persisted `headers` round-trips through `JdbcTemplate` unchanged). The producer/consumer
+  `KafkaMessageDelivererIT` now asserts all three headers — `correlationId`, `causationId`,
+  `traceparent` — arrive intact after a broker round-trip. **Verification:**
+  `./gradlew :apps:agentflow-app:test` is green;
+  `./gradlew integrationTest --tests *KafkaMessageDelivererIT*` is green (real PostgreSQL on
+  `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`); `./gradlew :apps:agentflow-app:check`
+  is green (unit + architecture + spotless). **No new external contract** — `CorrelationHeaders` is an
+  internal `application`-port type (not in OpenAPI / the event JSON schema), and the envelope shape is
+  unchanged. **Docs:** `docs/domain-glossary.md` §6 adds `correlation headers`;
+  `docs/architecture/module-api.md` notes `messaging.application::CorrelationHeaders`.
+
 - **Consumer-side inbox error policy + DLQ (S06-11).** The messaging consumer error policy
   (plan §6.4, invariant 12) is now complete: a transient fault is retried with a bounded immediate
   retry, a permanent or malformed event short-circuits straight to a dead-letter, and neither path

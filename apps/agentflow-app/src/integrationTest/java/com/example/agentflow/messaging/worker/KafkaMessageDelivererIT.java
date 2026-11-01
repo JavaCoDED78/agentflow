@@ -67,7 +67,7 @@ public class KafkaMessageDelivererIT {
           UUID.randomUUID(),
           UUID.randomUUID(),
           "{\"runId\":\"run-42\"}",
-          "{\"correlationId\":\"abc-123\",\"traceparent\":\"00-0af7651916cd43ddb403ba\"}");
+          "{\"correlationId\":\"abc-123\",\"causationId\":\"def-456\",\"traceparent\":\"00-0af7651916cd43ddb403ba\"}");
 
   /**
    * Deliver an envelope to the broker and consume it back: the record carries the right topic, the
@@ -91,6 +91,7 @@ public class KafkaMessageDelivererIT {
       assertThat(record.key()).isEqualTo(event.eventKey());
       assertThat(record.value()).isEqualTo(event.payloadJson());
       assertThat(headerValue(record, "correlationId")).isEqualTo("abc-123");
+      assertThat(headerValue(record, "causationId")).isEqualTo("def-456");
       assertThat(headerValue(record, "traceparent")).isEqualTo("00-0af7651916cd43ddb403ba");
     }
   }
