@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Publish-delay / poll-load benchmark for the transactional-outbox publisher (`S06-15`).**
+  The polling-vs-CDC trade-off is now quantified instead of left to instinct: the new
+  `OutboxPublisherBenchmarkIT` (`com.example.agentflow.messaging.application`,
+  `src/integrationTest`, Testcontainers on `pgvector/pgvector:0.8.6-pg18` — never `H2` per
+  `AGENTS.md`) drives the real `OutboxPublisherService` (`pollOnce`) over a real PostgreSQL and a
+  pooled HikariCP `DataSource`, with a synchronous fake deliverer (no broker, no model), and
+  measures three things while asserting only structural invariants (so it is non-flaky): mean
+  empty-poll cost with the due scan on the partial index `outbox_events_pending_idx` (never a seq
+  scan); that the poll cost is **independent of total table size** (re-measured after seeding
+  10 000 processed rows); and burst drain throughput. Measured baseline on the CI/dev box: empty
+  `pollOnce()` **~0.98 ms** (200 polls, 1 ms index scan), still **~2.1 ms** after 10 000 rows,
+  and **~1327 events/sec** draining 500 rows in 50-row batches (376 ms total). The published
+  note [`docs/architecture/observability/outbox-polling-benchmark.md`](docs/architecture/observability/outbox-polling-benchmark.md)
+  turns these into a **numerical CDC justification gate**: CDC becomes justified when the required
+  propagation latency forces a poll interval small enough that the idle `1/T` polls/sec load
+  becomes material, or when sub-poll reactivity is required. CDC is **not** connected — the note
+  measures the base outbox (ADR-004) only, per the "no CDC before the base outbox" rule — and
+  re-runs the same command before any future CDC ADR is considered. **Verification:**
+  `./gradlew :apps:agentflow-app:integrationTest --tests "*OutboxPublisherBenchmarkIT*"` passes
+  3/3 (numbers logged as observations).
+
 - **Reliability scenarios for the outbound/inbound messaging path (S06-14).** The at-least-once, never-exactly-once reliability contract for the `messaging` module (plan §6.4, invariants 6/7/12) is now proven end-to-end on real infra by the new `ReliabilityScenarioIT` integration suite (`com.example.agentflow.messaging.worker`, `src/integrationTest`, Testcontainers on `pgvector/pgvector:0.8.6-pg18` — never `H2` per `AGENTS.md`). It exercises the *whole* chain in one broker round-trip — a real `outbox_events` row, a real KRaft broker, and the consumer-side inbox — rather than each component in isolation (the sibling suites `S06-07`…`S06-13` cover each half separately): a single shared `@Container KafkaContainer` serves all three test methods, and each test seeds the DB, drains the publisher through the broker, and consumes into the inbox so the assertions observe the *committed* outcome. Three scenarios: `create_run_recovers_after_a_kafka_outage` — a run is started while the broker is unreachable, the publisher marks the request event a transient `FAILED` and schedules a bounded retry (invariant 6), the broker comes back, the retry drains, the consumer applies the business change, and the run is **completed** (the S06-14 criterion that a run is not lost across a broker outage); `a_duplicate_event_never_runs_the_business_change_twice` — a `run-requested` event is delivered to the inbox twice, and the consumer applies the business change **exactly once** (the dedup boundary, invariant 12 — a duplicate is a no-op, never a re-run); `a_crash_after_broker_ack_before_the_db_update_is_recovered_without_a_loss` — a delivery is acked to the broker but the process "crashes" before the DB update, and on recovery the event is still processed exactly once with no loss. The shared-container accumulation is accounted for: the suite asserts on event-scoped `inbox_messages` counts (`event_id = ?`), so rows left by one scenario never contaminate another's assertion — a shared `@Container` accumulates `inbox_messages` across methods (a `countByConsumerAndStatus` over *all* `event_id`s would be), and the event-scoped assertion is what keeps the suite deterministic under a real broker. **Verification:** `./gradlew :apps:agentflow-app:integrationTest` is green (3 tests, 0 failures, 0 skips) and `./gradlew :apps:agentflow-app:check` is green (unit + architecture + spotless formatting). **No** dependency, contract, schema, config, or `ADR` change — the suite is test-only and reads/asserts the existing `outbox_events` / `inbox_messages` / `workflow_runs` state.
 
 - **Event envelope contract tests (`S06-13`).** The committed envelope contract is now a
