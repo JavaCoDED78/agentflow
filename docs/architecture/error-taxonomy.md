@@ -162,7 +162,8 @@ it from the status alone.
 - [`domain-glossary.md`](../domain-glossary.md) — canonical names for the concepts these errors describe (run, step, tool, approval, …).
 - **`durable-execution.md`** — state machine, lease, recovery; where `FAILED`/`RETRY_WAIT`/`CANCELLED` transitions are defined (`⚠ planned`, `S07-17`).
 - **`kafka-topics.md`** — topics, partition keys, delivery and idempotency guarantees behind `transient_infra` and provider errors.
-- **`events/README.md`** — event catalogue, per-event payloads, retry/DLQ (`⚠ planned`, `S06-16`).
+- **`events/README.md`** — event catalogue, per-event payloads, retry/DLQ, outbox/inbox and the
+  safe-contract-change rules (`S06-16`).
 - **`database.md`** — migrations and conventions behind `permanent_infra` (`⚠ planned`, `S03-16`).
 - **`security/authentication-authorization.md`** — authn/authz and the `401/403/404` policy (`⚠ planned`, `S04`).
 - `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` — Sprint 2, `S02-10`.

@@ -258,8 +258,8 @@ is routing/correlation only — never an authorization source (invariant 1).
   internal, not part of the public API.
 - [`domain-glossary.md`](../domain-glossary.md) §6 — the canonical topic names and the
   at-least-once + idempotency guarantee.
-- **`events/README.md`** — the event catalogue, per-event payload schemas, retry/DLQ and the
-  safe-contract-change rules (`⚠ planned`, `S06-16`).
+- [`events/README.md`](./events/README.md) — the event catalogue, per-event payloads, retry/DLQ
+  and the safe-contract-change rules (`S06-16`).
 - [`../../contracts/events/json-schema/envelope-v1.json`](../../contracts/events/json-schema/envelope-v1.json) — the envelope every record carries (`S06-01`).
 - **`contracts/asyncapi/`** — the machine-readable AsyncAPI description of the same
   topics and producer/consumer roles (`⚠ planned`, P1).

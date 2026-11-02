@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Event catalog and delivery guarantees (`S06-16`).** The event family now has a single
+  human-readable catalog
+  [`docs/architecture/events/README.md`](docs/architecture/events/README.md) — the human counterpart
+  to the machine-readable contract family in [`contracts/events/`](contracts/events/) and the topic
+  catalogue in [`docs/architecture/kafka-topics.md`](docs/architecture/kafka-topics.md). It
+  enumerates the six `agentflow.*` topics with their producers and consumers, the
+  `tenantId:runId` / `tenantId:documentId` partition key, the `envelope-v1` fields (and that
+  `tenantId` is routing/correlation only, never an authorization source), the `schemaVersion`
+  `const "1.0.0"` version-bump gate, one representative safe instance of each main event's envelope,
+  the **at-least-once + idempotency** guarantee with its transactional-outbox / ack-bound publish /
+  inbox-dedup / ack-after-durable-commit boundaries and the bounded-retry + DLQ policy
+  (`ADR-002`…`ADR-004`, `S06-05`…`S06-11`), the safe-contract-change rules (adding an optional field
+  or a new event type is compatible; changing/removing a field, its meaning or the partition key
+  creates a new major topic version), and the security rules (consumer-side tenant re-check, the
+  model as an untrusted planner, no high-cardinality IDs in telemetry). The guarantee is stated as
+  **at-least-once with idempotency**; **exactly-once is never promised** between PostgreSQL and
+  Kafka. The `⚠ planned` markers that pointed to this document are removed
+  (`docs/README.md`, `docs/architecture/README.md`, and the `Related` links in `error-taxonomy.md`,
+  `module-map.md`, `module-api.md` and `kafka-topics.md`). **Out of scope / follow-up:** the
+  per-event payload JSON Schema files (also attributed to `S06-16` in `contracts/events/README.md` —
+  the "Pending" note) are not yet created; the catalog gives representative safe instances and points
+  to where those schemas will live. **Verification: documentation-only — there is no
+  `./gradlew check` gate for a docs change.** Link integrity verified: `git diff --check` passes and
+  every relative in-document link resolves to a present, on-topic destination; the topic names,
+  envelope fields and guarantee match
+  `contracts/events/json-schema/envelope-v1.json` and `docs/architecture/kafka-topics.md`. **No**
+  dependency, Java code, contract, or schema change.
+
 - **Publish-delay / poll-load benchmark for the transactional-outbox publisher (`S06-15`).**
   The polling-vs-CDC trade-off is now quantified instead of left to instinct: the new
   `OutboxPublisherBenchmarkIT` (`com.example.agentflow.messaging.application`,
