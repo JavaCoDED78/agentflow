@@ -111,6 +111,17 @@ permits it.
 - **Terminal states are absorbing.** Guards 1–13 list no transition *out of*
   `SUCCEEDED`, `FAILED`, `SKIPPED` or `CANCELLED`; the Java enum models them as terminal so a
   second transition on the same step is a domain error (`S05-10`).
+- **The attempt lifecycle is persisted so the crash window is diagnosable** (`S07-06`, invariant
+    6 / `ADR-011`). `workflow_step_runs.attempt_started_at` is set to `now()` when the step enters
+    `RUNNING` (recorded before the external side effect) and cleared to `NULL` when the attempt
+    reaches a terminal outcome (`SUCCEEDED`/`FAILED`/`CANCELLED`). It is left unchanged across a
+    non-terminal working transition (`RUNNING → RETRY_WAIT`, `RUNNING → WAITING_FOR_APPROVAL`), both
+    of which return to `RUNNING`. A step row that is still `RUNNING` with a non-null marker but no
+    terminal `workflow_events` row after the `RUNNING` transition is the crash window: the worker
+    died mid-attempt, so the outcome is ambiguous and the attempt is re-claimed, never assumed to
+    have failed. Together with the `attempt` number (the attempt identity, bumped on retry, see
+    `ADR-003`) and the append-only `workflow_events` log, the state and history distinguish a step
+    not started (`attempt_started_at` NULL) from an in-flight attempt with an unknown outcome.
 
 ## 4. Run-state aggregation
 
@@ -168,7 +179,9 @@ acceptance criterion hold by construction:
      rejected by the state machine (`S05-10`), so a duplicate `step.succeeded` on an
      already-`SUCCEEDED` step is a no-op — the multiset is unchanged.
    - The `attempt` is persisted **before** the external call (`ADR-003`); an ambiguous outcome
-     marks the attempt and never flips a terminal state.
+     marks the attempt and never flips a terminal state. The `attempt_started_at` marker (`S07-06`)
+     records when the attempt began so the crash window — `RUNNING` with a set marker and no
+     terminal event after — is diagnosable and the attempt is re-claimed, never assumed failed.
 
 Therefore the final aggregated run state is a function of the *committed* step states only, never
 of how many times or in what order their events were observed. We make **no exactly-once claim**:

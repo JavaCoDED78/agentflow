@@ -72,7 +72,7 @@ class MigrationsTest {
       assertThat(applied)
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
-              "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13");
+              "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14");
     }
   }
 
@@ -157,6 +157,19 @@ class MigrationsTest {
     // S06-06: the payload fingerprint is nullable and carries its own S06-06 column COMMENT.
     assertThat(nullableColumn("workflow_runs", "idempotency_fingerprint")).isTrue();
     assertThat(columnComment("workflow_runs", "idempotency_fingerprint")).contains("S06-06");
+  }
+
+  /**
+   * The {@code attempt_started_at} marker {@code S07-06} adds to {@code workflow_step_runs} is
+   * nullable: a step that has not begun an attempt ({@code PENDING} / {@code READY}) or that has
+   * finished (a terminal state) keeps {@code NULL}, so the marker carries meaning only while an
+   * attempt is in flight. The column comment attributes it to S07-06 / {@code workflowexecution}.
+   */
+  @Test
+  void step_attempt_marker_is_nullable_and_attributed() throws SQLException {
+    // S07-06: the marker is nullable (NULL = not started / finished; non-NULL = in flight).
+    assertThat(nullableColumn("workflow_step_runs", "attempt_started_at")).isTrue();
+    assertThat(columnComment("workflow_step_runs", "attempt_started_at")).contains("S07-06");
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
