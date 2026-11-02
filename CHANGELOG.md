@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow-run lease, heartbeat and recovery model (`S07-01`).** The durable-execution Sprint 7
+  gets its lease decision recorded as [`ADR-011`](docs/adr/ADR-011-workflow-run-lease.md): a single
+  run has one live lease held by the worker instance that atomically claims it, expressed in three
+  columns on `workflow_runs` — `lease_owner` (the worker instance, set on claim, cleared at a
+  terminal state or a `HUMAN_APPROVAL` pause), `lease_until` (a `timestamptz` expiry, computed and
+  extended through the injected `Clock`, never `System.nanoTime()`), and `lease_epoch` (a monotonic
+  fencing counter, already present in `V3_3_6`, bumped on every re-claim). Only the **current owner**
+  (matching `lease_owner` **and** `lease_epoch`) may persist progress — a stale worker's write hits a
+  moved `lease_epoch`, matches zero rows and becomes a `409 conflict` (the same mapping
+  [`ADR-009`](docs/adr/ADR-009-single-persistence-spring-data-jdbc.md) documents, and the behaviour
+  already enforced on step writes by `workflowexecution.persistence.WorkflowStepRunRepository`); a
+  **stale owner is detected** by the recovery scan when `lease_until < now()` and `lease_owner` still
+  names a worker that stopped heartbeating, and re-claimed atomically (bumping the epoch so it can no
+  longer write). The lease/fencing parameters are configuration (`AgentFlowProperties.Worker.Lease`),
+  not magic numbers: `duration-seconds = 30`, `heartbeat-interval-seconds = 10` (≈ `duration / 3`, so
+  a single lost heartbeat never expires a healthy lease) and `recovery-interval-seconds = 5`, chosen
+  so `duration + recovery ≤ 60` and the `S07-15` "resume ≤ 60 s after expiry" holds in test config.
+  The decision is **at-least-once, never exactly-once** (`ADR-003`, invariant 6): the model makes
+  ownership explicit and crash recovery possible, but a step whose external call crashed mid-flight is
+  re-run after re-claim and recorded in attempt history (`S07-06`/`S07-14`), never pretended to be a
+  single execution. Fence lives in PostgreSQL (`lease_epoch`), not JVM state (invariant 5). This is
+  the *decision*; the columns already exist (`V3_3_6__create_workflow_runs_and_steps.sql`, `S05-08`)
+  but the claim/heartbeat/recovery services (`S07-03`, `S07-04`, `S07-09`) and the expired-lease
+  index (`S07-02`) are not yet implemented, and the ADR records that split honestly. The domain
+  glossary §5 already canonicalizes this exact concept (`lease_owner`/`lease_until`/`lease_epoch`,
+  heartbeat, recovery job), so `docs/domain-glossary.md` needs no change. **Docs:** the new
+  [`docs/adr/ADR-011-workflow-run-lease.md`](docs/adr/ADR-011-workflow-run-lease.md); the ADR register
+  ([`docs/adr/README.md`](docs/adr/README.md), which was also missing the `ADR-010` row, now added)
+  and the [`docs/README.md`](docs/README.md) index tree (pointer to the new ADR, alongside the
+  `⚠ planned (S07-17)` `durable-execution.md` line). **Verification: documentation-only — there is no
+  `./gradlew check` gate for a docs change.** Link integrity verified: `git diff --check` passes and
+  every relative in-document link in the new and edited files resolves to a present, on-topic
+  destination (the cited ADR ids, `V3_3_6`, `WorkflowStepRunRepository`, `AgentFlowProperties.Worker.Lease`,
+  the glossary §5 entry and the `S07-02`…`S07-09`/`S07-15`/`S07-17` follow-ups all resolve and are
+  on-topic). **No** Java, contract, schema, migration or dependency change.
+
 - **Event catalog and delivery guarantees (`S06-16`).** The event family now has a single
   human-readable catalog
   [`docs/architecture/events/README.md`](docs/architecture/events/README.md) — the human counterpart
