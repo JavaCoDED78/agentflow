@@ -30,6 +30,7 @@ public class AgentFlowProperties {
 
   @Valid private final Http http = new Http();
   @Valid private final Graph graph = new Graph();
+  @Valid private final Checkpoint checkpoint = new Checkpoint();
   @Valid private final Security security = new Security();
   @Valid private final Outbox outbox = new Outbox();
   @Valid private final Inbox inbox = new Inbox();
@@ -58,10 +59,17 @@ public class AgentFlowProperties {
   }
 
   /**
-   * @return the validated workflow graph settings
+   * @return the validated workflow-graph settings
    */
   public Graph getGraph() {
     return graph;
+  }
+
+  /**
+   * @return the validated checkpoint settings
+   */
+  public Checkpoint getCheckpoint() {
+    return checkpoint;
   }
 
   /**
@@ -134,6 +142,39 @@ public class AgentFlowProperties {
      */
     public int getMaxBytes() {
       return maxBytes;
+    }
+  }
+
+  /**
+   * Step-checkpoint storage settings (S07-07). Bound from {@code agentflow.checkpoint.*}. The
+   * checkpoint is the persisted per-step result that lets recovery skip a completed pure step
+   * instead of re-executing it (S07-07 acceptance).
+   */
+  public static class Checkpoint {
+
+    /**
+     * Maximum size, in characters, of a step output stored inline in the {@code
+     * workflow_step_runs.output_inline} column. Outputs up to this bound are persisted in the row
+     * (the small, hot path for pure steps such as a calculator result); a larger output is written
+     * to object storage and only its reference is kept in {@code workflow_step_runs.output_ref}
+     * (the large-payload path, S15-06). Default 256 KiB; a value below 1 fails startup.
+     */
+    @Min(value = 1, message = "agentflow.checkpoint.max-inline-bytes must be at least 1")
+    private int maxInlineBytes = 262_144;
+
+    /**
+     * @return the maximum inline checkpoint output size in characters (default {@code 262144}, 256
+     *     KiB)
+     */
+    public int getMaxInlineBytes() {
+      return maxInlineBytes;
+    }
+
+    /**
+     * @param maxInlineBytes the maximum inline checkpoint output size in characters (at least 1)
+     */
+    public void setMaxInlineBytes(int maxInlineBytes) {
+      this.maxInlineBytes = maxInlineBytes;
     }
   }
 

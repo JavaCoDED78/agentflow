@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persist a redacted, reusable per-step checkpoint for recovery (S07-07).** A completed step's
+  output is now stored as a checkpoint the recovery path can reuse instead of re-executing the
+  step. The output is stored inline in the new nullable `workflow_step_runs.output_inline`, with
+  its `output_schema_version`, bounded to `agentflow.checkpoint.max-inline-bytes` (256 KiB by
+  default). It is redacted before it is persisted (invariant 8), and recovery reuses it only when
+  the stored schema version matches the step's current output-schema version (invariant 13); a
+  mismatch re-executes rather than serving a stale value. `output_ref` stays NULL — the
+  large-payload path (object storage + ref/checksum) is `S15-06`.
+- **`CheckpointAdapter` — the single seam that saves and reuses a step's checkpoint.** It redacts
+  the output via `CheckpointRedactor`, bounds it to `agentflow.checkpoint.max-inline-bytes`,
+  persists it through `WorkflowStepRunRepository.saveCheckpoint` (guarded by the tenant, the
+  `lease_epoch` fence and a `SUCCEEDED` step), and answers the reuse decision `canReuseCheckpoint`
+  (stored `output_schema_version` matches the current version and the output is inline). It is the
+  seam the future step executor calls on `SUCCEEDED` and before a re-run; here it is exercised by
+  unit tests directly.
+- **A configurable size bound for inline checkpoints.** `agentflow.checkpoint.max-inline-bytes`
+  defaults to `262_144` (256 KiB); a value below 1 fails startup (`@Min(1)`).
+
+#### What changed
+- Migration `V3_3_15__add_step_checkpoint_outputs.sql` (`owner: workflowexecution`) adds the
+  nullable `workflow_step_runs.output_inline TEXT` and `output_schema_version TEXT`, each carrying a
+  `COMMENT` attributing it to S07-07 / `workflowexecution` and invariant 8. A `CHECK(output_ref IS
+  NULL OR output_inline IS NULL)` enforces that a row never carries both an inline checkpoint and
+  an object-storage ref.
+- `workflowexecution.domain.Checkpoint` is the persisted value type (`schemaVersion`, `output`);
+  `workflowexecution.persistence.CheckpointSnapshot` is the row-mapped projection.
+- `workflowexecution.persistence.WorkflowStepRunRepository` gains `saveCheckpoint(tenantId, runId,
+  stepKey, expectedLeaseEpoch, Checkpoint)` (a guarded conditional update that joins `workflow_runs`
+  for the tenant, fences by `lease_epoch`, and matches only a `SUCCEEDED` step) and
+  `findCheckpoint(tenantId, runId, stepKey)` (tenant-scoped, returns the snapshot or empty).
+- `workflowexecution.application.CheckpointRedactor` redacts bearer/authorization headers, common
+  secret JSON keys (`password`, `token`, `api_key`, `access_token`, `client_secret`, …),
+  social-security numbers, credit-card numbers and emails before persist.
+- Unit tests cover the redactor rules, the adapter's redact/size-reuse decisions, the repository's
+  tenant/lease/status guard, and the migration's nullable columns, S07-07 attribution and
+  `output_ref`/`output_inline` mutual exclusion (integration).
+
+#### Why
+Recovery must be able to answer "is this step's result still valid?" without re-executing a step.
+The checkpoint is the idempotency-key pattern (`S07-01`, dedupe by input) extended to the output:
+recovery compares the stored schema version with the current one, and only when they match accepts
+the stored output. Redaction before persist (invariant 8) keeps secrets out of the row; the size
+bound keeps the hot path small; the schema-version gate (invariant 13) makes a changed output
+contract a re-execution rather than a silent stale value. `output_ref` is left NULL because the
+object-storage path is out of scope until `S15-06`, so the mutual-exclusion `CHECK` simply protects
+that invariant for the future.
 - **Persist the attempt lifecycle so the crash window is diagnosable (S07-06).** The
   `workflow_step_runs` table gains an `attempt_started_at` marker: it is set to `now()` when the
   step enters `RUNNING` (recorded before the external side effect) and cleared to `NULL` when the

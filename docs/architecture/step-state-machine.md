@@ -84,7 +84,7 @@ permits it.
 |---|---|---|---|---|
 | 1 | `PENDING` | `READY` | `step.schedulable` (event; the scheduler observes dependencies) | All upstream steps are `SUCCEEDED` (for a root node, immediately when the run starts). A parallel fan-out node becomes `READY` only when every parent is `SUCCEEDED`. |
 | 2 | `READY` | `RUNNING` | `run.started`/`step.started` (event; a worker claims the step and acquires the lease) | A worker atomically claims a `READY` step and receives a lease (`lease_epoch` incremented). |
-| 3 | `RUNNING` | `SUCCEEDED` | `step.succeeded` (event; the step completed) | The step completed and its output reference was persisted (`step.output_ref`). |
+| 3 | `RUNNING` | `SUCCEEDED` | `step.succeeded` (event; the step completed) | The step completed. Its result is persisted as a checkpoint through the single `workflowexecution.application.CheckpointAdapter` (`S07-07`): the redacted output is size-bounded inline (or externalized to object storage, `S15-06`); the step's `output_ref` is not the reuse key — the checkpoint's `output_schema_version` is. |
 | 4 | `RUNNING` | `RETRY_WAIT` | `step.failed` (event; a retryable transient error) | The step failed with a retryable error and `attempt < maxAttempts` (`error-taxonomy.md`, transient class). |
 | 5 | `RETRY_WAIT` | `RUNNING` | `run.retry-due` (event; the scheduler fires on `next_action_at`) | The retry backoff elapsed and a worker re-claims the step. |
 | 6 | `RUNNING` | `FAILED` | `step.failed` (event; permanent) / `run.failed` | The step failed permanently, `attempt >= maxAttempts`, or a non-retryable error occurred (`error-taxonomy.md`, permanent class). |
@@ -122,6 +122,14 @@ permits it.
     have failed. Together with the `attempt` number (the attempt identity, bumped on retry, see
     `ADR-003`) and the append-only `workflow_events` log, the state and history distinguish a step
     not started (`attempt_started_at` NULL) from an in-flight attempt with an unknown outcome.
+- **The result is checkpointed for recovery, not the raw reference.** When a step reaches
+  `SUCCEEDED`, the `workflowexecution.application.CheckpointAdapter` (`S07-07`) redacts the output
+  (invariant 8), bounds it to `agentflow.checkpoint.max-inline-bytes` and persists it — inline for
+  the small, hot path, externalized to object storage for the large path (`S15-06`). On recovery the
+  seam answers "is this step's result still valid?": it reuses the checkpoint only when the stored
+  `output_schema_version` matches the step's current output-schema version (invariant 13), so a step
+  whose output contract changed is re-executed rather than served a stale value. Reuse is a
+  recovery-time decision, independent of the transition itself.
 
 ## 4. Run-state aggregation
 
@@ -231,6 +239,7 @@ consistent with the run machine (`S05-01`):
 
 - **Run states** — the run-level machine this reconciles with ([`run-state-machine.md`](run-state-machine.md), `S05-01`).
 - **Lease, fencing and recovery** — `durable-execution.md` (`⚠ planned`, `S07-17`).
+- **The step result as a checkpoint** — how `SUCCEEDED` persists a redacted, size-bounded, schema-versioned result for recovery (`S07-07`, `workflowexecution.application.CheckpointAdapter`).
 - **The pure state machine** — the enum and its `canTransitionTo` logic (`workflowexecution.domain`, DB-free, unit tested) in `S05-10`.
 - **Transition service** — the single point where transitions are applied with the optimistic lock and the append-only event (`S05-11`).
 - **Retry vs permanent** — [`error-taxonomy.md`](error-taxonomy.md).

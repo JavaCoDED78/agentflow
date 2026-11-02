@@ -108,10 +108,10 @@ the per-transition event/command/condition table are in
 [`docs/architecture/run-state-machine.md`](architecture/run-state-machine.md)
 (`S05-01`); transitions stay centralized in the single transition service
 (`S05-11`) and must not be set directly from a controller. |
-| **Step** | table `workflow_step_runs` (`id`, `run_id`, `step_key`, `status`, `attempt`, `input_hash`, `output_ref/json`, `error_code`, `error_summary`, timestamps, `lease_epoch`); `unique (run_id, step_key, attempt)` | A single step execution within a run. Not the same as a run or an event. |
+| **Step** | table `workflow_step_runs` (`id`, `run_id`, `step_key`, `status`, `attempt`, `input_hash`, `output_ref/json`, `output_inline/json` (+ `output_schema_version`), `error_code`, `error_summary`, timestamps, `lease_epoch`); `unique (run_id, step_key, attempt)` | A single step execution within a run. Not the same as a run or an event. Its completed output is persisted as a checkpoint (`S07-07`, see below). |
 | **Step status** | `workflow_step_runs.status` | `PENDING → READY → RUNNING → SUCCEEDED`, with alt `RETRY_WAIT`, `WAITING_FOR_APPROVAL`, `FAILED`, `SKIPPED`, `CANCELLED`. |
 | **Attempt** | `run.attempt`, `step.attempt`, `attempt` history | The `attempt` is persisted **before** an external call; an ambiguous external outcome is marked, never treated as exactly-once (`ADR-003`). |
-| **Checkpoint** | `step.output_ref` (+ schema version) | A persisted per-step result used for recovery; big outputs go to object storage, a link + checksum stays in the DB. |
+| **Checkpoint** | `step.output_inline` (+ `step.output_schema_version`); `output_ref` NULL until `S15-06` | A persisted, redacted per-step result used for recovery. The small, hot path stores the output inline, bounded to `agentflow.checkpoint.max-inline-bytes` (256 KiB by default); the large-payload path (object storage + ref/checksum) is `S15-06`. Redacted before it is persisted (invariant 8). Recovery reuses it only when the stored `output_schema_version` matches the step's current output-schema version (invariant 13); a mismatch re-executes. Persisted through the single `workflowexecution.application.CheckpointAdapter` seam. |
 | **Cost budget** | per-run budget, per-tenant quota, `usage_records`, `tenant_budgets` | A hard limit on steps, calls, tokens and estimated cost; reserved before an expensive call, settled idempotently. |
 
 API: `POST /api/v1/workflows/{workflowId}/runs` (`Idempotency-Key`, `202

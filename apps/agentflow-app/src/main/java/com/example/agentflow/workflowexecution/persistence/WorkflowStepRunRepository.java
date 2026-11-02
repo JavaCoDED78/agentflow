@@ -1,5 +1,6 @@
 package com.example.agentflow.workflowexecution.persistence;
 
+import com.example.agentflow.workflowexecution.domain.Checkpoint;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import java.util.List;
@@ -140,5 +141,83 @@ public class WorkflowStepRunRepository {
               + expectedState
               + "'");
     }
+  }
+
+  /**
+   * Persist a completed step's checkpoint (S07-07): in place, guarded by the parent run's {@code
+   * tenant_id}, the current {@code lease_epoch} fence and the step being {@code SUCCEEDED}
+   * (invariants 1 / 4 / 5). The output is written to {@code output_inline} and its schema version
+   * to {@code output_schema_version}; {@code output_ref} is never written here, so it stays {@code
+   * NULL} and the row satisfies the {@code output_ref / output_inline} mutual-exclusion CHECK added
+   * by {@code V3_3_15__add_step_checkpoint_outputs.sql}. A zero-rows update &mdash; the step is
+   * gone, the parent run is a different tenant, the step is not {@code SUCCEEDED}, or the {@code
+   * lease_epoch} fence has moved &mdash; is mapped to a {@link ConflictException} (409), so a stale
+   * or non-terminal worker can never persist a bogus checkpoint. The checkpoint is per {@code
+   * (run_id, step_key)}, so it is never reused across runs.
+   *
+   * @param tenantId the owning tenant (matched against the parent run in the {@code WHERE})
+   * @param runId the run the step belongs to
+   * @param stepKey the graph node the step runs
+   * @param expectedLeaseEpoch the fence the row must still hold
+   * @param checkpoint the redacted output + its schema version to store
+   * @throws ConflictException if zero rows match (missing / cross-tenant / not SUCCEEDED / stale
+   *     lease epoch)
+   */
+  public void saveCheckpoint(
+      UUID tenantId, UUID runId, String stepKey, int expectedLeaseEpoch, Checkpoint checkpoint) {
+    int affected =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " s SET output_schema_version = ?, output_inline = ?, updated_at = now()"
+                + " FROM workflow_runs r"
+                + " WHERE s.run_id = r.id AND r.tenant_id = ? AND s.run_id = ?"
+                + " AND s.step_key = ? AND s.status = 'SUCCEEDED' AND s.lease_epoch = ?",
+            ps -> {
+              ps.setString(1, checkpoint.schemaVersion());
+              ps.setString(2, checkpoint.output());
+              ps.setObject(3, tenantId);
+              ps.setObject(4, runId);
+              ps.setString(5, stepKey);
+              ps.setInt(6, expectedLeaseEpoch);
+            });
+    if (affected == 0) {
+      throw new ConflictException(
+          "step '"
+              + stepKey
+              + "' on run "
+              + runId
+              + " is not checkpointable (not SUCCEEDED) or out of date (lease epoch "
+              + expectedLeaseEpoch
+              + ")");
+    }
+  }
+
+  /**
+   * Read a completed step's stored checkpoint (S07-07), scoped to the parent run's tenant. The
+   * {@code tenant_id} predicate is part of the {@code JOIN ... WHERE} clause (invariant 1), so a
+   * step whose parent run belongs to another tenant returns {@link Optional#empty()} &mdash;
+   * indistinguishable from a step that never completed. This backs the reuse decision: recovery
+   * asks whether a matching checkpoint exists before re-executing the step.
+   *
+   * @param tenantId the owning tenant (matched against the parent run in the {@code WHERE})
+   * @param runId the run the step belongs to
+   * @param stepKey the graph node the step runs
+   * @return the checkpoint, or {@link Optional#empty()} when no step matches for this tenant
+   */
+  public Optional<CheckpointSnapshot> findCheckpoint(UUID tenantId, UUID runId, String stepKey) {
+    List<CheckpointSnapshot> results =
+        jdbc.query(
+            "SELECT s.output_schema_version, s.output_inline FROM "
+                + TABLE
+                + " s JOIN workflow_runs r ON s.run_id = r.id"
+                + " WHERE s.run_id = ? AND s.step_key = ? AND r.tenant_id = ?",
+            (rs, rowNum) ->
+                new CheckpointSnapshot(
+                    rs.getString("output_schema_version"), rs.getString("output_inline")),
+            runId,
+            stepKey,
+            tenantId);
+    return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
   }
 }

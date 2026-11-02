@@ -72,7 +72,7 @@ class MigrationsTest {
       assertThat(applied)
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
-              "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14");
+              "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15");
     }
   }
 
@@ -170,6 +170,32 @@ class MigrationsTest {
     // S07-06: the marker is nullable (NULL = not started / finished; non-NULL = in flight).
     assertThat(nullableColumn("workflow_step_runs", "attempt_started_at")).isTrue();
     assertThat(columnComment("workflow_step_runs", "attempt_started_at")).contains("S07-06");
+  }
+
+  /**
+   * The step-checkpoint columns {@code S07-07} adds to {@code workflow_step_runs} are both
+   * nullable: a step that has not completed keeps {@code NULL} for both, so the checkpoint carries
+   * meaning only once the step has a result. Both carry their S07-07 attribution in the column
+   * {@code COMMENT}.
+   */
+  @Test
+  void step_checkpoint_columns_are_nullable_and_attributed() throws SQLException {
+    assertThat(nullableColumn("workflow_step_runs", "output_schema_version")).isTrue();
+    assertThat(nullableColumn("workflow_step_runs", "output_inline")).isTrue();
+    assertThat(columnComment("workflow_step_runs", "output_schema_version")).contains("S07-07");
+    assertThat(columnComment("workflow_step_runs", "output_inline")).contains("S07-07");
+  }
+
+  /**
+   * {@code output_ref} (S05-08) and {@code output_inline} (S07-07) are mutually exclusive for the
+   * same row: an inline checkpoint never also stores an object-storage ref (the CHECK the migration
+   * declares). This keeps the "small goes inline, large goes to object storage" invariant in the
+   * schema, enforced by PostgreSQL rather than the application.
+   */
+  @Test
+  void step_checkpoint_ref_and_inline_are_mutually_exclusive() throws SQLException {
+    assertThat(checkConstraints("workflow_step_runs"))
+        .contains("workflow_step_runs_output_ref_only_when_no_inline");
   }
 
   /** The business uniques are the composite ones the plan (§8.1) requires, not just the PK. */
@@ -745,6 +771,23 @@ class MigrationsTest {
       Set<String> names = new LinkedHashSet<>();
       while (rs.next()) {
         names.add(rs.getString("primary_key"));
+      }
+      return names;
+    }
+  }
+
+  private static Set<String> checkConstraints(String table) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT c.conname AS check_constraint "
+                    + "FROM pg_constraint c "
+                    + "WHERE c.conrelid = '"
+                    + table
+                    + "'::regclass AND c.contype = 'c'")) {
+      Set<String> names = new LinkedHashSet<>();
+      while (rs.next()) {
+        names.add(rs.getString("check_constraint"));
       }
       return names;
     }
