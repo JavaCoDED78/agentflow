@@ -51,7 +51,7 @@ docs/
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
 │   ├── kafka-topics.md                ← topics & partition keys (S06-02)
-│   ├── events/README.md               ⚠ planned (S06) — event catalogue
+│   ├── events/README.md               ← event catalogue & delivery guarantees (S06-16)
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
 │   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
 ├── security/                          permissions/permissions.md ← S04-04 catalogue; tenant-claim.md ← S04-05 tenant claim contract; response-policy.md ← S04-09 403/404 masking policy; authentication-authorization.md ← S04-15 authn/authz; secrets policy ⚠ planned (S11)

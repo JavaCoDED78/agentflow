@@ -238,7 +238,7 @@ check` gate to point to. It is verified by:
 - **Cross-references resolve.** Every relative link in this file points to a
   document that exists (the module map, the glossary, the system context, the
   `docs/` and `contracts/` indexes) or is marked `⚠ planned` for a not-yet-
-  created doc (`docs/architecture/events/README.md`, `S06`) and is not linked.
+  created doc (`docs/architecture/durable-execution.md`, `S07-17`) and is not linked.
 - **Owner consistency.** The module → concept → table/owner triples match
   `docs/architecture/module-map.md` (S02-03) and the glossary's §13 authority
   table (one concept — one name).
@@ -263,7 +263,7 @@ check` gate to point to. It is verified by:
   service above enforces (permission scope never replaces the per-resource
   tenant/ownership check).
 - **`events/README.md`** — event catalogue, topics, partition keys, envelope
-  fields, retry/DLQ (`⚠ planned`, `S06`).
+  fields, at-least-once + idempotency, retry/DLQ and the safe-contract-change rules (`S06-16`).
 - `contracts/openapi/` — machine-readable `/api/v1` OpenAPI contract (S03-12),
   generated deterministically from the running application and checked in;
   request/response schemas are added per endpoint as it is implemented

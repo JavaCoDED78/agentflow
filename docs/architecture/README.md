@@ -40,6 +40,7 @@ documentation entry point. The **project** entry point is the root
 | **Module map** (C4 Level 2) | Bounded contexts, each module's responsibility, data ownership (one owner per table), business-rule ownership, and the single allowed dependency direction | [`module-map.md`](./module-map.md) |
 | **Module public API** | Public application services, published event types, permitted DTOs and internal packages per module (the boundary architecture tests check) | [`module-api.md`](./module-api.md) |
 | **Error taxonomy** | Canonical `error_class` set, HTTP mapping (RFC 9457 Problem Details), retry decision, the `401/403/404` policy | [`error-taxonomy.md`](./error-taxonomy.md) |
+| **Events catalog** | Topics, producers/consumers, partition key, envelope fields, at-least-once + idempotency, retry/DLQ, outbox/inbox and the safe-contract-change rules | [`events/README.md`](./events/README.md) |
 | **Polling outbox benchmark** | Publish delay and poll load of the transactional-outbox publisher (`ADR-004`), and the numerical gate for a future Debezium CDC migration (`S06-15`) | [`observability/outbox-polling-benchmark.md`](./observability/outbox-polling-benchmark.md) |
 | **Engineering conventions** | `UUID`, UTC `timestamptz`, injectable `Clock`, identifier and naming conventions | [`engineering-conventions.md`](./engineering-conventions.md) |
 | **API and persistence conventions** | `/api/v1` endpoints, pagination, RFC 9457 Problem Details, optimistic locking, tenant-scoped lookup and how to change the OpenAPI contract | [`api-conventions.md`](./api-conventions.md) |
@@ -149,5 +150,4 @@ build and repository, not assumed:
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
 - `durable-execution.md` — run/step state machine, lease + fencing, recovery (`S07-17`).
-- `events/README.md` — event catalogue (`S06`).
 - (none — see the index tables above for the current `⚠ planned` list.)
