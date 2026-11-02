@@ -4,15 +4,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.agentflow.workflowexecution.domain.Checkpoint;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -193,5 +197,112 @@ class WorkflowStepRunRepositoryTest {
   void transition_from_pending_never_sets_the_attempt_marker() throws SQLException {
     // not started: the marker must stay NULL on the PENDING -> READY edge
     assertMarker(WorkflowStepState.PENDING, WorkflowStepState.READY, false, false);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void saveCheckpoint_joins_the_parent_and_guards_by_status_lease_and_tenant() throws SQLException {
+    // A checkpoint write is guarded exactly like any other step write: the parent's tenant_id is
+    // part of the JOIN WHERE (invariant 1), and the step must still be SUCCEEDED and still hold the
+    // lease_epoch fence (invariant 5) before the redacted output is stored (S07-07).
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    String stepKey = "calculator";
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+    repo.saveCheckpoint(tenant, runId, stepKey, 3, Checkpoint.of("v7", "42"));
+
+    verify(jdbc).update(sql.capture(), setter.capture());
+    assertThat(sql.getValue())
+        .contains("SET output_schema_version = ?, output_inline = ?")
+        .contains("FROM workflow_runs r")
+        .contains("AND r.tenant_id = ? AND s.run_id = ? AND s.step_key = ?")
+        .contains("AND s.status = 'SUCCEEDED' AND s.lease_epoch = ?");
+    setter.getValue().setValues(ps);
+    verify(ps).setString(1, "v7");
+    verify(ps).setString(2, "42");
+    verify(ps).setObject(3, tenant);
+    verify(ps).setObject(4, runId);
+    verify(ps).setString(5, stepKey);
+    verify(ps).setInt(6, 3);
+  }
+
+  @Test
+  void saveCheckpoint_zero_rows_becomes_a_conflict() {
+    // The step is not SUCCEEDED, is gone, is a different tenant, or the lease fence moved: the
+    // guarded UPDATE affects no row and must not silently write a bogus checkpoint (invariant 4).
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(0);
+
+    assertThatThrownBy(
+            () ->
+                repo.saveCheckpoint(
+                    UUID.randomUUID(), UUID.randomUUID(), "x", 1, Checkpoint.of("v", "y")))
+        .isInstanceOf(ConflictException.class)
+        .hasMessageContaining("SUCCEEDED");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void findCheckpoint_joins_the_parent_run_and_scopes_by_tenant() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    String stepKey = "calculator";
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    when(jdbc.query(anyString(), any(RowMapper.class), any())).thenReturn(Collections.emptyList());
+
+    repo.findCheckpoint(tenant, runId, stepKey);
+
+    verify(jdbc).query(sql.capture(), any(RowMapper.class), args.capture());
+    // tenant isolation is a JOIN + WHERE predicate, not a post-filter (invariant 1)
+    assertThat(sql.getValue())
+        .contains("SELECT s.output_schema_version, s.output_inline")
+        .contains("JOIN workflow_runs r ON s.run_id = r.id")
+        .contains("WHERE s.run_id = ? AND s.step_key = ? AND r.tenant_id = ?");
+    assertThat(args.getValue()[0]).isEqualTo(runId);
+    assertThat(args.getValue()[1]).isEqualTo(stepKey);
+    assertThat(args.getValue()[2]).isEqualTo(tenant);
+  }
+
+  @Test
+  void findCheckpoint_returns_empty_for_a_cross_tenant_step() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    when(jdbc.query(anyString(), any(RowMapper.class), any())).thenReturn(Collections.emptyList());
+
+    assertThat(repo.findCheckpoint(UUID.randomUUID(), UUID.randomUUID(), "tool_call")).isEmpty();
+  }
+
+  @Test
+  void findCheckpoint_reads_the_stored_output_and_schema_version() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    List<CheckpointSnapshot> row =
+        new ArrayList<>(Collections.singletonList(new CheckpointSnapshot("v3", "42")));
+    doReturn(row).when(jdbc).query(sql.capture(), any(RowMapper.class), args.capture());
+
+    assertThat(repo.findCheckpoint(UUID.randomUUID(), UUID.randomUUID(), "calculator"))
+        .contains(new CheckpointSnapshot("v3", "42"));
+
+    // The join reads only the checkpoint columns and is scoped to the step and its parent run's
+    // tenant; the args are the step's run, the step key and the tenant (in that order).
+    assertThat(sql.getValue())
+        .contains("output_schema_version")
+        .contains("output_inline")
+        .contains("workflow_runs")
+        .contains("tenant_id");
+    assertThat(args.getValue()).hasSize(3);
   }
 }
