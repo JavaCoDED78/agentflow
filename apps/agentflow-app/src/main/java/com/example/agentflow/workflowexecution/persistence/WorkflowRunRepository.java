@@ -173,6 +173,49 @@ public class WorkflowRunRepository {
   }
 
   /**
+   * Extend a run's lease by one lifetime, fenced so only the current owner can renew it (S07-04,
+   * the ADR-011 lease model).
+   *
+   * <p>The whole operation is one conditional {@code UPDATE ... WHERE} that sets {@code
+   * lease_until} to {@code leaseUntil} &mdash; already computed through the injected {@link
+   * java.time.Clock} by the caller &mdash; but only when the row still belongs to {@code tenantId}
+   * (invariant 1), is still owned by {@code workerId}, and still holds {@code lease_epoch =
+   * expectedEpoch} (invariant 5, fencing). A heartbeat never bumps the epoch (only the claim does)
+   * and never clears the lease, so a live worker simply pushes {@code lease_until} into the future
+   * every cadence.
+   *
+   * <p>A zero-row match &mdash; the run was re-claimed (owner moved and/or {@code lease_epoch}
+   * bumped), the run is gone, or a cross-tenant id &mdash; returns {@code 0}: an old owner cannot
+   * renew its lease after it is taken (S07-04 acceptance criterion). The caller treats a {@code 0}
+   * as a rejected heartbeat.
+   *
+   * @param tenantId the owning tenant, re-checked in the {@code WHERE} (invariant 1)
+   * @param runId the run whose lease to extend
+   * @param workerId the current owner this heartbeat must still match ({@code lease_owner})
+   * @param expectedEpoch the {@code lease_epoch} the run must still hold for the write to apply
+   * @param leaseUntil the new expiry, {@code now + duration-seconds} computed through the injected
+   *     {@link java.time.Clock}
+   * @return the number of rows matched ({@code 0} or {@code 1}); {@code 1} means the lease was
+   *     renewed, {@code 0} means the heartbeat was rejected (stale owner / re-claimed / missing)
+   */
+  public int heartbeat(
+      UUID tenantId, UUID runId, UUID workerId, int expectedEpoch, OffsetDateTime leaseUntil) {
+    return jdbc.update(
+        "UPDATE "
+            + TABLE
+            + " SET lease_until = ?"
+            + " WHERE id = ? AND tenant_id = ?"
+            + " AND lease_owner = ? AND lease_epoch = ?",
+        ps -> {
+          ps.setObject(1, leaseUntil);
+          ps.setObject(2, runId);
+          ps.setObject(3, tenantId);
+          ps.setObject(4, workerId);
+          ps.setInt(5, expectedEpoch);
+        });
+  }
+
+  /**
    * Create a new run in status {@code QUEUED} with {@code attempt = 1} (S06-05, idempotent create
    * keyed by {@code idempotencyKey} in S06-06).
    *
