@@ -4,7 +4,7 @@
 - **Owner:** engineering
 - **Task:** `S06-15` (P1)
 - **Upstream reference:** `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` (`S06-15`);
-  [`../adr/ADR-004-transactional-outbox.md`](../adr/ADR-004-transactional-outbox.md)
+  [`../../adr/ADR-004-transactional-outbox.md`](../../adr/ADR-004-transactional-outbox.md)
   (current transactional-outbox design); `OutboxPublisherService` (`pollOnce`)
   in the `messaging` module.
 - **Purpose:** quantify the two things `S06-15` asks for — **publish delay** (time from an

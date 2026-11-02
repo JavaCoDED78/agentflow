@@ -75,9 +75,9 @@ the run is recoverable. A heartbeat that arrives with a different `lease_owner` 
 after it is taken (`S07-04`). Staleness is therefore a pure comparison of `lease_until` against the
 injected clock; the recovery scheduler owns the scan.
 
-**Duration / heartbeat / recovery intervals.** These are **configuration, not magic numbers**, bound
-through `AgentFlowProperties.Worker.Lease` (`@ConfigurationProperties` with validation), with the
-defaults below chosen so the relationships hold and so the recovery-time acceptance of `S07-15`
+**Duration / heartbeat / recovery intervals.** These are **configuration, not magic numbers**,
+bound through the `AgentFlowProperties.Worker.Lease` group (a `@ConfigurationProperties` sub-group
+bound from `agentflow.worker.*`, added in `S07-03`), with the defaults below chosen so the relationships hold and so the recovery-time acceptance of `S07-15`
 (resume no later than 60 s after expiry in test config) is met:
 
 | Parameter | Default | Rule |

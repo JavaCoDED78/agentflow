@@ -107,6 +107,7 @@ New ADRs start from [`000-template.md`](000-template.md): the header metadata
 is needed*, and the copy-paste register steps. See the pitfall in `docs/adr/`
 about one ADR per referenced number.
 
-Scaffolded in **S01-03**. The first core ADR (`ADR-001 Modular monolith first`)
-is added in **S02-05**; the remaining core ADRs (consistency/outbox, at-least-once,
-tenant isolation, …) follow in **S02-06 – S02-08**.
+Scaffolded in **S01-03**. `ADR-001 (Modular monolith first)` is added in **S02-05**; the
+consistency/core ADRs (`ADR-002`…`ADR-007`) follow in **S02-06 – S04-07**, the migration and
+persistence ADRs (`ADR-008`…`ADR-010`) in **S03-01 – S04-12**, and the durable-execution lease
+ADR (`ADR-011`) in **S07-01**.
