@@ -104,12 +104,13 @@ class TransitionTableServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(edge.from(), 0)));
+        .thenReturn(Optional.of(new RunStateSnapshot(edge.from(), 0, 0)));
 
     WorkflowRunState result = service.transitionRun(tenant, runId, edge.to(), edge.event(), null);
 
     assertThat(result).isEqualTo(edge.to());
-    verify(runRepository).transition(eq(runId), eq(tenant), eq(edge.from()), eq(0), eq(edge.to()));
+    verify(runRepository)
+        .transition(eq(runId), eq(tenant), eq(edge.from()), eq(0), eq(0), eq(edge.to()));
     verify(eventService)
         .append(
             any(),
@@ -126,13 +127,13 @@ class TransitionTableServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(edge.from(), 0)));
+        .thenReturn(Optional.of(new RunStateSnapshot(edge.from(), 0, 0)));
 
     ResponseStatusException ex =
         expectException(() -> service.transitionRun(tenant, runId, edge.to(), edge.event(), null));
 
     assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), any());
+    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), anyInt(), any());
     verify(eventService, never()).append(any(), any(), any(), any(), any());
   }
 
@@ -262,14 +263,14 @@ class TransitionTableServiceTest {
       UUID tenant = UUID.randomUUID();
       UUID runId = UUID.randomUUID();
       when(runRepository.findState(tenant, runId))
-          .thenReturn(Optional.of(new RunStateSnapshot(terminal, 0)));
+          .thenReturn(Optional.of(new RunStateSnapshot(terminal, 0, 0)));
 
       ResponseStatusException ex =
           expectException(
               () -> service.transitionRun(tenant, runId, WorkflowRunState.RUNNING, "x", null));
 
       assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-      verify(runRepository, never()).transition(any(), any(), any(), anyInt(), any());
+      verify(runRepository, never()).transition(any(), any(), any(), anyInt(), anyInt(), any());
       verify(eventService, never()).append(any(), any(), any(), any(), any());
     }
   }
@@ -281,13 +282,13 @@ class TransitionTableServiceTest {
     UUID runId = UUID.randomUUID();
 
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 1)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 1, 0)));
     assertThat(
             service.transitionRun(tenant, runId, WorkflowRunState.RETRY_WAIT, "step.failed", null))
         .isEqualTo(WorkflowRunState.RETRY_WAIT);
 
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RETRY_WAIT, 2)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RETRY_WAIT, 2, 0)));
     assertThat(
             service.transitionRun(tenant, runId, WorkflowRunState.RUNNING, "run.retry-due", null))
         .isEqualTo(WorkflowRunState.RUNNING);
@@ -301,28 +302,28 @@ class TransitionTableServiceTest {
 
     // QUEUED -> CANCEL_REQUESTED -> CANCELLED
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0, 0)));
     assertThat(
             service.transitionRun(
                 tenant, runId, WorkflowRunState.CANCEL_REQUESTED, "run.cancel", null))
         .isEqualTo(WorkflowRunState.CANCEL_REQUESTED);
 
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.CANCEL_REQUESTED, 1)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.CANCEL_REQUESTED, 1, 0)));
     assertThat(
             service.transitionRun(tenant, runId, WorkflowRunState.CANCELLED, "run.cancelled", null))
         .isEqualTo(WorkflowRunState.CANCELLED);
 
     // RUNNING -> CANCEL_REQUESTED -> CANCELLED (the in-flight run drains before it is cancelled)
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 2)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 2, 0)));
     assertThat(
             service.transitionRun(
                 tenant, runId, WorkflowRunState.CANCEL_REQUESTED, "run.cancel", null))
         .isEqualTo(WorkflowRunState.CANCEL_REQUESTED);
 
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.CANCEL_REQUESTED, 3)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.CANCEL_REQUESTED, 3, 0)));
     assertThat(
             service.transitionRun(tenant, runId, WorkflowRunState.CANCELLED, "run.cancelled", null))
         .isEqualTo(WorkflowRunState.CANCELLED);
@@ -335,14 +336,14 @@ class TransitionTableServiceTest {
     UUID runId = UUID.randomUUID();
 
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 1)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 1, 0)));
     assertThat(
             service.transitionRun(
                 tenant, runId, WorkflowRunState.WAITING_FOR_APPROVAL, "step.approval-needed", null))
         .isEqualTo(WorkflowRunState.WAITING_FOR_APPROVAL);
 
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.WAITING_FOR_APPROVAL, 2)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.WAITING_FOR_APPROVAL, 2, 0)));
     assertThat(service.transitionRun(tenant, runId, WorkflowRunState.RUNNING, "run.approved", null))
         .isEqualTo(WorkflowRunState.RUNNING);
   }

@@ -81,7 +81,7 @@ class WorkflowTransitionIntegrationTest {
     seedRun(tenant, runId);
     WorkflowRunRepository repo = new WorkflowRunRepository(jdbc);
 
-    repo.transition(runId, tenant, WorkflowRunState.QUEUED, 0, WorkflowRunState.RUNNING);
+    repo.transition(runId, tenant, WorkflowRunState.QUEUED, 0, 0, WorkflowRunState.RUNNING);
 
     RunStateSnapshot after = repo.findState(tenant, runId).orElseThrow();
     assertThat(after.status()).isEqualTo(WorkflowRunState.RUNNING);
@@ -106,7 +106,7 @@ class WorkflowTransitionIntegrationTest {
     assertThatThrownBy(
             () ->
                 repo.transition(
-                    runId, tenant, WorkflowRunState.QUEUED, 0, WorkflowRunState.RUNNING))
+                    runId, tenant, WorkflowRunState.QUEUED, 0, 0, WorkflowRunState.RUNNING))
         .isInstanceOf(ConflictException.class)
         .hasMessageContaining("out of date");
     // The row is left exactly as it was: the stale writer is refused, not silently overwritten.
@@ -130,7 +130,7 @@ class WorkflowTransitionIntegrationTest {
     assertThatThrownBy(
             () ->
                 repo.transition(
-                    runId, foreignTenant, WorkflowRunState.QUEUED, 0, WorkflowRunState.RUNNING))
+                    runId, foreignTenant, WorkflowRunState.QUEUED, 0, 0, WorkflowRunState.RUNNING))
         .isInstanceOf(ConflictException.class)
         .hasMessageContaining("out of date");
     assertThat(repo.findState(tenant, runId).orElseThrow().status())
@@ -152,9 +152,38 @@ class WorkflowTransitionIntegrationTest {
     assertThatThrownBy(
             () ->
                 repo.transition(
-                    runId, tenant, WorkflowRunState.RUNNING, 0, WorkflowRunState.SUCCEEDED))
+                    runId, tenant, WorkflowRunState.RUNNING, 0, 0, WorkflowRunState.SUCCEEDED))
         .isInstanceOf(ConflictException.class)
         .hasMessageContaining("no longer in state");
+    assertThat(repo.findState(tenant, runId).orElseThrow().status())
+        .isEqualTo(WorkflowRunState.QUEUED);
+  }
+
+  /**
+   * A stale run {@code lease_epoch} &mdash; another worker re-claimed the run and bumped its fence
+   * (ADR-011) &mdash; affects no row. This is the run-level stale-owner guard (S07-05): the write
+   * is fenced on the same {@code lease_epoch} a tenant-scoped {@code findState} returned, so a
+   * worker whose lease was taken over by another worker must not silently overwrite the new owner's
+   * result.
+   */
+  @Test
+  void run_transition_with_a_stale_lease_epoch_is_a_conflict() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    seedRun(tenant, runId);
+    WorkflowRunRepository repo = new WorkflowRunRepository(jdbc);
+
+    // Simulate the run being re-claimed by another worker between the read and the write: the
+    // fence is bumped, so the first writer's expected lease_epoch (0) no longer matches.
+    jdbc.update("UPDATE workflow_runs SET lease_epoch = lease_epoch + 1 WHERE id = ?", runId);
+
+    assertThatThrownBy(
+            () ->
+                repo.transition(
+                    runId, tenant, WorkflowRunState.QUEUED, 0, 0, WorkflowRunState.RUNNING))
+        .isInstanceOf(ConflictException.class)
+        .hasMessageContaining("out of date");
+    // The row is left exactly as it was: the stale writer is refused, not silently overwritten.
     assertThat(repo.findState(tenant, runId).orElseThrow().status())
         .isEqualTo(WorkflowRunState.QUEUED);
   }

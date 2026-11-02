@@ -64,7 +64,7 @@ class RunStateMachineServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0, 0)));
 
     WorkflowRunState result =
         service.transitionRun(tenant, runId, WorkflowRunState.RUNNING, "run.running", null);
@@ -75,7 +75,7 @@ class RunStateMachineServiceTest {
     // durable fact of the transition, appended only after the conditional update is applied
     verify(runRepository).findState(tenant, runId);
     verify(runRepository)
-        .transition(runId, tenant, WorkflowRunState.QUEUED, 0, WorkflowRunState.RUNNING);
+        .transition(runId, tenant, WorkflowRunState.QUEUED, 0, 0, WorkflowRunState.RUNNING);
     verify(eventService).append(tenant, runId, null, "run.running", "prior=QUEUED new=RUNNING");
   }
 
@@ -84,7 +84,7 @@ class RunStateMachineServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 3)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 3, 0)));
 
     service.transitionRun(tenant, runId, WorkflowRunState.SUCCEEDED, "run.succeeded", "alice");
 
@@ -98,7 +98,7 @@ class RunStateMachineServiceTest {
     UUID runId = UUID.randomUUID();
     // SUCCEEDED is terminal: a re-delivered event must not move it again (the gate holds).
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.SUCCEEDED, 7)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.SUCCEEDED, 7, 0)));
 
     ResponseStatusException ex =
         expectException(
@@ -107,7 +107,7 @@ class RunStateMachineServiceTest {
                     tenant, runId, WorkflowRunState.RUNNING, "run.running", null));
 
     // the conditional update is never reached: the domain gate refused before any write
-    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), any());
+    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), anyInt(), any());
     verify(eventService, never()).append(any(), any(), any(), any(), any());
     assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
   }
@@ -117,7 +117,7 @@ class RunStateMachineServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0, 0)));
 
     ResponseStatusException ex =
         expectException(() -> service.transitionRun(tenant, runId, null, "run.running", null));
@@ -145,10 +145,10 @@ class RunStateMachineServiceTest {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
-        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0)));
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.QUEUED, 0, 0)));
     doThrow(new ConflictException("run " + runId + " is out of date"))
         .when(runRepository)
-        .transition(any(), any(), any(), eq(0), any());
+        .transition(any(), any(), any(), eq(0), eq(0), any());
 
     ResponseStatusException ex =
         expectException(

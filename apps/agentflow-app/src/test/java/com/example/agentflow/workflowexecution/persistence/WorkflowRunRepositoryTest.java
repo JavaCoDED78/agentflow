@@ -80,6 +80,7 @@ class WorkflowRunRepositoryTest {
                     UUID.randomUUID(),
                     WorkflowRunState.QUEUED,
                     0,
+                    0,
                     WorkflowRunState.RUNNING))
         .isInstanceOf(ConflictException.class)
         .hasMessageContaining("out of date");
@@ -98,15 +99,17 @@ class WorkflowRunRepositoryTest {
         ArgumentCaptor.forClass(PreparedStatementSetter.class);
     when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
 
-    repo.transition(runId, tenant, WorkflowRunState.QUEUED, 0, WorkflowRunState.RUNNING);
+    repo.transition(runId, tenant, WorkflowRunState.QUEUED, 0, 0, WorkflowRunState.RUNNING);
 
     verify(jdbc).update(sql.capture(), setter.capture());
-    // SET status + optimistic-version bump, WHERE id + tenant + status + version (conditional
-    // update)
+    // SET status + optimistic-version bump, WHERE id + tenant + status + version + lease_epoch
+    // (conditional update fenced on the optimistic version AND the run lease_epoch, S07-05)
     assertThat(sql.getValue())
         .contains("SET status = ?, version = version + 1, updated_at = now()")
-        .contains("WHERE id = ? AND tenant_id = ? AND status = ? AND version = ?");
-    // SET next | WHERE id | WHERE tenant | WHERE expected status | WHERE expected version
+        .contains("WHERE id = ? AND tenant_id = ? AND status = ? AND version = ?")
+        .contains("AND lease_epoch = ?");
+    // SET next | WHERE id | WHERE tenant | WHERE expected status | WHERE expected version | WHERE
+    // expected lease_epoch (the stale-owner guard)
     // drive the mocked setter so the bound arguments are recorded on the mock, then assert the
     // order
     setter.getValue().setValues(ps);
@@ -115,6 +118,7 @@ class WorkflowRunRepositoryTest {
     verify(ps).setObject(3, tenant);
     verify(ps).setString(4, WorkflowRunState.QUEUED.name());
     verify(ps).setInt(5, 0);
+    verify(ps).setInt(6, 0);
   }
 
   @Test

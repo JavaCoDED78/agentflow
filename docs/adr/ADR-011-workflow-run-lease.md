@@ -146,11 +146,13 @@ side effect impossible.
     `ADR-007` (tenant scope flows through the run) and `ADR-009` (the repository maps a moved lease to
     a `409`).
 - **Negative / operational:**
-  - The lease columns are on `workflow_runs`, so the lease is a **run-level** concept. Steps are
-    fenced only by the shared `lease_epoch` on `workflow_step_runs` (already the case, `S05-08`);
-    the run-level lease governs *which worker may run the next step*, and the step `lease_epoch`
-    fences *the write itself*. These are complementary, not duplicated: the run lease selects the
-    owner, the epoch fences the write.
+  - The lease columns are on `workflow_runs`, so the lease is a **run-level** concept. Both the run
+    write (`WorkflowRunRepository.transition`, fenced on `lease_epoch` since `S07-05`) and the step
+    write (`WorkflowStepRunRepository.transition`, fenced on `lease_epoch` since `S05-08`) re-check
+    the epoch on every conditional update, so a stale owner matches zero rows and becomes a
+    `409 conflict` (invariant 5). The run-level lease governs *which worker may run the next step*,
+    and the per-write `lease_epoch` fences *the write itself*. These are complementary, not
+    duplicated: the run lease selects the owner, the epoch fences the write.
   - The recovery scan reads and re-writes `lease_until`/`lease_owner`/`lease_epoch` for every expired
     run, so it must be **bounded** (batched, concurrency-limited, `next_action_at` for retry backoff)
     and idempotent — a duplicate re-claim is a no-op, not a lost run (`ADR-003`).
@@ -181,6 +183,7 @@ side effect impossible.
 | `W` crashes; no heartbeat | `lease_until < now`, `lease_owner = W` | Lease expired → recoverable |
 | Recovery re-claims to `W2` | `lease_owner = W2`, `lease_until` reset, `lease_epoch` bumped | `W` is now stale |
 | Stale `W` writes a step | `lease_epoch` in the `WHERE` ≠ bumped epoch | Zero rows → `409 conflict` (`ADR-009`) |
+| Stale `W` writes a run | `lease_epoch` in the `WHERE` ≠ bumped epoch | Zero rows → `409 conflict` (`S07-05`) |
 | `W` writes while still the owner | `lease_epoch` matches | Write proceeds |
 
 ## Related
