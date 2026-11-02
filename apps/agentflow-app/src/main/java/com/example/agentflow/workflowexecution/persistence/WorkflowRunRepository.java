@@ -121,6 +121,58 @@ public class WorkflowRunRepository {
   }
 
   /**
+   * Atomically claim a run for the current worker (S07-03, the ADR-011 lease model).
+   *
+   * <p>The whole operation is one conditional {@code UPDATE ... RETURNING lease_epoch}: it sets
+   * {@code lease_owner} to {@code workerId}, {@code lease_until} to {@code leaseUntil} and bumps
+   * {@code lease_epoch} (the fencing counter, ADR-011) in a single statement. The {@code WHERE}
+   * makes it atomic and tenant-scoped (invariant 1) and only matches a run that is claimable — not
+   * in a terminal state and whose lease is absent or expired:
+   *
+   * <pre>{@code
+   * UPDATE workflow_runs
+   * SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1
+   * WHERE id = ? AND tenant_id = ?
+   *   AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+   *   AND (lease_owner IS NULL OR lease_until < now())
+   * RETURNING lease_epoch
+   * }</pre>
+   *
+   * <p>Because the conditional update holds the row lock for its duration, two workers racing on
+   * the same run end up with exactly one winner &mdash; the loser re-evaluates against the
+   * committed {@code lease_owner}/{@code lease_until} and matches zero rows (invariant 4, so the
+   * append-only history can never record two owners for one run). A zero-row match &mdash; the run
+   * is terminal, owned by a live worker, or a cross-tenant id &mdash; returns {@link
+   * Optional#empty()} &mdash; indistinguishable from a missing run.
+   *
+   * @param tenantId the owning tenant, re-checked in the {@code WHERE} (invariant 1)
+   * @param runId the run to claim
+   * @param workerId this worker's instance id, stored on {@code lease_owner}
+   * @param leaseUntil the instant the lease expires without a heartbeat (already computed through
+   *     the injected {@link java.time.Clock} by the caller)
+   * @return the new {@code lease_epoch} the winner must use as its fence, or {@link
+   *     Optional#empty()} when no claimable row matched
+   */
+  public Optional<Integer> claim(
+      UUID tenantId, UUID runId, UUID workerId, OffsetDateTime leaseUntil) {
+    List<Integer> epochs =
+        jdbc.query(
+            "UPDATE "
+                + TABLE
+                + " SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1"
+                + " WHERE id = ? AND tenant_id = ?"
+                + " AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')"
+                + " AND (lease_owner IS NULL OR lease_until < now())"
+                + " RETURNING lease_epoch",
+            (rs, rowNum) -> rs.getInt("lease_epoch"),
+            workerId,
+            leaseUntil,
+            runId,
+            tenantId);
+    return epochs.isEmpty() ? Optional.empty() : Optional.of(epochs.get(0));
+  }
+
+  /**
    * Create a new run in status {@code QUEUED} with {@code attempt = 1} (S06-05, idempotent create
    * keyed by {@code idempotencyKey} in S06-06).
    *
