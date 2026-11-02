@@ -72,7 +72,7 @@ class MigrationsTest {
       assertThat(applied)
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
-              "3.3.9", "3.3.10", "3.3.11", "3.3.12");
+              "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13");
     }
   }
 
@@ -208,6 +208,17 @@ class MigrationsTest {
   @Test
   void event_history_index_exists() throws SQLException {
     assertThat(indexes("workflow_events")).contains("workflow_events_run_occurred_at_idx");
+  }
+
+  /**
+   * The lease-recovery index (S07-02) backs the recovery scan that finds expired leases (ADR-011,
+   * S07-09): a run whose {@code lease_until} has passed is discovered and re-claimed atomically, so
+   * the scan must be an index range scan on {@code lease_until} rather than a full table scan. The
+   * index lives on the lease columns, kept separate from the run's business state.
+   */
+  @Test
+  void lease_recovery_index_exists() throws SQLException {
+    assertThat(indexes("workflow_runs")).contains("workflow_runs_lease_until_idx");
   }
 
   /**

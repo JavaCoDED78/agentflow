@@ -178,7 +178,7 @@ index — its `unique (workflow_id, version)` index has `workflow_id` as its
 leading column and so backs the point lookup and the version-ordered list for
 free. The migration (`V3_3_3__index_tenant_queries.sql`) is the only artifact;
 later sprints (`S05-08` … `S06`) add the `workflow_runs`, `outbox_events` and
-other indexes the same way — one per real lookup path.
+other indexes the same way — one per real lookup path. The catalog grew across sprints: the `workflow_runs` tenant-list index and the `workflow_step_runs` run index (S05-08), the `outbox_events` pending index (S06-03), and the `workflow_runs_lease_until_idx` lease-recovery index (S07-02, ADR-011) on the lease column only — kept separate from the run business state.
 
 ---
 

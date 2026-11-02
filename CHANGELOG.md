@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workflow-run lease-recovery index (`S07-02`).** The durable-execution Sprint 7 lease model
+  (`ADR-011`) needs the recovery scheduler to find expired runs efficiently: a run whose
+  `lease_until` has passed and whose `lease_owner` still names a worker that stopped heartbeating,
+  re-claimed atomically. The three lease columns (`lease_owner`, `lease_until`, `lease_epoch`)
+  already exist on `workflow_runs` (`V3_3_6`, `S05-08`); `S07-02` adds the missing piece — an index
+  on `lease_until` (`V3_3_13__add_lease_until_index.sql`,
+  `workflow_runs_lease_until_idx`) that turns the recovery scan into an index range scan instead of
+  a full table scan. The index is on the lease column only, keeps the lease state separate from the
+  run's business state, and does not duplicate any constraint. **Docs:** updated the migration
+  integration suite (`MigrationsTest`: the ordered apply list now ends at `3.3.13`, plus a
+  `lease_recovery_index_exists` assertion) and `docs/architecture/database-conventions.md` (the
+  index set). **Verification: PARTIAL —** the migration applies in order and the index exists, but
+  the real-PostgreSQL suite (`MigrationsTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`)
+  could not be run in this session because the Docker daemon is not reachable; it is the intended
+  verifier (`./gradlew integrationTest`) and must pass before merge. `./gradlew check` (compile +
+  formatting + architecture + unit gates) is the offline gate run here. The pre-existing columns
+  mean this is a purely additive, forward-only schema change (`ADR-008`); **no** Java, contract,
+  dependency or module-boundary change.
+
 - **Local-skeleton tenant default recorded as a documented tenant-isolation bypass (`ADR-012`).**
   The `tenantId` the `workflowdefinition` (`WorkflowDefinitionController`) and `workflowexecution`
   (`WorkflowRunController`) REST controllers read from
@@ -56,8 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-run after re-claim and recorded in attempt history (`S07-06`/`S07-14`), never pretended to be a
   single execution. Fence lives in PostgreSQL (`lease_epoch`), not JVM state (invariant 5). This is
   the *decision*; the columns already exist (`V3_3_6__create_workflow_runs_and_steps.sql`, `S05-08`)
-  but the claim/heartbeat/recovery services (`S07-03`, `S07-04`, `S07-09`) and the expired-lease
-  index (`S07-02`) are not yet implemented, and the ADR records that split honestly. The domain
+  and the expired-lease index is now implemented (`S07-02`, `V3_3_13__add_lease_until_index.sql`),
+  but the claim/heartbeat/recovery services (`S07-03`, `S07-04`, `S07-09`) are not yet implemented,
+  and the ADR records that split honestly. The domain
   glossary §5 already canonicalizes this exact concept (`lease_owner`/`lease_until`/`lease_epoch`,
   heartbeat, recovery job), so `docs/domain-glossary.md` needs no change. **Docs:** the new
   [`docs/adr/ADR-011-workflow-run-lease.md`](docs/adr/ADR-011-workflow-run-lease.md); the ADR register
