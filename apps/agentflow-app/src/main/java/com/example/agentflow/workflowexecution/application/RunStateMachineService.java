@@ -30,9 +30,9 @@ import org.springframework.web.server.ResponseStatusException;
  *   <li><b>checks</b> the transition against the pure state machine ({@link
  *       WorkflowRunState#assertAllowed} / {@link WorkflowStepState#assertAllowed}); a forbidden
  *       {@code (from, to)} pair is a domain error surfaced as {@code 400};
- *   <li><b>applies</b> a conditional update (optimistic-lock {@code version} on the run, {@code
- *       lease_epoch} fence on the step) whose zero-rows outcome is a {@link ConflictException}
- *       surfaced as {@code 409};
+ *   <li><b>applies</b> a conditional update (optimistic-lock {@code version} AND the run's {@code
+ *       lease_epoch} fence on the run, {@code lease_epoch} fence on the step) whose zero-rows
+ *       outcome is a {@link ConflictException} surfaced as {@code 409};
  *   <li><b>appends</b> one {@code workflow_events} row (through the {@code messaging} module's
  *       {@link WorkflowEventService}, module-map edge 13) recording {@code prior=&gt;new} &mdash;
  *       the state change and the history row commit and roll back together (invariant 3 / {@code
@@ -69,8 +69,9 @@ public class RunStateMachineService {
    *
    * <p>Reads the run's current state through a tenant-scoped lookup (a cross-tenant id is a {@code
    * 404}), asserts {@code from -> to} with the domain gate (a forbidden pair is a {@code 400}),
-   * applies a conditional update guarded by the optimistic {@code version} (a stale row is a {@code
-   * 409}) and appends the transition fact in the same transaction.
+   * applies a conditional update guarded by the optimistic {@code version} AND the run's {@code
+   * lease_epoch} fence (a stale row or a moved lease &mdash; another worker re-claimed the run
+   * &mdash; is a {@code 409}) and appends the transition fact in the same transaction.
    *
    * @param tenantId the owning tenant, from the verified security context (invariant 1)
    * @param runId the run to move
@@ -81,7 +82,7 @@ public class RunStateMachineService {
    * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no run
    *     matches {@code (tenantId, runId)}, {@code 400} if {@code from -> to} is not an allowed edge
    *     or one state is {@code null}, {@code 409} if the conditional update matched no row (another
-   *     writer won the transition)
+   *     writer won the transition, or the run's {@code lease_epoch} fence moved after the read)
    */
   @Transactional
   public WorkflowRunState transitionRun(
@@ -97,7 +98,7 @@ public class RunStateMachineService {
 
     WorkflowRunState from = current.status();
     assertRunTransition(from, to);
-    applyRunTransition(runId, tenantId, from, current.version(), to);
+    applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
     appendRunEvent(tenantId, runId, from, to, eventType, actor);
     return to;
   }
@@ -173,13 +174,19 @@ public class RunStateMachineService {
 
   /**
    * Applies the guarded run update, converting the {@link ConflictException} a zero-rows
-   * conditional update throws into a permanent {@code 409} (another writer won the transition,
-   * invariant 4).
+   * conditional update throws into a permanent {@code 409} (the optimistic lock moved, the run's
+   * {@code lease_epoch} fence moved, or another writer won the transition &mdash; invariant 4 /
+   * ADR-011 fencing).
    */
   private void applyRunTransition(
-      UUID runId, UUID tenantId, WorkflowRunState from, int expectedVersion, WorkflowRunState to) {
+      UUID runId,
+      UUID tenantId,
+      WorkflowRunState from,
+      int expectedVersion,
+      int expectedLeaseEpoch,
+      WorkflowRunState to) {
     try {
-      runRepository.transition(runId, tenantId, from, expectedVersion, to);
+      runRepository.transition(runId, tenantId, from, expectedVersion, expectedLeaseEpoch, to);
     } catch (ConflictException e) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "run " + runId + " is out of date: " + e.getMessage());

@@ -111,10 +111,12 @@ is driven by an explicit event or command, never by an assignment.
   is `RUNNING`, and cannot be `FAILED` while a step can still be retried. The single
   transition service makes both consistent (`S05-11`).
 - **State changes through one service.** Every transition goes through the single
-  transition service — a conditional update (`AND version = :expectedVersion`,
-  optimistic lock → `409 Conflict`) plus one `workflow_events` row, in the same
-  transaction (`ADR-002`…`ADR-004`). A controller or Kafka listener never sets the
-  status directly (`S05-11`).
+  transition service — a conditional update (`AND status = :expectedState AND version =
+  :expectedVersion AND lease_epoch = :expectedLeaseEpoch` on the run write since `S07-05`,
+  `AND status = :expectedState AND lease_epoch = :expectedLeaseEpoch` on the step write) whose
+  zero-row outcome is a `409 Conflict` (optimistic lock / stale owner) plus one
+  `workflow_events` row, in the same transaction (`ADR-002`…`ADR-004`, `ADR-011`). A
+  controller or Kafka listener never sets the status directly (`S05-11`).
 - **Each transition is a durable fact.** A run/step transition appends a
   `workflow_events` row (append-only, `messaging`) and publishes through the outbox
   port (`ADR-004`). The transition history lets a run's state be replayed

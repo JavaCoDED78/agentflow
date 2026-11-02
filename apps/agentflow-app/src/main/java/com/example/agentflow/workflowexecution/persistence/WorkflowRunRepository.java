@@ -20,12 +20,18 @@ import org.springframework.stereotype.Repository;
  *
  * <p>This is the single write path for a run's state. Every read is tenant-filtered in the SQL
  * itself (invariant 1): a cross-tenant id is indistinguishable from a missing row. Every write is a
- * conditional update guarded by the current {@code status} AND the optimistic-lock {@code version}
- * (invariant 4): a zero-rows update &mdash; the run is gone, the tenant is wrong, the state no
- * longer matches the domain gate, or the {@code version} is stale because another writer won the
- * transition &mdash; is mapped to a {@link ConflictException} (HTTP 409), so two competing updates
- * never silently overwrite each other. The {@code version} is bumped inside the same statement
- * ({@code version = version + 1}).
+ * conditional update guarded by the current {@code status}, the optimistic-lock {@code version} AND
+ * the run's {@code lease_epoch} fence (invariant 4 / ADR-011): a zero-rows update &mdash; the run
+ * is gone, the tenant is wrong, the state no longer matches the domain gate, the {@code version} is
+ * stale, or the {@code lease_epoch} has moved (another worker re-claimed the run) &mdash; is mapped
+ * to a {@link ConflictException} (HTTP 409), so two competing updates never silently overwrite each
+ * other. The {@code version} is bumped inside the same statement ({@code version = version + 1}).
+ *
+ * <p>The run-level lease fence is the stale-owner guard (S07-05): the row must still hold the
+ * {@code lease_epoch} the caller read in the tenant-scoped {@link #findState} lookup, so a worker
+ * whose lease was re-taken by another worker &mdash; its epoch is now behind &mdash; matches zero
+ * rows and is refused instead of overwriting the new owner. This is the same fencing primitive the
+ * step write already uses (`WorkflowStepRunRepository`), now applied to the run write (ADR-011).
  *
  * <p>The bean is only registered when a {@link DataSource} exists
  * ({@code @ConditionalOnBean(DataSource.class)}), so the application still boots without a database
@@ -59,54 +65,62 @@ public class WorkflowRunRepository {
   public Optional<RunStateSnapshot> findState(UUID tenantId, UUID runId) {
     List<RunStateSnapshot> results =
         jdbc.query(
-            "SELECT status, version FROM " + TABLE + " WHERE id = ? AND tenant_id = ?",
+            "SELECT status, version, lease_epoch FROM " + TABLE + " WHERE id = ? AND tenant_id = ?",
             (rs, rowNum) ->
                 new RunStateSnapshot(
-                    WorkflowRunState.valueOf(rs.getString("status")), rs.getInt("version")),
+                    WorkflowRunState.valueOf(rs.getString("status")),
+                    rs.getInt("version"),
+                    rs.getInt("lease_epoch")),
             runId,
             tenantId);
     return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
   }
 
   /**
-   * Move a run to {@code next} in place, guarded by the current {@code status} AND the optimistic
-   * {@code version} so the call is a conditional update (invariant 4). A zero-rows update &mdash;
-   * the run is gone, the tenant is wrong, the state no longer matches the domain gate, or the
-   * {@code version} is stale (another writer changed the run since it was read) &mdash; is mapped
-   * to a {@link ConflictException} (409): one of two competing updates never silently overwrites
-   * the other. The {@code version} is bumped inside the same statement.
+   * Move a run to {@code next} in place, guarded by the current {@code status}, the optimistic
+   * {@code version} AND the current {@code lease_epoch} so the call is a conditional update
+   * (invariant 4 / ADR-011). A zero-rows update &mdash; the run is gone, the tenant is wrong, the
+   * state no longer matches the domain gate, the {@code version} is stale, or the {@code
+   * lease_epoch} fence has moved (another worker re-claimed the run) &mdash; is mapped to a {@link
+   * ConflictException} (409): one of two competing updates never silently overwrites the other. The
+   * {@code version} is bumped inside the same statement.
    *
-   * <p>The expected {@code tenantId}, {@code status} and {@code version} come from the snapshot a
-   * tenant-scoped {@link #findState} lookup returned (invariant 1), and are re-checked in the
-   * {@code WHERE}, so a cross-tenant or stale update is indistinguishable from a missing row.
+   * <p>The expected {@code tenantId}, {@code status}, {@code version} and {@code lease_epoch} come
+   * from the snapshot a tenant-scoped {@link #findState} lookup returned (invariant 1), and are
+   * re-checked in the {@code WHERE}, so a cross-tenant, stale or stale-epoch update is
+   * indistinguishable from a missing row (S07-05, the stale-owner guard).
    *
    * @param runId the run to move
    * @param tenantId the owning tenant (re-checked in the {@code WHERE})
    * @param expectedState the state the row must still be in for the update to apply (the domain
    *     gate's {@code from} state)
    * @param expectedVersion the optimistic-lock counter the row must still hold
+   * @param expectedLeaseEpoch the run's {@code lease_epoch} the row must still hold (invariant 5);
+   *     a mismatch means the run was re-claimed by another worker and this write is refused
    * @param next the state to move the run to
    * @throws ConflictException if zero rows match (missing / cross-tenant / wrong state / stale
-   *     version)
+   *     version / stale lease epoch)
    */
   public void transition(
       UUID runId,
       UUID tenantId,
       WorkflowRunState expectedState,
       int expectedVersion,
+      int expectedLeaseEpoch,
       WorkflowRunState next) {
     int affected =
         jdbc.update(
             "UPDATE "
                 + TABLE
                 + " SET status = ?, version = version + 1, updated_at = now()"
-                + " WHERE id = ? AND tenant_id = ? AND status = ? AND version = ?",
+                + " WHERE id = ? AND tenant_id = ? AND status = ? AND version = ? AND lease_epoch = ?",
             ps -> {
               ps.setString(1, next.name());
               ps.setObject(2, runId);
               ps.setObject(3, tenantId);
               ps.setString(4, expectedState.name());
               ps.setInt(5, expectedVersion);
+              ps.setInt(6, expectedLeaseEpoch);
             });
     if (affected == 0) {
       throw new ConflictException(
@@ -114,6 +128,8 @@ public class WorkflowRunRepository {
               + runId
               + " is out of date (optimistic version "
               + expectedVersion
+              + ", lease epoch "
+              + expectedLeaseEpoch
               + ") or no longer in state '"
               + expectedState
               + "'");
