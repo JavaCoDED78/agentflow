@@ -1,11 +1,12 @@
-# S3-compatible object storage: Garage for the local stack
+# ADR-013. S3-compatible object storage: Garage for the local stack
 
 - **Status:** Accepted
 - **Date:** 2026-10-18
 - **Task:** S01-15 (Compose MinIO / Keycloak)
-- **Supersedes:** the plan's reference to "MinIO (S3)" as the local object store
-  (ADR-001..007 in the plan are reserved core ADRs; this infra decision predates
-  the formal ADR register introduced in S02-16 and will be folded in then).
+- **Supersedes:** the plan's reference to "MinIO (S3)" as the local object store.
+  ADR-001…007 in the plan are reserved core ADRs; this infra decision predates
+  the formal ADR register (introduced in S02-16) and is now folded into it as
+  `ADR-013`.
 
 ## Context
 

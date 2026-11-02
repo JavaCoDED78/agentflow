@@ -1,6 +1,6 @@
 # ADR-010. Audit dependency from workflowdefinition to audit
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-25
 - **Task:** S04-12 (Sprint 4 — audit on workflow definition mutations)
 - **Supersedes:** none

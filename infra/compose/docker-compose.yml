@@ -110,7 +110,7 @@ services:
   # outside PostgreSQL (S01-15). Runs in the `core` profile alongside PostgreSQL
   # and Redis. Free and open source (AGPL-3.0), unlike the upstream MinIO AIStor
   # whose pre-built images require a (single-node) SUBNET license to unlock S3 —
-  # see docs/adr/s3-object-storage-garage.md. The compose file auto-bootstraps a
+  # see docs/adr/ADR-013-s3-object-storage-garage.md. The compose file auto-bootstraps a
   # single-node cluster on first start:
   #   --single-node     applies the cluster layout automatically (no manual
   #                     `layout assign`/`layout apply`)

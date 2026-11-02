@@ -25,7 +25,10 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-007`](ADR-007-tenant-isolation.md) | Tenant isolation by default | 2026-10-25 | S04-07 | Accepted |
 | [`ADR-008`](ADR-008-database-migrations.md) | Single migration tool: Flyway | 2026-10-21 | S03-01 | Accepted |
 | [`ADR-009`](ADR-009-single-persistence-spring-data-jdbc.md) | Single persistence approach — Spring Data JDBC | 2026-10-22 | S03-08 | Accepted |
-| — | S3-compatible object storage: Garage for the local stack | 2026-10-18 | S01-15 | Accepted |
+| [`ADR-010`](ADR-010-audit-workflow-definition-mutations.md) | Audit dependency from workflowdefinition to audit | 2026-10-25 | S04-12 | Accepted |
+| [`ADR-011`](ADR-011-workflow-run-lease.md) | Workflow run lease, heartbeat and recovery (fencing) | 2026-11-02 | S07-01 | Accepted |
+| [`ADR-012`](ADR-012-local-tenant-default-bypass.md) | The local-skeleton tenant default is a documented, removable tenant-isolation bypass | 2026-11-02 | S03-13 / S03-14 / S04-05 / S04-10 | Accepted |
+| [`ADR-013`](ADR-013-s3-object-storage-garage.md) | S3-compatible object storage: Garage for the local stack | 2026-10-18 | S01-15 | Accepted |
 
 ## Statuses
 
@@ -105,6 +108,7 @@ New ADRs start from [`000-template.md`](000-template.md): the header metadata
 is needed*, and the copy-paste register steps. See the pitfall in `docs/adr/`
 about one ADR per referenced number.
 
-Scaffolded in **S01-03**. The first core ADR (`ADR-001 Modular monolith first`)
-is added in **S02-05**; the remaining core ADRs (consistency/outbox, at-least-once,
-tenant isolation, …) follow in **S02-06 – S02-08**.
+Scaffolded in **S01-03**. `ADR-001 (Modular monolith first)` is added in **S02-05**; the
+consistency/core ADRs (`ADR-002`…`ADR-007`) follow in **S02-06 – S04-07**, the migration and
+persistence ADRs (`ADR-008`…`ADR-010`) in **S03-01 – S04-12**, and the durable-execution lease
+ADR (`ADR-011`) in **S07-01**.

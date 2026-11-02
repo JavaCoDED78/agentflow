@@ -1,10 +1,5 @@
 # ADR-008. Single migration tool: Flyway
 
-> Copy this file to `docs/adr/ADR-NNN-<slug>.md`, fill every placeholder, then delete
-> this heading. The real ADRs (`ADR-001`…`ADR-007` in the plan §3) are the reference
-> to match. Every section is mandatory; delete a section only if it genuinely has no
-> content and say why on one line.
-
 - **Status:** Accepted
 - **Date:** 2026-10-21
 - **Task:** S03-01

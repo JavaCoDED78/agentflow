@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local-skeleton tenant default recorded as a documented tenant-isolation bypass (`ADR-012`).**
+  The `tenantId` the `workflowdefinition` (`WorkflowDefinitionController`) and `workflowexecution`
+  (`WorkflowRunController`) REST controllers read from
+  `@Value("${agentflow.local.tenant-id:00000000-0000-0000-0000-000000000000}")` is a **temporary,
+  documented tenant-isolation bypass**: the tenant comes from configuration, not from the verified
+  security context (invariant 1 / `ADR-007`), so it does not yet satisfy the invariant — but it is
+  *not* a body/query spoof (a caller cannot supply another tenant's `tenantId`; the read is still
+  `(tenant_id, id)`-scoped in SQL), and it is the zero UUID by default so a misconfigured local
+  stack fails closed on an unknown tenant. It was introduced in `S03-13`/`S03-14` because the
+  `workflowdefinition` → `identity` dependency edge did not yet exist (a new module edge, an ADR);
+  the permissive `test`-profile auth bypass removed in `S04-10` is a **separate** concern. The ADR
+  makes the bypass visible, scoped it to local/dev, and **mandates removal** as soon as that edge
+  lands: both controllers resolve the tenant from the verified `TenantContext` (`identity`) and the
+  `@Value` defaults are deleted — that edge is its own ADR, which supersedes `ADR-012`. **Docs:** the
+  new [`docs/adr/ADR-012-local-tenant-default-bypass.md`](docs/adr/ADR-012-local-tenant-default-bypass.md);
+  the ADR register ([`docs/adr/README.md`](docs/adr/README.md), `ADR-012` row added). **Verification:
+  documentation-only — there is no `./gradlew check` gate for a docs change.** Link integrity
+  verified: `git diff --check` passes and every relative in-document link resolves to a present,
+  on-topic destination (the cited `ADR-007`, `S03-13`/`S03-14`/`S04-05`/`S04-10`, the `TenantContext`,
+  the controller Javadoc text, and the successor edge-ADR follow-up). The bypass is confirmed live in
+  source (`WorkflowDefinitionController`, `WorkflowRunController`) and no `workflowdefinition` →
+  `identity` import edge exists yet. **No** Java, contract, schema, migration, dependency, or
+  module-boundary change — the ADR records the existing code and tracks the planned fix; it changes
+  nothing.
+
+- **Workflow-run lease, heartbeat and recovery model (`S07-01`).** The durable-execution Sprint 7
+  gets its lease decision recorded as [`ADR-011`](docs/adr/ADR-011-workflow-run-lease.md): a single
+  run has one live lease held by the worker instance that atomically claims it, expressed in three
+  columns on `workflow_runs` — `lease_owner` (the worker instance, set on claim, cleared at a
+  terminal state or a `HUMAN_APPROVAL` pause), `lease_until` (a `timestamptz` expiry, computed and
+  extended through the injected `Clock`, never `System.nanoTime()`), and `lease_epoch` (a monotonic
+  fencing counter, already present in `V3_3_6`, bumped on every re-claim). Only the **current owner**
+  (matching `lease_owner` **and** `lease_epoch`) may persist progress — a stale worker's write hits a
+  moved `lease_epoch`, matches zero rows and becomes a `409 conflict` (the same mapping
+  [`ADR-009`](docs/adr/ADR-009-single-persistence-spring-data-jdbc.md) documents, and the behaviour
+  already enforced on step writes by `workflowexecution.persistence.WorkflowStepRunRepository`); a
+  **stale owner is detected** by the recovery scan when `lease_until < now()` and `lease_owner` still
+  names a worker that stopped heartbeating, and re-claimed atomically (bumping the epoch so it can no
+  longer write). The lease/fencing parameters are configuration (`AgentFlowProperties.Worker.Lease`),
+  not magic numbers: `duration-seconds = 30`, `heartbeat-interval-seconds = 10` (≈ `duration / 3`, so
+  a single lost heartbeat never expires a healthy lease) and `recovery-interval-seconds = 5`, chosen
+  so `duration + recovery ≤ 60` and the `S07-15` "resume ≤ 60 s after expiry" holds in test config.
+  The decision is **at-least-once, never exactly-once** (`ADR-003`, invariant 6): the model makes
+  ownership explicit and crash recovery possible, but a step whose external call crashed mid-flight is
+  re-run after re-claim and recorded in attempt history (`S07-06`/`S07-14`), never pretended to be a
+  single execution. Fence lives in PostgreSQL (`lease_epoch`), not JVM state (invariant 5). This is
+  the *decision*; the columns already exist (`V3_3_6__create_workflow_runs_and_steps.sql`, `S05-08`)
+  but the claim/heartbeat/recovery services (`S07-03`, `S07-04`, `S07-09`) and the expired-lease
+  index (`S07-02`) are not yet implemented, and the ADR records that split honestly. The domain
+  glossary §5 already canonicalizes this exact concept (`lease_owner`/`lease_until`/`lease_epoch`,
+  heartbeat, recovery job), so `docs/domain-glossary.md` needs no change. **Docs:** the new
+  [`docs/adr/ADR-011-workflow-run-lease.md`](docs/adr/ADR-011-workflow-run-lease.md); the ADR register
+  ([`docs/adr/README.md`](docs/adr/README.md), which was also missing the `ADR-010` row, now added)
+  and the [`docs/README.md`](docs/README.md) index tree (pointer to the new ADR, alongside the
+  `⚠ planned (S07-17)` `durable-execution.md` line). **Verification: documentation-only — there is no
+  `./gradlew check` gate for a docs change.** Link integrity verified: `git diff --check` passes and
+  every relative in-document link in the new and edited files resolves to a present, on-topic
+  destination (the cited ADR ids, `V3_3_6`, `WorkflowStepRunRepository`, `AgentFlowProperties.Worker.Lease`,
+  the glossary §5 entry and the `S07-02`…`S07-09`/`S07-15`/`S07-17` follow-ups all resolve and are
+  on-topic). **No** Java, contract, schema, migration or dependency change.
+
 - **Event catalog and delivery guarantees (`S06-16`).** The event family now has a single
   human-readable catalog
   [`docs/architecture/events/README.md`](docs/architecture/events/README.md) — the human counterpart
@@ -1402,8 +1463,8 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   management, ADR register, threat model), marks the ones that do not yet exist
   with a `⚠ planned` badge so the index never carries a broken link, and records
   the current architectural constraints (ADR-001…004, tenant isolation, untrusted
-  planner, error classification, build integrity) and the list of deferred/open
-  decisions (base package, execution SPI — now resolved in the module map, owners
+  planner (`ADR-006`), error classification, build integrity) and the list of
+  deferred/open decisions (base package, execution SPI — now resolved in the module map, owners
   of unnamed data/logic, permission catalogue, persistence approach + migration
   tool). The module names and external systems in these documents are verified
   against the build: the twelve modules plus `common` live under
@@ -1764,7 +1825,7 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   `.env`) must match the Garage root key. Verified: auto-bootstrap, an S3
   round-trip (list/put/get, payloads match by SHA-256) and S3 working again after
   a container restart with the same credentials. The trade-off is recorded in
-  `docs/adr/s3-object-storage-garage.md`.
+  `docs/adr/ADR-013-s3-object-storage-garage.md`.
 
 - **Compose profiles (S01-16).** `infra/compose/docker-compose.yml` now groups
   every service into six profiles — `core`, `messaging`, `identity`, `ai-local`,
