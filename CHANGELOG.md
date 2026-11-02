@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persist the attempt lifecycle so the crash window is diagnosable (S07-06).** The
+  `workflow_step_runs` table gains an `attempt_started_at` marker: it is set to `now()` when the
+  step enters `RUNNING` (recorded before the external side effect) and cleared to `NULL` when the
+  attempt reaches a terminal outcome (`SUCCEEDED`/`FAILED`/`CANCELLED`). A step row still `RUNNING`
+  with a non-null marker but no terminal event after the `RUNNING` transition is the crash window —
+  the worker died mid-attempt, so the outcome is ambiguous and the attempt is re-claimed, never
+  assumed to have failed. `attempt_started_at` is nullable, which distinguishes a step that has not
+  begun an attempt (`NULL`) from an in-flight attempt with an unknown outcome (`RUNNING` + set
+  marker).
+- **`workflow_run` transition writes the attempt marker atomically (S07-06).** The step-run
+  repository's single guarded write (`status` + `lease_epoch`) now also manages
+  `attempt_started_at` in one SQL statement: a `CASE` on two bound booleans sets `now()` on the
+  `RUNNING` entry, clears `NULL` on the terminal transition, and leaves the marker unchanged on a
+  working transition (`RUNNING → RETRY_WAIT`, `RUNNING → WAITING_FOR_APPROVAL`).
+
+#### What changed
+- Migration `V3_3_14__add_step_attempt_timestamps.sql` (`owner: workflowexecution`) adds the
+  nullable `workflow_step_runs.attempt_started_at TIMESTAMPTZ` with a comment attributing it to
+  S07-06 / `workflowexecution` and invariant 6 (`ADR-011`).
+- `workflow_step_runs.transition` in `WorkflowStepRunRepository` manages `attempt_started_at` in
+  the same transactional `UPDATE` as `status`; the `attempt` number (the attempt identity, bumped
+  on retry) is unchanged.
+- Unit tests assert the marker binding for begin (`PENDING → READY → RUNNING`, `RETRY_WAIT →
+  RUNNING`), clear (`RUNNING → SUCCEEDED/FAILED/CANCELLED`), keep (`RUNNING → RETRY_WAIT`,
+  `RUNNING → WAITING_FOR_APPROVAL`), and never-set (`PENDING → READY`) transitions.
+- Integration test asserts the column exists, is nullable, and carries its S07-06 comment.
+
+#### Why
+Invariant 6 / `ADR-011` requires that an external call is not exactly-once and that a worker crash
+mid-attempt leaves a diagnosable trace rather than an assumed failure. The `attempt` identity
+(`S07-14`) says *which* attempt ran; `attempt_started_at` says *when* it began, so the boundary
+between "attempt started" and "outcome recorded" is observable and an in-flight attempt is
+re-claimed rather than silently failed.
+
+#### Verification
+- `:apps:agentflow-app:check` (unit, architecture, formatting) — green; `gradlew spotlessApply`
+  applied.
+- `:apps:agentflow-app:integrationTest --tests com.example.agentflow.MigrationsTest` — green (real
+  PostgreSQL via Testcontainers, 15 tests).
+- `:apps:agentflow-app:test --tests com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepositoryTest` — green.
+
+#### Tests
+- `WorkflowStepRunRepositoryTest`: added `transition_into_running_records_the_attempt_begin_marker`,
+  `transition_from_retry_wait_to_running_restarts_the_attempt_marker`, `transition_to_success_clears_the_attempt_marker`,
+  `transition_to_failed_clears_the_attempt_marker`, `transition_to_cancelled_clears_the_attempt_marker`,
+  `transition_running_to_retry_wait_keeps_the_attempt_marker`, `transition_running_to_waiting_for_approval_keeps_the_attempt_marker`,
+  `transition_from_pending_never_sets_the_attempt_marker`, and the `assertMarker` helper.
+- `MigrationsTest`: added `step_attempt_marker_is_nullable_and_attributed` (`workflow_step_runs.attempt_started_at` nullable + `S07-06` comment);
+  `"3.3.14"` added to the ordered-applied list.
+
+#### Docs
+- `docs/architecture/step-state-machine.md` documents the attempt lifecycle and the crash window
+  in §3 design notes and §5 step-state aggregation.
+
+#### Schema / contract
+- Additive only: one nullable column. No change to the API, the `WorkflowStepState` enum, event
+  shapes, or the module boundary. No new dependency.
+
 - **Run-level write fenced by `lease_epoch` (S07-05).** The ADR-011 lease model now fences the run's *write*, not just the step's — a stale owner can no longer persist a result after its run has been re-claimed by another worker. Previously the run write (`WorkflowRunRepository#transition`) was guarded only by the optimistic-lock `version` (`AND status = ? AND version = ?`); `S07-05` adds the same fencing primitive the step write already used (`WorkflowStepRunRepository`), checking the run's `lease_epoch`: the new SQL is `... WHERE id = ? AND tenant_id = ? AND status = ? AND version = ? AND lease_epoch = ?`, and `transition` now takes an `expectedLeaseEpoch` argument. The single transition service (`RunStateMachineService`) reads the current snapshot through the tenant-scoped `WorkflowRunRepository#findState` (which now also selects `lease_epoch`) and echoes that epoch back on the write, so the read and the fence close on the same value. A zero-row update — the run is gone, belongs to another tenant, is no longer in the expected state, the `version` is stale, or the `lease_epoch` moved because another worker re-claimed the run — is mapped to `ConflictException` (HTTP 409) instead of silently overwriting the new owner. This satisfies the S07-05 acceptance criterion: **worker A cannot save a result after claim by worker B.** **Tests:** `WorkflowRunRepositoryTest` asserts the 6th bind (`lease_epoch`); `RunStateMachineServiceTest` and `TransitionTableServiceTest` were updated to the 6-arg signature (the stale-owner guard now flows through the service, so the happy-path verify checks `transition(runId, tenant, from, version, leaseEpoch, to)`); the DB-free conflict test still passes a stale epoch. A new real-PostgreSQL integration test (`WorkflowTransitionIntegrationTest#run_transition_with_a_stale_lease_epoch_is_a_conflict`) bumps the seeded run's `lease_epoch` and asserts the second worker's update matches zero rows and becomes a `409` while the run stays in its state — the mirror of the existing step-level `step_transition_with_a_stale_lease_epoch_is_a_conflict`. **Docs:** updated [`docs/adr/ADR-011-workflow-run-lease.md`](docs/adr/ADR-011-workflow-run-lease.md) (both the run and step writes now fence on `lease_epoch`; a run row added to the stale-owner table), `docs/architecture/run-state-machine.md` §4 (the conditional-update predicate), and `docs/architecture/module-api.md` (the run-write fence noted; the release job's `S07-05` reference was a stale attribution and is corrected — `S07-05` is this fence, not the release job). **Verification — all green:** `:apps:agentflow-app:compileTestJava`, `:compileIntegrationTestJava`, the unit suite (`workflowexecution`, 104 tests, 0 failures) and the transition integration suite (12 tests, 0 failures, real PostgreSQL via Testcontainers `pgvector/pgvector:0.8.6-pg18`). Additive to the schema (the `lease_epoch` column pre-exists, `V3_3_6`); it changes the repository contract (one more guarded parameter), so the new argument must be threaded by every caller.
 
 - **Run-level lease heartbeat (`S07-04`).** The ADR-011 lease model — one live lease per run, fenced by a monotonic `lease_epoch` — now renews itself in code so a running worker is never mistaken for a crashed owner and its run is not reclaimed prematurely. The new `RunHeartbeatService` (`workflowexecution.application`, `@Service`) extends the run's `lease_until` one lifetime per call, computed through the injected `Clock` (invariant 10 — never the system clock in domain/application code) as `lease_until = clock.instant() + duration-seconds`, and performs the renewal through the new `WorkflowRunRepository#heartbeat`: a single conditional `UPDATE workflow_runs SET lease_until = ? WHERE id = ? AND tenant_id = ? AND lease_owner = ? AND lease_epoch = ?`. The `WHERE` is the fence (invariant 5): the lease is renewed only while the run still belongs to the tenant, is still owned by this worker, and still holds the `lease_epoch` the claim returned — so **an old owner cannot renew its lease after it is re-claimed** (the S07-04 acceptance criterion; the returned row count is `0` = rejected). A heartbeat never bumps the epoch (only the claim does) and never clears the lease. Extension stops per the cancel policy automatically: once a run reaches a state that releases the lease (a `HUMAN_APPROVAL` pause or a cancelled run, per `step-state-machine.md` §10 / `run-state-machine.md`) its `lease_owner` is no longer this worker, so the fenced heartbeat matches zero rows and stops renewing. A rejected heartbeat is counted (`RunHeartbeatService#failedHeartbeats()`) — a per-process counter, carrying no `tenantId`/`runId` (invariant 9), for surfacing as a metric in the S07-09 recovery task. The bean wires only when a `WorkflowRunRepository` (a `@ConditionalOnBean(DataSource.class)` repository) is present, reporting `503`/throwing otherwise when no database is configured (S01-02), matching `RunLeaseService` and the transition service. **Tests:** the DB-free `RunHeartbeatServiceTest` (4 — the clock-driven renewed `lease_until`, `extended` only on a matching owner+epoch, rejection + failure counting when the run was re-claimed, and `503` when no database) and `WorkflowRunRepositoryHeartbeatTest` (3 — the fenced `WHERE`, the binds, and the zero-row rejection) through a mocked `JdbcTemplate`; the real-PostgreSQL acceptance suite `RunLeaseHeartbeatIT` (`src/integrationTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`): `old_owner_cannot_extend_after_reclaim` (claim → extend → re-claim bumps the epoch → stale owner's heartbeat matches 0 rows, new owner's extends) and `live_owner_heartbeat_extends_until_without_bumping_the_epoch`. **Verification:** `./gradlew check` is green (unit + architecture + spotless + OpenAPI contract gates, 413 unit tests + 6 architecture tests, 0 failures) and `./gradlew :apps:agentflow-app:integrationTest --tests *RunLeaseHeartbeatIT*` is green (2/2, real PostgreSQL). **No** migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); **no** contract, API, schema, dependency or module-boundary change. **Docs:** [`docs/architecture/module-api.md`](docs/architecture/module-api.md) now lists `RunLeaseService` (claim) and the new `RunHeartbeatService` (heartbeat) as the `workflowexecution` public lease services (correcting the earlier `LeaseService` placeholder that also bundled the not-yet-implemented release/recovery); [`docs/adr/ADR-011-workflow-run-lease.md`](docs/adr/ADR-011-workflow-run-lease.md) already fixes the heartbeat model and `docs/domain-glossary.md` §5 already canonicalizes the lease vocabulary; this entry records the implementation.

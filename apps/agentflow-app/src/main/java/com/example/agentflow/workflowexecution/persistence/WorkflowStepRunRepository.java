@@ -82,6 +82,13 @@ public class WorkflowStepRunRepository {
    * tenant_id} is re-checked in the {@code JOIN WHERE}, so a cross-tenant update is
    * indistinguishable from a missing row.
    *
+   * <p>The {@code attempt_started_at} marker is managed by the same write (invariant 6 / ADR-011):
+   * it is set to {@code now()} when the step enters {@code RUNNING} (the attempt begins, recorded
+   * before the external side effect) and cleared to {@code NULL} when the attempt reaches a
+   * terminal outcome. A row still {@code RUNNING} with a non-null marker but no terminal event
+   * after the "attempt started" transition is the crash window, so the outcome is diagnosable
+   * rather than assumed.
+   *
    * @param runId the run the step belongs to
    * @param tenantId the owning tenant (matched against the parent run in the {@code WHERE})
    * @param stepKey the graph node the step runs
@@ -104,16 +111,22 @@ public class WorkflowStepRunRepository {
             "UPDATE "
                 + TABLE
                 + " s SET status = ?, updated_at = now()"
+                + " , attempt_started_at = CASE WHEN ? THEN now() WHEN ? THEN NULL ELSE attempt_started_at END"
                 + " FROM workflow_runs r"
                 + " WHERE s.run_id = r.id AND r.tenant_id = ? AND s.run_id = ?"
                 + " AND s.step_key = ? AND s.status = ? AND s.lease_epoch = ?",
             ps -> {
+              boolean beginAttempt = next == WorkflowStepState.RUNNING;
+              boolean completeAttempt =
+                  expectedState == WorkflowStepState.RUNNING && next.isTerminal();
               ps.setString(1, next.name());
-              ps.setObject(2, tenantId);
-              ps.setObject(3, runId);
-              ps.setString(4, stepKey);
-              ps.setString(5, expectedState.name());
-              ps.setInt(6, expectedLeaseEpoch);
+              ps.setBoolean(2, beginAttempt);
+              ps.setBoolean(3, completeAttempt);
+              ps.setObject(4, tenantId);
+              ps.setObject(5, runId);
+              ps.setString(6, stepKey);
+              ps.setString(7, expectedState.name());
+              ps.setInt(8, expectedLeaseEpoch);
             });
     if (affected == 0) {
       throw new ConflictException(
