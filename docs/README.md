@@ -44,7 +44,7 @@ docs/
 │   ├── ADR-009-single-persistence-spring-data-jdbc.md  ← single persistence: Spring Data JDBC (S03-08)
 │   ├── ADR-010-audit-workflow-definition-mutations.md  ← audit on definition mutations (S04-12)
 │   ├── ADR-011-workflow-run-lease.md             ← workflow run lease, heartbeat, fencing, recovery (S07-01)
-│   └── s3-object-storage-garage.md    ← first ADR, unnumbered (S01-15)
+│   └── ADR-013-s3-object-storage-garage.md  ← S3 object storage: Garage for the local stack (S01-15)
 ├── architecture/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
 │   ├── dependency-management.md       ← version catalog / BOM policy (S01-06, S01-08)

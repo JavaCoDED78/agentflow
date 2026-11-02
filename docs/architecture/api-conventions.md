@@ -50,7 +50,9 @@ reach this API only through the HTTP contract — never by importing the control
   is a temporary local-skeleton tenant-isolation bypass left as a follow-up —
   threading the tenant from the verified context needs a new `workflowdefinition`
   → `identity` edge (an ADR), so it was not removed by S04-10 (which removed only
-  the permissive mock-auth chain) but is tracked for a later tenant-isolation task.
+  the permissive mock-auth chain). The bypass is recorded as
+  [`ADR-012`](../adr/ADR-012-local-tenant-default-bypass.md), which also mandates
+  its removal once that edge lands.
 - **Content type.** JSON (`application/json`), `camelCase` API fields.
 
 ---

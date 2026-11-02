@@ -27,7 +27,8 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-009`](ADR-009-single-persistence-spring-data-jdbc.md) | Single persistence approach — Spring Data JDBC | 2026-10-22 | S03-08 | Accepted |
 | [`ADR-010`](ADR-010-audit-workflow-definition-mutations.md) | Audit dependency from workflowdefinition to audit | 2026-10-25 | S04-12 | Accepted |
 | [`ADR-011`](ADR-011-workflow-run-lease.md) | Workflow run lease, heartbeat and recovery (fencing) | 2026-11-02 | S07-01 | Accepted |
-| — | S3-compatible object storage: Garage for the local stack | 2026-10-18 | S01-15 | Accepted |
+| [`ADR-012`](ADR-012-local-tenant-default-bypass.md) | The local-skeleton tenant default is a documented, removable tenant-isolation bypass | 2026-11-02 | S03-13 / S03-14 / S04-05 / S04-10 | Accepted |
+| [`ADR-013`](ADR-013-s3-object-storage-garage.md) | S3-compatible object storage: Garage for the local stack | 2026-10-18 | S01-15 | Accepted |
 
 ## Statuses
 

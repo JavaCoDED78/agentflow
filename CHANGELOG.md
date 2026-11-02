@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local-skeleton tenant default recorded as a documented tenant-isolation bypass (`ADR-012`).**
+  The `tenantId` the `workflowdefinition` (`WorkflowDefinitionController`) and `workflowexecution`
+  (`WorkflowRunController`) REST controllers read from
+  `@Value("${agentflow.local.tenant-id:00000000-0000-0000-0000-000000000000}")` is a **temporary,
+  documented tenant-isolation bypass**: the tenant comes from configuration, not from the verified
+  security context (invariant 1 / `ADR-007`), so it does not yet satisfy the invariant — but it is
+  *not* a body/query spoof (a caller cannot supply another tenant's `tenantId`; the read is still
+  `(tenant_id, id)`-scoped in SQL), and it is the zero UUID by default so a misconfigured local
+  stack fails closed on an unknown tenant. It was introduced in `S03-13`/`S03-14` because the
+  `workflowdefinition` → `identity` dependency edge did not yet exist (a new module edge, an ADR);
+  the permissive `test`-profile auth bypass removed in `S04-10` is a **separate** concern. The ADR
+  makes the bypass visible, scoped it to local/dev, and **mandates removal** as soon as that edge
+  lands: both controllers resolve the tenant from the verified `TenantContext` (`identity`) and the
+  `@Value` defaults are deleted — that edge is its own ADR, which supersedes `ADR-012`. **Docs:** the
+  new [`docs/adr/ADR-012-local-tenant-default-bypass.md`](docs/adr/ADR-012-local-tenant-default-bypass.md);
+  the ADR register ([`docs/adr/README.md`](docs/adr/README.md), `ADR-012` row added). **Verification:
+  documentation-only — there is no `./gradlew check` gate for a docs change.** Link integrity
+  verified: `git diff --check` passes and every relative in-document link resolves to a present,
+  on-topic destination (the cited `ADR-007`, `S03-13`/`S03-14`/`S04-05`/`S04-10`, the `TenantContext`,
+  the controller Javadoc text, and the successor edge-ADR follow-up). The bypass is confirmed live in
+  source (`WorkflowDefinitionController`, `WorkflowRunController`) and no `workflowdefinition` →
+  `identity` import edge exists yet. **No** Java, contract, schema, migration, dependency, or
+  module-boundary change — the ADR records the existing code and tracks the planned fix; it changes
+  nothing.
+
 - **Workflow-run lease, heartbeat and recovery model (`S07-01`).** The durable-execution Sprint 7
   gets its lease decision recorded as [`ADR-011`](docs/adr/ADR-011-workflow-run-lease.md): a single
   run has one live lease held by the worker instance that atomically claims it, expressed in three
@@ -1438,8 +1463,8 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   management, ADR register, threat model), marks the ones that do not yet exist
   with a `⚠ planned` badge so the index never carries a broken link, and records
   the current architectural constraints (ADR-001…004, tenant isolation, untrusted
-  planner, error classification, build integrity) and the list of deferred/open
-  decisions (base package, execution SPI — now resolved in the module map, owners
+  planner (`ADR-006`), error classification, build integrity) and the list of
+  deferred/open decisions (base package, execution SPI — now resolved in the module map, owners
   of unnamed data/logic, permission catalogue, persistence approach + migration
   tool). The module names and external systems in these documents are verified
   against the build: the twelve modules plus `common` live under
@@ -1800,7 +1825,7 @@ consumer on the same network reads it back (`LOG-END-OFFSET=1`,
   `.env`) must match the Garage root key. Verified: auto-bootstrap, an S3
   round-trip (list/put/get, payloads match by SHA-256) and S3 working again after
   a container restart with the same credentials. The trade-off is recorded in
-  `docs/adr/s3-object-storage-garage.md`.
+  `docs/adr/ADR-013-s3-object-storage-garage.md`.
 
 - **Compose profiles (S01-16).** `infra/compose/docker-compose.yml` now groups
   every service into six profiles — `core`, `messaging`, `identity`, `ai-local`,

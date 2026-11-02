@@ -19,7 +19,7 @@ of the box. The service auto-bootstraps a single-node cluster on first start
 (`--single-node` applies the cluster layout, `--default-bucket` creates the
 `agentflow` bucket and a default S3 key from the environment); the layout,
 bucket and key persist in the metadata/data volumes across restarts. See
-`docs/adr/s3-object-storage-garage.md`. The S3 API is on `:3900` (configurable
+`docs/adr/ADR-013-s3-object-storage-garage.md`. The S3 API is on `:3900` (configurable
 via `GARAGE_S3_API_PORT` in a local `.env`). The RPC secret is injected via
 `GARAGE_RPC_SECRET` (never committed); the app's S3 client
 (`minio.access-key` / `minio.secret-key`) must match the Garage root key set
