@@ -73,7 +73,12 @@ import tools.jackson.databind.ObjectMapper;
  * rejections are attributed to the real reasons (signature/expiry/issuer/audience) rather than to
  * an unreachable Keycloak.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    // Honor the RANDOM_PORT intent past HttpServerConfiguration, which otherwise re-forces
+    // agentflow.http.port (8080 on Windows this port is OS-reserved -> WAEACCES on bind).
+    // 0 makes the embedded server bind a free ephemeral port regardless of the OS port map.
+    properties = "agentflow.http.port=0")
 @ActiveProfiles("secured-test")
 class SecurityFilterChainTest {
 

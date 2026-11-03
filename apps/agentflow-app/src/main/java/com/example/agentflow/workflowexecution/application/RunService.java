@@ -7,6 +7,7 @@ import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.persistence.IdempotentRunView;
+import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -152,6 +153,34 @@ public class RunService {
       }
       throw duplicate;
     }
+  }
+
+  /**
+   * Read a tenant's run status — the {@code GET /runs/{runId}} API (get run, S07-08).
+   *
+   * <p>Returns the run's persisted status snapshot as a {@link RunDto}: id, the pinned version, the
+   * current {@code status}, the execution {@code attempt} and the {@code created_at} time. The run
+   * is loaded through the tenant-scoped {@link WorkflowRunRepository#findRun} lookup (invariant 1):
+   * a run id of another tenant is indistinguishable from a missing run, so it is a {@code 404},
+   * never a leak.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param runId the run to read
+   * @return the run status snapshot
+   * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
+   *     {@code 404} when no run matches {@code (tenant_id, runId)}
+   */
+  public RunDto getRun(UUID tenantId, UUID runId) {
+    requireRepository(runRepository);
+    RunView run =
+        runRepository
+            .findRun(tenantId, runId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
+    return new RunDto(
+        run.runId(), run.workflowVersionId(), run.status().name(), run.attempt(), run.createdAt());
   }
 
   /**

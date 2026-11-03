@@ -255,6 +255,41 @@ public class WorkflowVersionService {
     return WorkflowVersionDto.from(version, codec);
   }
 
+  /**
+   * Loads the pinned, typed execution graph of a version (S07-08, the worker event loop). The
+   * worker reads the pinned version of the run it owns through {@link
+   * WorkflowRunRepository#findRun} and then calls this with that version id to get the {@link
+   * WorkflowGraph} it schedules: the ordered {@link
+   * com.example.agentflow.workflowdefinition.domain.WorkflowNode} list and the {@link
+   * com.example.agentflow.workflowdefinition.domain.WorkflowEdge} execution-order edges.
+   *
+   * <p>The graph is read tenant-scoped (invariant 1): the {@code get} is filtered by the run's
+   * tenant, so a cross-tenant version id is indistinguishable from a missing one and returns no
+   * graph. The graph is a pure value object (no state it mutates); it crosses the {@code
+   * workflowdefinition} -> {@code workflowexecution} compile edge (module-map.md arrows 1-16)
+   * exactly as the permitted {@code WorkflowVersionDto} does, so the worker can build the
+   * node/adjacency view it needs to select ready steps without reaching into {@code
+   * workflowdefinition} internals.
+   *
+   * @param tenantId the owning tenant (from the verified security context of the run's creator)
+   * @param versionId the pinned version id the run executes (its {@code workflow_version_id})
+   * @return the parsed typed graph
+   * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
+   *     {@code 404} if the version is not owned by the tenant
+   */
+  @Transactional(readOnly = true)
+  public WorkflowGraph loadGraph(UUID tenantId, UUID versionId) {
+    requireRepository();
+    WorkflowVersion version =
+        versionRepo
+            .get(tenantId, versionId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "workflow version '" + versionId + "' not found"));
+    return version.graph();
+  }
+
   private void requireRepository() {
     if (!isWired()) {
       throw new ResponseStatusException(

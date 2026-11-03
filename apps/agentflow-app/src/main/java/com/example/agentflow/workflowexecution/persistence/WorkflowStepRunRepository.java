@@ -3,7 +3,10 @@ package com.example.agentflow.workflowexecution.persistence;
 import com.example.agentflow.workflowexecution.domain.Checkpoint;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
+import java.sql.Types;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -219,5 +222,100 @@ public class WorkflowStepRunRepository {
             stepKey,
             tenantId);
     return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
+  }
+
+  /**
+   * Materialize one {@code PENDING} step row for a graph node of a run (S07-08, the worker event
+   * loop). The row references the run (an FK to {@code workflow_runs.id}); tenant isolation flows
+   * through that parent — the worker only calls this for a run it has already verified is owned by
+   * {@code tenantId} through the tenant-scoped {@code WorkflowRunRepository#findRun} lookup
+   * (invariant 1), and every read joins {@code workflow_runs} again and re-checks the parent's
+   * {@code tenant_id}. The {@code unique (run_id, step_key, attempt)} guard (S05-08) makes a second
+   * materialization of the same node a collision rather than a silent duplicate; the worker
+   * materializes each node at most once per run. The {@code lease_epoch} is seeded with the run's
+   * claimed epoch (the worker passes the fence it just acquired) so the step's own fence matches
+   * the epoch the worker then sends on its transitions (invariant 5).
+   *
+   * @param runId the run the step belongs to
+   * @param tenantId the owning tenant, verified to own {@code runId} by the caller
+   * @param stepKey the graph node the step runs
+   * @param leaseEpoch the run's claimed lease epoch, seeded as the step fence
+   * @param createdBy the actor recorded for the audit trail (nullable)
+   */
+  public void createStep(
+      UUID runId, UUID tenantId, String stepKey, int leaseEpoch, String createdBy) {
+    jdbc.update(
+        "INSERT INTO "
+            + TABLE
+            + " (id, run_id, step_key, status, attempt, lease_epoch, created_by) "
+            + "VALUES (?, ?, ?, 'PENDING', 1, ?, ?)",
+        ps -> {
+          ps.setObject(1, UUID.randomUUID());
+          ps.setObject(2, runId);
+          ps.setString(3, stepKey);
+          ps.setInt(4, leaseEpoch);
+          if (createdBy == null) {
+            ps.setNull(5, Types.VARCHAR);
+          } else {
+            ps.setString(5, createdBy);
+          }
+        });
+  }
+
+  /**
+   * Read every step row of a run with its status and fence, tenant-scoped (S07-08). The {@code
+   * tenant_id} predicate is part of the {@code JOIN ... WHERE} clause (invariant 1), so a run owned
+   * by another tenant is indistinguishable from a missing one and returns no rows. The ordering is
+   * the node creation order, which for a freshly materialized run is the graph's definition order
+   * (a stable, deterministic step-selection order).
+   *
+   * @param tenantId the owning tenant (matched against the parent run in the {@code WHERE})
+   * @param runId the run whose step rows to list
+   * @return the step rows ordered most-recent-first (empty when the run has no steps for this
+   *     tenant)
+   */
+  public List<StepStatusRow> findStepStatuses(UUID tenantId, UUID runId) {
+    List<StepStatusRow> results =
+        jdbc.query(
+            "SELECT s.step_key, s.status, s.lease_epoch FROM "
+                + TABLE
+                + " s "
+                + "JOIN workflow_runs r ON s.run_id = r.id "
+                + "WHERE s.run_id = ? AND r.tenant_id = ? ORDER BY s.created_at DESC",
+            (rs, rowNum) ->
+                new StepStatusRow(
+                    rs.getString("step_key"),
+                    WorkflowStepState.valueOf(rs.getString("status")),
+                    rs.getInt("lease_epoch")),
+            runId,
+            tenantId);
+    return results;
+  }
+
+  /**
+   * Read the stored inline output of every {@code SUCCEEDED} step of a run, tenant-scoped (S07-08),
+   * as a {@code step_key -> output} map the executor feeds into downstream nodes (the {@code input}
+   * wiring of the DSL). The {@code tenant_id} predicate is part of the {@code JOIN ... WHERE}
+   * clause (invariant 1); only {@code SUCCEEDED} steps with a non-null inline output are returned,
+   * so a step that is not done (or whose output was externalized to an {@code output_ref}) is
+   * absent.
+   *
+   * @param tenantId the owning tenant (matched against the parent run in the {@code WHERE})
+   * @param runId the run whose completed outputs to read
+   * @return the map, possibly empty (no completed step has an inline output yet)
+   */
+  public Map<String, String> findStepOutputs(UUID tenantId, UUID runId) {
+    Map<String, String> outputs = new LinkedHashMap<>();
+    jdbc.query(
+        "SELECT s.step_key, s.output_inline FROM "
+            + TABLE
+            + " s "
+            + "JOIN workflow_runs r ON s.run_id = r.id "
+            + "WHERE s.run_id = ? AND r.tenant_id = ? AND s.status = 'SUCCEEDED' "
+            + "AND s.output_inline IS NOT NULL",
+        (rs, rowNum) -> outputs.put(rs.getString("step_key"), rs.getString("output_inline")),
+        runId,
+        tenantId);
+    return outputs;
   }
 }

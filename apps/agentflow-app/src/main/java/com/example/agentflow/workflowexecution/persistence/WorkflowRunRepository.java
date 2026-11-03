@@ -307,6 +307,57 @@ public class WorkflowRunRepository {
     return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
   }
 
+  /**
+   * Read a run's identity + pinned version + status by its pair {@code (tenant_id, id)} — the
+   * tenant-scoped lookup the worker event loop uses to load the pinned version before it claims and
+   * schedules the run (S07-08). The {@code tenant_id} predicate is part of the {@code WHERE} clause
+   * (invariant 1), so a cross-tenant id is indistinguishable from a missing run.
+   *
+   * @param tenantId the owning tenant
+   * @param runId the run to load
+   * @return the {@link RunView} status snapshot, or {@link Optional#empty()} when no run matches
+   *     {@code (tenant_id, runId)}
+   */
+  public Optional<RunView> findRun(UUID tenantId, UUID runId) {
+    List<RunView> results =
+        jdbc.query(
+            "SELECT id, workflow_version_id, status, attempt, created_at FROM "
+                + TABLE
+                + " WHERE id = ? AND tenant_id = ?",
+            (rs, rowNum) ->
+                new RunView(
+                    (UUID) rs.getObject("id"),
+                    (UUID) rs.getObject("workflow_version_id"),
+                    WorkflowRunState.valueOf(rs.getString("status")),
+                    rs.getInt("attempt"),
+                    rs.getObject("created_at", OffsetDateTime.class)),
+            runId,
+            tenantId);
+    return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
+  }
+
+  /**
+   * List the ids of a tenant's runs that are not in a terminal state (invariant 1 — scoped to the
+   * tenant by {@code tenant_id}, most-recent-first). This is the read-only scan the worker's
+   * scheduler uses to pick runs to make progress on ({@code WorkflowWorker#determineReadyRuns});
+   * the actual claim happens in {@link #claim} inside the processing call, so the scan never
+   * reserves a run.
+   *
+   * @param tenantId the owning tenant
+   * @return the non-terminal run ids ordered most-recent-first (empty when none)
+   */
+  public List<UUID> findClaimableRuns(UUID tenantId) {
+    List<UUID> results =
+        jdbc.query(
+            "SELECT id FROM "
+                + TABLE
+                + " WHERE tenant_id = ? AND status NOT IN "
+                + "('SUCCEEDED', 'FAILED', 'CANCELLED') ORDER BY created_at DESC",
+            (rs, rowNum) -> (UUID) rs.getObject("id"),
+            tenantId);
+    return results;
+  }
+
   /** Binds a nullable {@code UUID} so an absent key is stored as SQL {@code NULL}. */
   private static void bindNullableKey(PreparedStatement ps, int index, UUID value)
       throws SQLException {

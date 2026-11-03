@@ -15,7 +15,9 @@ import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
+import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.persistence.IdempotentRunView;
+import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -51,6 +53,8 @@ class RunServiceTest {
   private final UUID tenant = UUID.randomUUID();
   private final UUID workflow = UUID.randomUUID();
   private final UUID versionId = UUID.randomUUID();
+  private final UUID runId = UUID.randomUUID();
+  private final OffsetDateTime created = OffsetDateTime.now();
   private final UUID key = UUID.randomUUID();
   private final String payload = "{\"workflowId\":\"" + workflow + "\"}";
   // A W3C Trace-Context trace-parent, threaded verbatim into the event headers when present.
@@ -219,6 +223,49 @@ class RunServiceTest {
         service.createRun(tenant, "alice", new CreateRunRequest(workflow, key), payload);
 
     assertThat(result.id()).isNotNull();
+  }
+
+  @Test
+  void get_run_returns_the_tenant_scoped_status_snapshot() {
+    RunView view = new RunView(runId, versionId, WorkflowRunState.SUCCEEDED, 2, created);
+    when(runRepository.findRun(tenant, runId)).thenReturn(Optional.of(view));
+
+    RunDto run = service.getRun(tenant, runId);
+
+    // The status snapshot is returned verbatim: id, pinned version, current state (as its name),
+    // attempt and creation time.
+    assertThat(run.id()).isEqualTo(runId);
+    assertThat(run.workflowVersionId()).isEqualTo(versionId);
+    assertThat(run.status()).isEqualTo("SUCCEEDED");
+    assertThat(run.attempt()).isEqualTo(2);
+    assertThat(run.createdAt()).isEqualTo(created);
+    // The read is scoped to the parent tenant: the service passes the tenant down to findRun and
+    // never reads the run by id alone (invariant 1).
+    verify(runRepository).findRun(tenant, runId);
+  }
+
+  @Test
+  void get_run_of_another_tenant_is_not_found() {
+    // A run id of another tenant is indistinguishable from a missing run: findRun is tenant-scoped
+    // and returns empty, so the read is a 404, never a leak (invariant 1).
+    when(runRepository.findRun(tenant, runId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.getRun(tenant, runId))
+        .isInstanceOf(ResponseStatusException.class)
+        .extracting(e -> ((ResponseStatusException) e).getStatusCode())
+        .isEqualTo(HttpStatus.NOT_FOUND);
+  }
+
+  @Test
+  void get_run_without_a_database_reports_unavailable() {
+    RunService noDb = new RunService(null, idempotencyKeyService, outboxService, versionService);
+
+    assertThatThrownBy(() -> noDb.getRun(tenant, runId))
+        .isInstanceOf(ResponseStatusException.class)
+        .extracting(e -> ((ResponseStatusException) e).getStatusCode())
+        .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    // No read is attempted when there is no database to read from (invariant 2).
+    verify(runRepository, never()).findRun(any(), any());
   }
 
   /** Builds the persistence view a keyed replay compares against, over {@code payload}. */

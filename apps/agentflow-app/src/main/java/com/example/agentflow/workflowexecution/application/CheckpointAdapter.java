@@ -6,6 +6,8 @@ import com.example.agentflow.workflowexecution.persistence.CheckpointSnapshot;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.util.Optional;
 import java.util.UUID;
+import javax.sql.DataSource;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +17,12 @@ import org.springframework.transaction.annotation.Transactional;
  * recovery asks "is this step's result still valid?". The future step executor calls {@link
  * #saveCheckpoint} after it transitions a step to {@code SUCCEEDED}, and {@link
  * #canReuseCheckpoint} before it runs one.
+ *
+ * <p>Bean gating (S01-02): the checkpoint feature is only present when a database is configured, so
+ * the application still boots without one. The step repository is
+ * {@code @ConditionalOnBean(DataSource.class)}; when no database is configured this whole bean is
+ * absent, so {@link #saveCheckpoint} / {@link #canReuseCheckpoint} are never called &mdash; there
+ * is no step repository to persist or read a checkpoint from.
  *
  * <p>Each {@link #saveCheckpoint} call:
  *
@@ -39,6 +47,7 @@ import org.springframework.transaction.annotation.Transactional;
  * changed) is NOT a hit, so recovery re-executes rather than return a stale value (invariant 13:
  * the schema version is the "is the output still valid?" key).
  */
+@ConditionalOnBean(DataSource.class)
 @Service
 public class CheckpointAdapter {
 
@@ -46,7 +55,9 @@ public class CheckpointAdapter {
   private final AgentFlowProperties properties;
 
   /**
-   * @param stepRepository the tenant-scoped step repository (null when no database is configured)
+   * @param stepRepository the tenant-scoped step repository; the bean is only present when a
+   *     database is configured (the class is {@code @ConditionalOnBean(DataSource.class)}, S01-02),
+   *     so this constructor never runs without a live step repository
    * @param properties the validated application configuration
    */
   public CheckpointAdapter(
