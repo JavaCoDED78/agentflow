@@ -44,6 +44,7 @@ docs/
 │   ├── ADR-009-single-persistence-spring-data-jdbc.md  ← single persistence: Spring Data JDBC (S03-08)
 │   ├── ADR-010-audit-workflow-definition-mutations.md  ← audit on definition mutations (S04-12)
 │   ├── ADR-011-workflow-run-lease.md             ← workflow run lease, heartbeat, fencing, recovery (S07-01)
+│   ├── ADR-012-local-tenant-default-bypass.md            ← local-skeleton tenant default bypass (S03-13/…/S04-10)
 │   └── ADR-013-s3-object-storage-garage.md  ← S3 object storage: Garage for the local stack (S01-15)
 ├── architecture/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
@@ -58,6 +59,8 @@ docs/
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
 │   ├── kafka-topics.md                ← topics & partition keys (S06-02)
+│   ├── observability/
+│   │   └── outbox-polling-benchmark.md ← poll delay & poll load: poll-vs-CDC justification gate (S06-15)
 │   ├── events/README.md               ← event catalogue & delivery guarantees (S06-16)
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
 │   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
