@@ -162,7 +162,14 @@ tasks.register<JavaExec>("generateOpenApiContract") {
     // Quiet the Spring banner/logs so the normalized JSON is the only thing printed.
     systemProperty("logging.level.root", "WARN")
     systemProperty("logging.level.org.springframework.boot.autoconfigure", "WARN")
-    args("--output", File(rootProject.projectDir, "contracts/openapi/openapi.json").absolutePath)
+    // Bind port (S01-17): default 8080, overridable via -Dopenapi.contract.port for
+    // environments where the default is not bindable (e.g. Windows non-privileged ports).
+    val contractPort = System.getProperty("openapi.contract.port") ?: "8080"
+    args(
+        "--output",
+        File(rootProject.projectDir, "contracts/openapi/openapi.json").absolutePath,
+        "--agentflow.http.port=$contractPort"
+    )
 }
 
 // Run tests through the JUnit Platform. Explicit rather than relying on plugin

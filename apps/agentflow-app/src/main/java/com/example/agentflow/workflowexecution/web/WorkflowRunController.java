@@ -12,6 +12,8 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -129,6 +131,47 @@ public class WorkflowRunController {
     String fingerprint = effectiveKey == null ? null : Fingerprint.sha256Hex(canonical(request));
     RunDto run = runService.createRun(tenantId, actor, request, fingerprint, traceparent);
     return ResponseEntity.status(HttpStatus.ACCEPTED).body(run);
+  }
+
+  /**
+   * Read a run's status — {@code GET /api/v1/runs/{runId}}.
+   *
+   * <p>Returns {@code 200 OK} with the run's persisted status snapshot as a {@link RunDto} &mdash;
+   * id, the pinned version, the current {@code status}, the execution {@code attempt} and the
+   * {@code created_at} time. The run is loaded through the tenant-scoped {@link RunService#getRun}
+   * lookup (invariant 1): a run id of another tenant is indistinguishable from a missing run, so it
+   * is a {@code 404}, never a leak; the call is {@code 503 unavailable} when no database is
+   * configured.
+   *
+   * <p>The {@code tenantId} is read from the same application configuration as the create endpoint
+   * (the {@code agentflow.local.tenant-id} property, never from the request body or headers &mdash;
+   * invariant 1), exactly as {@code WorkflowDefinitionController} and {@code #create} do; threading
+   * it from the verified security context is a follow-up ADR (the local default is a documented
+   * tenant-isolation skeleton).
+   *
+   * @param runId the run to read
+   * @return {@code 200 OK} with the run status snapshot, or:
+   *     <ul>
+   *       <li>{@code 404 not_found} when no run matches {@code (tenant_id, runId)};
+   *       <li>{@code 503 unavailable} when no database is configured.
+   *     </ul>
+   */
+  @Operation(
+      operationId = "getRun",
+      summary = "Read a run's status",
+      description =
+          "Returns the run's persisted status snapshot (RunDto): id, the pinned version, the "
+              + "current status, the attempt and the created_at time. Tenant-scoped (invariant 1): "
+              + "a run of another tenant is indistinguishable from a missing run and is a 404, "
+              + "never a leak.")
+  @ApiResponse(responseCode = "200", description = "the run status snapshot (RunDto)")
+  @ApiResponse(
+      responseCode = "404",
+      description = "no run matches the (tenant_id, runId) the API was asked to read")
+  @ApiResponse(responseCode = "503", description = "no database connection is configured")
+  @GetMapping("/{runId}")
+  ResponseEntity<RunDto> getRun(@PathVariable UUID runId) {
+    return ResponseEntity.ok(runService.getRun(tenantId, runId));
   }
 
   /**

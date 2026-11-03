@@ -158,6 +158,14 @@
           "schema" : {
             "type" : "string"
           }
+        }, {
+          "name" : "traceparent",
+          "in" : "header",
+          "description" : "An optional W3C Trace-Context trace-parent header (e.g. \"00-<traceId>-<spanId>-<flags>\"). It is threaded verbatim into the run request event's correlation headers so the trace survives across Kafka (S06-12); it is a trace label only and never an authorization input (invariant 1). Omit for an untraced create.",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
         } ],
         "requestBody" : {
           "content" : {
@@ -233,6 +241,55 @@
               "*/*" : {
                 "schema" : {
                   "$ref" : "#/components/schemas/WorkflowDefinitionDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{runId}" : {
+      "get" : {
+        "tags" : [ "workflow-run-controller" ],
+        "summary" : "Read a run's status",
+        "description" : "Returns the run's persisted status snapshot (RunDto): id, the pinned version, the current status, the attempt and the created_at time. Tenant-scoped (invariant 1): a run of another tenant is indistinguishable from a missing run and is a 404, never a leak.",
+        "operationId" : "getRun",
+        "parameters" : [ {
+          "name" : "runId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "the run status snapshot (RunDto)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "no run matches the (tenant_id, runId) the API was asked to read",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
                 }
               }
             }
