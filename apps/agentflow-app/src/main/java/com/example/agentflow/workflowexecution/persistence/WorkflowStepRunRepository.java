@@ -78,30 +78,10 @@ public class WorkflowStepRunRepository {
   }
 
   /**
-   * Move a step to {@code next} in place, guarded by the parent run's {@code tenant_id}, the
-   * current {@code status} and the current {@code lease_epoch} so the call is a conditional update
-   * (invariant 4 / fencing). A zero-rows update &mdash; the step is gone, the parent run is a
-   * different tenant, the state no longer matches the domain gate, or the {@code lease_epoch} fence
-   * has moved &mdash; is mapped to a {@link ConflictException} (409). The parent's {@code
-   * tenant_id} is re-checked in the {@code JOIN WHERE}, so a cross-tenant update is
-   * indistinguishable from a missing row.
-   *
-   * <p>The {@code attempt_started_at} marker is managed by the same write (invariant 6 / ADR-011):
-   * it is set to {@code now()} when the step enters {@code RUNNING} (the attempt begins, recorded
-   * before the external side effect) and cleared to {@code NULL} when the attempt reaches a
-   * terminal outcome. A row still {@code RUNNING} with a non-null marker but no terminal event
-   * after the "attempt started" transition is the crash window, so the outcome is diagnosable
-   * rather than assumed.
-   *
-   * @param runId the run the step belongs to
-   * @param tenantId the owning tenant (matched against the parent run in the {@code WHERE})
-   * @param stepKey the graph node the step runs
-   * @param expectedState the state the row must still be in for the update to apply (the domain
-   *     gate's {@code from} state)
-   * @param expectedLeaseEpoch the fence the row must still hold
-   * @param next the state to move the step to
-   * @throws ConflictException if zero rows match (missing / cross-tenant / wrong state / stale
-   *     lease epoch)
+   * 6-argument transition, kept for the existing callers and tests; records no error metadata. The
+   * error-recording overload is used to persist a step's {@link
+   * com.example.agentflow.common.ErrorClass} and safe reason when the step fails (S07-11); both
+   * share the single conditional update below.
    */
   public void transition(
       UUID runId,
@@ -110,12 +90,41 @@ public class WorkflowStepRunRepository {
       WorkflowStepState expectedState,
       int expectedLeaseEpoch,
       WorkflowStepState next) {
+    transition(runId, tenantId, stepKey, expectedState, expectedLeaseEpoch, next, null, null);
+  }
+
+  /**
+   * Transition a step from {@code expectedState} to {@code next} under a lease check and a single
+   * conditional update (invariants 2 and 4), recording the error metadata of a fault.
+   *
+   * <p>{@code errorCode} / {@code errorSummary} are written only when non-null (COALESCE), so a
+   * transition that carries no error (a retry or a success) never clobbers the error a previous
+   * failed attempt left; the error is set on the faulting transition and cleared by the {@code
+   * S07-14} attempt-lifecycle. This is how {@code workflowexecution} persists the {@link
+   * com.example.agentflow.common.ErrorClass} token and the short redacted reason for a step that
+   * failed (S07-11).
+   *
+   * @param errorCode the {@code ErrorClass#errorClass()} token for {@code next} (nullable)
+   * @param errorSummary the short redacted description ({@code null} or blank preserves the
+   *     existing value)
+   */
+  public void transition(
+      UUID runId,
+      UUID tenantId,
+      String stepKey,
+      WorkflowStepState expectedState,
+      int expectedLeaseEpoch,
+      WorkflowStepState next,
+      String errorCode,
+      String errorSummary) {
     int affected =
         jdbc.update(
             "UPDATE "
                 + TABLE
                 + " s SET status = ?, updated_at = now()"
                 + " , attempt_started_at = CASE WHEN ? THEN now() WHEN ? THEN NULL ELSE attempt_started_at END"
+                + " , error_code = COALESCE(?, error_code)"
+                + " , error_summary = COALESCE(?, error_summary)"
                 + " FROM workflow_runs r"
                 + " WHERE s.run_id = r.id AND r.tenant_id = ? AND s.run_id = ?"
                 + " AND s.step_key = ? AND s.status = ? AND s.lease_epoch = ?",
@@ -126,11 +135,13 @@ public class WorkflowStepRunRepository {
               ps.setString(1, next.name());
               ps.setBoolean(2, beginAttempt);
               ps.setBoolean(3, completeAttempt);
-              ps.setObject(4, tenantId);
-              ps.setObject(5, runId);
-              ps.setString(6, stepKey);
-              ps.setString(7, expectedState.name());
-              ps.setInt(8, expectedLeaseEpoch);
+              ps.setString(4, errorCode);
+              ps.setString(5, errorSummary);
+              ps.setObject(6, tenantId);
+              ps.setObject(7, runId);
+              ps.setString(8, stepKey);
+              ps.setString(9, expectedState.name());
+              ps.setInt(10, expectedLeaseEpoch);
             });
     if (affected == 0) {
       throw new ConflictException(

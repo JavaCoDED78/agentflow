@@ -17,6 +17,7 @@ import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunReposi
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -221,7 +222,16 @@ public class WorkflowWorker {
 
   /**
    * Schedule, execute and conclude one step through the state machine (PENDING → READY → RUNNING →
-   * SUCCEEDED / FAILED), then checkpoint its output on success.
+   * SUCCEEDED / RETRY_WAIT / FAILED), then checkpoint its output on success.
+   *
+   * <p>A handler that <em>returns</em> {@code FAILED} is a decided domain outcome: the step ends
+   * {@code FAILED}. A handler that <em>throws</em> is a fault the {@link StepFailureClassifier}
+   * (S07-11) classifies: a transient fault (infra / provider rate-limit / provider timeout) ends
+   * the step {@code RETRY_WAIT} so it is retried with bounded backoff; every other fault ends it
+   * {@code FAILED}. The fault's {@code ErrorClass} token and a short redacted reason are recorded
+   * (the safe reason never carries a secret, full prompt or document — invariant 8). Previously the
+   * exception propagated out of the {@code @Transactional} poll and rolled the whole run back; now
+   * it is contained to the step and persisted.
    */
   private void executeStep(
       UUID tenantId,
@@ -232,14 +242,32 @@ public class WorkflowWorker {
       int leaseEpoch) {
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.READY, "step.ready");
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.RUNNING, "step.running");
-    StepResult result =
-        resolve(node.type()).handle(stepContext(tenantId, runId, stepKey, node, outputs));
-    if (WorkflowStepState.SUCCEEDED.equals(result.outcome())) {
-      transitionStep(tenantId, runId, stepKey, WorkflowStepState.SUCCEEDED, "step.succeeded");
-      checkpointAdapter.saveCheckpoint(
-          tenantId, runId, stepKey, leaseEpoch, STEP_OUTPUT_SCHEMA_VERSION, result.output());
-    } else {
-      transitionStep(tenantId, runId, stepKey, WorkflowStepState.FAILED, "step.failed");
+    try {
+      StepResult result =
+          resolve(node.type()).handle(stepContext(tenantId, runId, stepKey, node, outputs));
+      if (WorkflowStepState.SUCCEEDED.equals(result.outcome())) {
+        transitionStep(tenantId, runId, stepKey, WorkflowStepState.SUCCEEDED, "step.succeeded");
+        checkpointAdapter.saveCheckpoint(
+            tenantId, runId, stepKey, leaseEpoch, STEP_OUTPUT_SCHEMA_VERSION, result.output());
+      } else {
+        // A non-throwing FAILED is a decided domain outcome: permanent, no fault to classify.
+        transitionStep(tenantId, runId, stepKey, WorkflowStepState.FAILED, "step.failed");
+      }
+    } catch (Throwable failure) {
+      // S07-11: classify the fault the handler threw. Retry transient infra / provider faults;
+      // every other fault is terminal. The transition is contained to this step, so a fault never
+      // rolls the run back — it is persisted for the next poll / recovery.
+      StepFailure failureInfo = StepFailureClassifier.defaults().classify(failure);
+      WorkflowStepState next =
+          failureInfo.isRetryable() ? WorkflowStepState.RETRY_WAIT : WorkflowStepState.FAILED;
+      transitionStepError(
+          tenantId,
+          runId,
+          stepKey,
+          next,
+          failureInfo.errorClass().errorClass(),
+          failureInfo.safeReason(),
+          "step." + next.name().toLowerCase(Locale.ROOT));
     }
   }
 
@@ -332,6 +360,25 @@ public class WorkflowWorker {
   private void transitionStep(
       UUID tenantId, UUID runId, String stepKey, WorkflowStepState to, String eventType) {
     transitionService.transitionStep(tenantId, runId, stepKey, to, eventType, actor);
+  }
+
+  /**
+   * Transition a step that failed, recording the fault's {@link
+   * com.example.agentflow.common.ErrorClass} token and short safe reason (S07-11). A lost-claim /
+   * missing step {@code 404} or a transition lost to another writer {@code 409} still propagates as
+   * a {@link ResponseStatusException} and rolls this run's progress back (invariant 4), so the run
+   * is retried on the next poll.
+   */
+  private void transitionStepError(
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState to,
+      String errorClass,
+      String safeReason,
+      String eventType) {
+    transitionService.transitionStep(
+        tenantId, runId, stepKey, to, eventType, errorClass, safeReason);
   }
 
   /**

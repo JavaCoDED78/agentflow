@@ -10,6 +10,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.agentflow.common.ErrorClass;
 import com.example.agentflow.messaging.application.WorkflowEventService;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
@@ -260,6 +261,80 @@ class RunStateMachineServiceTest {
 
     verify(eventService, never()).append(any(), any(), any(), any(), any());
     assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+  }
+
+  @Test
+  void transitionStep_records_the_error_class_and_appends_it_to_the_event_for_a_fault() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID stepId = UUID.randomUUID();
+    String stepKey = "tool_call";
+    String errorToken = ErrorClass.TRANSIENT_INFRA.errorClass();
+    String safeReason = "connection refused";
+    when(stepRepository.findState(tenant, runId, stepKey))
+        .thenReturn(
+            Optional.of(new StepStateSnapshot(stepId.toString(), WorkflowStepState.RUNNING, 5)));
+
+    WorkflowStepState result =
+        service.transitionStep(
+            tenant,
+            runId,
+            stepKey,
+            WorkflowStepState.FAILED,
+            "step.failed",
+            errorToken,
+            safeReason);
+
+    assertThat(result).isEqualTo(WorkflowStepState.FAILED);
+    // the error metadata rides the same conditional update as the step state (one durable fact)
+    verify(stepRepository)
+        .transition(
+            runId,
+            tenant,
+            stepKey,
+            WorkflowStepState.RUNNING,
+            5,
+            WorkflowStepState.FAILED,
+            errorToken,
+            safeReason);
+    // the event names the fault so the history is self-describing (S07-11)
+    verify(eventService)
+        .append(
+            tenant,
+            runId,
+            stepId,
+            "step.failed",
+            "step=tool_call prior=RUNNING new=FAILED error=transient_infra");
+  }
+
+  @Test
+  void transitionStep_records_no_error_class_on_a_normal_retry_transition() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID stepId = UUID.randomUUID();
+    String stepKey = "tool_call";
+    when(stepRepository.findState(tenant, runId, stepKey))
+        .thenReturn(
+            Optional.of(new StepStateSnapshot(stepId.toString(), WorkflowStepState.RETRY_WAIT, 5)));
+
+    // a retry re-runs the step; no new fault is classified, so no error metadata is written
+    service.transitionStep(
+        tenant, runId, stepKey, WorkflowStepState.RUNNING, "step.running", null, null);
+
+    verify(stepRepository)
+        .transition(
+            runId,
+            tenant,
+            stepKey,
+            WorkflowStepState.RETRY_WAIT,
+            5,
+            WorkflowStepState.RUNNING,
+            null,
+            null);
+    // no error class: the payload carries no trailing "error=" segment
+    verify(eventService)
+        .append(
+            tenant, runId, stepId, "step.running", "step=tool_call prior=RETRY_WAIT new=RUNNING");
   }
 
   @Test

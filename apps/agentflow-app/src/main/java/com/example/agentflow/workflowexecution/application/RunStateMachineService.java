@@ -150,7 +150,66 @@ public class RunStateMachineService {
     WorkflowStepState from = current.status();
     assertStepTransition(from, to);
     applyStepTransition(runId, tenantId, stepKey, from, current.leaseEpoch(), to);
-    appendStepEvent(tenantId, runId, current.stepId(), stepKey, from, to, eventType, actor);
+    appendStepEvent(tenantId, runId, current.stepId(), stepKey, from, to, eventType, actor, null);
+    return to;
+  }
+
+  /**
+   * Move a step to {@code to} (from the tenant-scoped current state) and record the {@link
+   * com.example.agentflow.common.ErrorClass} token of a step failure together with its short, safe
+   * (redacted) reason (S07-11).
+   *
+   * <p>Used by the worker to record a faulted step as {@code RETRY_WAIT} (a transient fault —
+   * retried with bounded backoff) or {@code FAILED} (a permanent fault — terminal). The error
+   * metadata is persisted in the same transaction as the step state and, for a terminal transition,
+   * included in the step event payload. A {@code null} error class is recorded as no error: it is
+   * used for a retry that carries no new fault and for a success, so a clean transition never
+   * clobbers an error a prior attempt left.
+   *
+   * @param tenantId the owning tenant, from the verified security context (invariant 1)
+   * @param runId the run the step belongs to
+   * @param stepKey the graph node the step runs
+   * @param to the requested next state, one of the allowed successors of the current state
+   * @param eventType the transition / trigger name recorded in {@code workflow_events}
+   * @param errorClass the fault's {@code ErrorClass#errorClass()} token (nullable: records no
+   *     error)
+   * @param safeReason the short redacted description ({@code null} / blank preserves the existing
+   *     value)
+   * @return {@code to}, the state the step moved to
+   * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no
+   *     step matches for this tenant, {@code 400} if {@code from -> to} is not an allowed edge or
+   *     one state is {@code null}, {@code 409} if the conditional update matched no row (the fence
+   *     moved or another writer won the transition)
+   */
+  @Transactional
+  public WorkflowStepState transitionStep(
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState to,
+      String eventType,
+      String errorClass,
+      String safeReason) {
+    requireRepository(stepRepository);
+    StepStateSnapshot current =
+        stepRepository
+            .findState(tenantId, runId, stepKey)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "step '"
+                            + stepKey
+                            + "' on run "
+                            + runId
+                            + " was not found for this tenant"));
+
+    WorkflowStepState from = current.status();
+    assertStepTransition(from, to);
+    applyStepTransition(
+        runId, tenantId, stepKey, from, current.leaseEpoch(), to, errorClass, safeReason);
+    appendStepEvent(
+        tenantId, runId, current.stepId(), stepKey, from, to, eventType, null, errorClass);
     return to;
   }
 
@@ -194,9 +253,10 @@ public class RunStateMachineService {
   }
 
   /**
-   * Applies the guarded step update, converting the {@link ConflictException} a zero-rows
-   * conditional update throws into a permanent {@code 409} (the lease fence moved or another writer
-   * won the transition, invariant 4 / fencing).
+   * Applies the guarded step update with no error metadata (the 6-arg path): the transition that a
+   * non-faulting step makes (ready, running, success, cancellation, approval). The 6-arg repository
+   * overload records no error columns, so a clean transition never writes an error a prior attempt
+   * may have left.
    */
   private void applyStepTransition(
       UUID runId,
@@ -207,6 +267,31 @@ public class RunStateMachineService {
       WorkflowStepState to) {
     try {
       stepRepository.transition(runId, tenantId, stepKey, from, expectedLeaseEpoch, to);
+    } catch (ConflictException e) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "step '" + stepKey + "' on run " + runId + " is out of date");
+    }
+  }
+
+  /**
+   * Applies the guarded step update, recording the fault's {@code ErrorClass} token and its short
+   * safe reason when non-null (S07-11). A {@code null} error class — a retry (to {@code
+   * RETRY_WAIT}) or a success — records no error metadata; the error is set on the faulting
+   * transition only (the {@code COALESCE} in the repository update preserves the value until the
+   * {@code S07-14} attempt-lifecycle clears it).
+   */
+  private void applyStepTransition(
+      UUID runId,
+      UUID tenantId,
+      String stepKey,
+      WorkflowStepState from,
+      int expectedLeaseEpoch,
+      WorkflowStepState to,
+      String errorClass,
+      String safeReason) {
+    try {
+      stepRepository.transition(
+          runId, tenantId, stepKey, from, expectedLeaseEpoch, to, errorClass, safeReason);
     } catch (ConflictException e) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "step '" + stepKey + "' on run " + runId + " is out of date");
@@ -237,12 +322,30 @@ public class RunStateMachineService {
       WorkflowStepState to,
       String eventType,
       String actor) {
-    eventService.append(
-        tenantId,
-        runId,
-        UUID.fromString(stepId),
-        eventType,
-        "step=" + stepKey + " " + buildPayload(from, to) + actorSuffix(actor));
+    appendStepEvent(tenantId, runId, stepId, stepKey, from, to, eventType, actor, null);
+  }
+
+  /**
+   * Appends the step transition fact in the same transaction, scoped to the step's own row, and,
+   * when a fault was recorded (S07-11), appends {@code error=<class>} to the payload. The class is
+   * included for both terminal ({@code FAILED}) and transient ({@code RETRY_WAIT}) faults, so the
+   * history names the fault; a {@code null} class (a normal transition) records nothing extra.
+   */
+  private void appendStepEvent(
+      UUID tenantId,
+      UUID runId,
+      String stepId,
+      String stepKey,
+      WorkflowStepState from,
+      WorkflowStepState to,
+      String eventType,
+      String actor,
+      String errorClass) {
+    String payload = "step=" + stepKey + " " + buildPayload(from, to) + actorSuffix(actor);
+    if (errorClass != null && !errorClass.isBlank()) {
+      payload = payload + " error=" + errorClass;
+    }
+    eventService.append(tenantId, runId, UUID.fromString(stepId), eventType, payload);
   }
 
   /**
