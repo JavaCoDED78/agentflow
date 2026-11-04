@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -270,6 +271,155 @@ class WorkflowWorkerTest {
     assertThat(processed).isEqualTo(0);
     verify(runRepository, never()).findRun(any(), any());
     verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------
+  // S07-11: a handler that throws is classified; transient faults retry, others are terminal
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void a_transient_fault_is_classified_and_parks_the_step_for_a_retry() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+    String stepKey = "a";
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put(stepKey, WorkflowStepState.PENDING);
+    WorkflowGraph graph = new WorkflowGraph(List.of(node(stepKey, "THROW")), List.of());
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    // the 8-arg (fault) overload mutates the observed state like the 6-arg one does
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    // the fault handler throws a transient infra fault (a connection the retry can re-establish)
+    StepHandler throwing =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "THROW".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            // The handler SPI declares no checked throws, so a connection fault is surfaced as an
+            // unchecked fault whose message the classifier recognises (transient_infra).
+            throw new RuntimeException("connection refused");
+          }
+        };
+    WorkflowWorker worker = buildWorker(List.of(throwing));
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    // a transient fault is not terminal: the step is parked in RETRY_WAIT for a bounded retry
+    assertThat(stepState.get(stepKey)).isEqualTo(WorkflowStepState.RETRY_WAIT);
+    // the run is left RUNNING for the next poll: reconcileRun sees a non-terminal step and does not
+    // conclude the run, so a retry can pick it up (this poll's only transitionRun is the lease
+    // start)
+    ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
+    verify(transitionService, times(1))
+        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+    assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.RUNNING);
+    // the classifier produced the transient class and the worker recorded it on the fault
+    // transition
+    ArgumentCaptor<String> errorClass = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<String> reason = ArgumentCaptor.forClass(String.class);
+    verify(transitionService)
+        .transitionStep(
+            any(),
+            any(),
+            anyString(),
+            any(),
+            eq("step.retry_wait"),
+            errorClass.capture(),
+            reason.capture());
+    assertThat(errorClass.getValue()).isEqualTo("transient_infra");
+    assertThat(reason.getValue()).contains("connection refused");
+  }
+
+  @Test
+  void a_permanent_fault_is_classified_and_moves_the_step_to_failed_and_fails_the_run() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+    String stepKey = "a";
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put(stepKey, WorkflowStepState.PENDING);
+    WorkflowGraph graph = new WorkflowGraph(List.of(node(stepKey, "THROW")), List.of());
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    // the fault handler throws an unrecognised exception: a permanent fault (INTERNAL)
+    StepHandler throwing =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "THROW".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            throw new RuntimeException("something unexpected happened");
+          }
+        };
+    WorkflowWorker worker = buildWorker(List.of(throwing));
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    // a permanent fault is terminal: the step is FAILED
+    assertThat(stepState.get(stepKey)).isEqualTo(WorkflowStepState.FAILED);
+    // the run is reconciled to FAILED because a step permanently failed
+    ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
+    verify(transitionService, times(2))
+        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+    assertThat(runState.getAllValues().get(runState.getAllValues().size() - 1))
+        .isEqualTo(WorkflowRunState.FAILED);
+    // the classifier produced a permanent class and the worker recorded it on the fault transition
+    ArgumentCaptor<String> errorClass = ArgumentCaptor.forClass(String.class);
+    verify(transitionService)
+        .transitionStep(
+            any(), any(), anyString(), any(), eq("step.failed"), errorClass.capture(), any());
+    assertThat(errorClass.getValue()).isEqualTo("internal");
   }
 
   private static WorkflowNode node(String id, String type) {

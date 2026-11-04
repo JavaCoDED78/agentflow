@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -118,16 +120,99 @@ class WorkflowStepRunRepositoryTest {
     // drive the mocked setter so the bound arguments are recorded on the mock, then assert the
     // order
     setter.getValue().setValues(ps);
-    // SET next | begin attempt | complete attempt | WHERE parent tenant | WHERE run | WHERE
-    // step_key | WHERE expected status | WHERE lease
+    // SET next | begin attempt | complete attempt | error class | error summary | WHERE parent
+    // tenant | WHERE run | WHERE step_key | WHERE expected status | WHERE lease
     verify(ps).setString(1, WorkflowStepState.SUCCEEDED.name());
     verify(ps).setBoolean(2, false);
     verify(ps).setBoolean(3, true);
-    verify(ps).setObject(4, tenant);
-    verify(ps).setObject(5, runId);
-    verify(ps).setString(6, stepKey);
-    verify(ps).setString(7, WorkflowStepState.RUNNING.name());
-    verify(ps).setInt(8, 5);
+    // binds 4 and 5 are the (null here) error metadata from the 6-arg overload;
+    // tenant/run/step_key/
+    // expected status / lease follow at 6..10
+    verify(ps).setObject(6, tenant);
+    verify(ps).setObject(7, runId);
+    verify(ps).setString(8, stepKey);
+    verify(ps).setString(9, WorkflowStepState.RUNNING.name());
+    verify(ps).setInt(10, 5);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void transition_records_the_error_class_and_safe_reason_with_a_coalesce_guard()
+      throws SQLException {
+    // Recording a fault binds the ErrorClass token (bind 4) and the redacted reason (bind 5); the
+    // COALESCE writes them only when non-null so a later retry or success never clobbers the stored
+    // error (invariant 4 / recovery — the error is set on the faulting transition, not the retry).
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    UUID runId = UUID.randomUUID();
+    UUID tenant = UUID.randomUUID();
+    String stepKey = "tool_call";
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+    repo.transition(
+        runId,
+        tenant,
+        stepKey,
+        WorkflowStepState.RUNNING,
+        5,
+        WorkflowStepState.FAILED,
+        "transient_infra",
+        "java.net.ConnectException: connection refused");
+
+    verify(jdbc).update(sql.capture(), setter.capture());
+    assertThat(sql.getValue())
+        .contains("error_code = COALESCE(?, error_code)")
+        .contains("error_summary = COALESCE(?, error_summary)");
+    // bind 4 is the ErrorClass token, bind 5 the redacted reason; the run is still scoped by
+    // tenant,
+    // run and step and guarded by the expected status + lease epoch (invariants 1 and 4)
+    setter.getValue().setValues(ps);
+    verify(ps).setString(1, WorkflowStepState.FAILED.name());
+    verify(ps).setString(4, "transient_infra");
+    verify(ps).setString(5, "java.net.ConnectException: connection refused");
+    verify(ps).setInt(10, 5);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void transition_with_no_error_leaves_the_binds_null_so_a_prior_error_survives()
+      throws SQLException {
+    // A retry (RUNNING -> RETRY_WAIT) carries no error: binds 4 and 5 are null, so the COALESCE
+    // keeps
+    // the fault the previous failed attempt recorded instead of writing a bogus empty value.
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ArgumentCaptor<PreparedStatementSetter> setter =
+        ArgumentCaptor.forClass(PreparedStatementSetter.class);
+    when(jdbc.update(anyString(), any(PreparedStatementSetter.class))).thenReturn(1);
+
+    repo.transition(
+        UUID.randomUUID(),
+        UUID.randomUUID(),
+        "tool_call",
+        WorkflowStepState.RUNNING,
+        5,
+        WorkflowStepState.RETRY_WAIT,
+        null,
+        null);
+
+    verify(jdbc).update(anyString(), setter.capture());
+    setter.getValue().setValues(ps);
+    // binds 4 and 5 (error class / error summary) are null on a retry, so the COALESCE leaves the
+    // fault the previous failed attempt recorded untouched
+    verify(ps).setString(eq(4), isNull());
+    verify(ps).setString(eq(5), isNull());
+    // the run is still scoped and guarded exactly like any other step write (invariants 1 and 4)
+    verify(ps).setObject(eq(6), any());
+    verify(ps).setObject(eq(7), any());
+    verify(ps).setString(eq(8), eq("tool_call"));
+    verify(ps).setString(eq(9), eq(WorkflowStepState.RUNNING.name()));
+    verify(ps).setInt(eq(10), eq(5));
   }
 
   /**

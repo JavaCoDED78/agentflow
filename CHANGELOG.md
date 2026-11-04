@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Classify step failures into a retry decision (`ErrorClass`; only transient faults retry, others terminate) (S07-11)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Retry policy value object with reproducible, bounded backoff (S07-10)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Stale-run recovery loop that re-claims runs whose lease expired (S07-09)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **A first workflow worker: a durable event loop that runs a claimed run to completion (S07-08)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
