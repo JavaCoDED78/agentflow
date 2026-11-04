@@ -422,6 +422,106 @@ class WorkflowWorkerTest {
     assertThat(errorClass.getValue()).isEqualTo("internal");
   }
 
+  @Test
+  void cancel_a_queued_run_cancels_the_not_started_steps_and_closes_the_run() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("a", WorkflowStepState.PENDING);
+    stepState.put("b", WorkflowStepState.PENDING);
+    WorkflowGraph graph =
+        new WorkflowGraph(List.of(node("a", "NOOP"), node("b", "NOOP")), List.of(edge("a", "b")));
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    runId, versionId, WorkflowRunState.CANCEL_REQUESTED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+
+    int processed = buildWorker(List.of(new DeterministicStepHandler())).pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    // the not-yet-started steps are cancelled, nothing is executed
+    assertThat(stepState.get("a")).isEqualTo(WorkflowStepState.CANCELLED);
+    assertThat(stepState.get("b")).isEqualTo(WorkflowStepState.CANCELLED);
+    // a cancelled run never starts: the only run transition is the drain closing it to CANCELLED
+    ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
+    verify(transitionService, times(1))
+        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+    assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.CANCELLED);
+  }
+
+  @Test
+  void cancel_preserves_a_completed_step_and_cancels_only_the_pending_one() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    // step "a" already completed successfully; "b" is a dependent step that has not started.
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("a", WorkflowStepState.SUCCEEDED);
+    stepState.put("b", WorkflowStepState.PENDING);
+    WorkflowGraph graph =
+        new WorkflowGraph(List.of(node("a", "NOOP"), node("b", "NOOP")), List.of(edge("a", "b")));
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    runId, versionId, WorkflowRunState.CANCEL_REQUESTED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any()))
+        .thenReturn(Collections.singletonMap("a", "a-done"));
+    assertThat(stepRepository.findStepOutputs(tenant, runId)).containsEntry("a", "a-done");
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+
+    int processed = buildWorker(List.of(new DeterministicStepHandler())).pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    // the completed step keeps its result: cancel never erases a completed result (invariant 4)
+    assertThat(stepState.get("a")).isEqualTo(WorkflowStepState.SUCCEEDED);
+    assertThat(stepRepository.findStepOutputs(tenant, runId)).containsEntry("a", "a-done");
+    // the not-yet-started dependent step is cancelled
+    assertThat(stepState.get("b")).isEqualTo(WorkflowStepState.CANCELLED);
+    // the run closes to CANCELLED once every step is terminal
+    ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
+    verify(transitionService, times(1))
+        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+    assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.CANCELLED);
+  }
+
   private static WorkflowNode node(String id, String type) {
     return new WorkflowNode(id, type, new LinkedHashMap<>());
   }

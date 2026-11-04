@@ -90,7 +90,7 @@ permits it.
 | 6 | `RUNNING` | `FAILED` | `step.failed` (event; permanent) / `run.failed` | The step failed permanently, `attempt >= maxAttempts`, or a non-retryable error occurred (`error-taxonomy.md`, permanent class). |
 | 7 | `PENDING` / `READY` | `SKIPPED` | `step.skipped` (event; a failed predecessor) | A step this one depends on reached `FAILED` (cascade) so it cannot run. See design note below. |
 | 8 | `PENDING` / `READY` | `CANCELLED` | `run.cancel` (command; `POST /api/v1/runs/{runId}/cancel`) | The caller cancels a run whose step has not started draining; the step never ran. |
-| 9 | `RUNNING` | `CANCELLED` | `run.cancelled` (event; cancellation completes) | The step's in-flight work was interrupted/drained and the lease released. |
+| 9 | `RUNNING` | `CANCELLED` | `run.cancelled` (event; cancellation completes) | Cooperative cancel — see the design note below. The step is not torn down mid-flight. |
 | 10 | `RUNNING` | `WAITING_FOR_APPROVAL` | `step.approval-needed` (event; a `HUMAN_APPROVAL` node reached) | A step reached a human-approval boundary; the run also pauses (`S05-01`) and its lease is released. |
 | 11 | `WAITING_FOR_APPROVAL` | `RUNNING` | `run.approved` (event; approval decision, scope `run:approve`) | The pending approval was **approved** — idempotent, keyed by `Idempotency-Key`; the step resumes. |
 | 12 | `WAITING_FOR_APPROVAL` | `FAILED` | `run.rejected` (event; approval decision *reject* or *expired*) | The pending approval was rejected or expired. The blocked side effect must not execute, so the step fails. |
@@ -102,6 +102,13 @@ permits it.
   `RUNNING → CANCELLED` after draining/interruption; a not-yet-started step
   `PENDING`/`READY → CANCELLED` directly. `CANCELLED` is terminal; there is no un-cancel in the
   MVP, so a cancelled step is final.
+- **Cancel is cooperative, not a mid-flight interruption.** A step that is already `RUNNING`
+  (holding its lease and executing its `StepHandler`) is **not** torn down when a cancel arrives:
+  the worker leaves it to finish or fail on its own and keeps its result if it succeeded. The
+  run stays `CANCEL_REQUESTED` until that step reaches a terminal outcome, so the drain is a
+  boundary-level stop, not a signal to abort a running side effect. This is the S07-12 behaviour:
+  cancellation coordinates a stop at the next safe boundary rather than killing the in-progress
+  work.
 - **`SKIPPED` has two causes.** (a) **Cascade** — a failed predecessor means a dependent step
   cannot run, so it is `SKIPPED` and the run is `FAILED`. This is the cause modelled here.
   (b) **Conditional guard** — a predecessor `SUCCEEDED` but the step's edge predicate was false,

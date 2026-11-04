@@ -90,7 +90,8 @@ class WorkflowStateMachineTest {
             "WAITING_FOR_APPROVAL -> RUNNING",
             "WAITING_FOR_APPROVAL -> FAILED",
             "WAITING_FOR_APPROVAL -> CANCELLED",
-            "RETRY_WAIT -> RUNNING");
+            "RETRY_WAIT -> RUNNING",
+            "RETRY_WAIT -> CANCELLED");
 
     int checked = 0;
     for (WorkflowStepState from : WorkflowStepState.values()) {

@@ -113,9 +113,6 @@ public class WorkflowWorker {
     if (epoch == -1) {
       return false;
     }
-    if (!transitionRun(tenantId, runId, WorkflowRunState.RUNNING, "run.started")) {
-      return false;
-    }
     RunView run = runRepository.findRun(tenantId, runId).orElse(null);
     if (run == null) {
       return false;
@@ -124,10 +121,53 @@ public class WorkflowWorker {
     if (graph == null) {
       return false;
     }
+    // Cooperative cancellation (S07-12): a run cancelled while not owned by this worker is
+    // re-claimed (CANCEL_REQUESTED is not terminal, so findClaimableRuns still returns it) and
+    // drained — not-yet-started steps are cancelled, completed steps keep their result, and the
+    // run closes to CANCELLED once every step is terminal (run-state-machine.md section 3).
+    if (WorkflowRunState.CANCEL_REQUESTED.equals(run.status())) {
+      drainForCancellation(tenantId, runId, graph, epoch);
+      return true;
+    }
+    if (!transitionRun(tenantId, runId, WorkflowRunState.RUNNING, "run.started")) {
+      return false;
+    }
     materializeSteps(tenantId, runId, graph, epoch);
     executeUntilQuiesced(tenantId, runId, graph, epoch);
     reconcileRun(tenantId, runId);
     return true;
+  }
+
+  /**
+   * Cooperatively drain a run whose cancellation was requested (S07-12): cancel every
+   * not-yet-started step ({@code PENDING}, {@code READY}, {@code RETRY_WAIT}) to {@code CANCELLED},
+   * while the result and output of any already-completed step is preserved — a completed step is a
+   * terminal state and is never overwritten (invariant 4). The run closes to {@code CANCELLED} once
+   * every step is terminal (handled by {@link #reconcileRun}).
+   *
+   * <p>Cancellation is a cooperative, boundary-level stop, not a mid-flight interruption: a step
+   * that is already executing its {@link StepHandler} is not torn down mid-call — it finishes or
+   * fails and its result is kept; the drain then cancels the remaining not-yet-started steps. The
+   * worker re-reads the run status each pass, so a cancel that arrives while the previous pass was
+   * running is honoured before the next step starts.
+   */
+  private void drainForCancellation(
+      UUID tenantId, UUID runId, WorkflowGraph graph, int leaseEpoch) {
+    // Ensure every graph node has a step row before the drain inspects the step states.
+    materializeSteps(tenantId, runId, graph, leaseEpoch);
+    for (StepStatusRow row : stepRepository.findStepStatuses(tenantId, runId)) {
+      WorkflowStepState state = row.status();
+      // Cancel every not-yet-started step. RETRY_WAIT drains to CANCELLED (cancel precedence
+      // over a pending retry); a RUNNING step is left to reconcile — it is not torn down
+      // mid-flight (in-flight external calls are documented as incomplete, S07-12).
+      if (state == WorkflowStepState.PENDING
+          || state == WorkflowStepState.READY
+          || state == WorkflowStepState.RETRY_WAIT) {
+        transitionStep(
+            tenantId, runId, row.stepKey(), WorkflowStepState.CANCELLED, "step.cancelled");
+      }
+    }
+    reconcileRun(tenantId, runId);
   }
 
   /**
@@ -281,6 +321,18 @@ public class WorkflowWorker {
     }
     boolean allSucceeded =
         statuses.stream().allMatch(s -> WorkflowStepState.SUCCEEDED.equals(s.status()));
+    // A run cancelled while not yet drained closes to CANCELLED once every step is terminal
+    // (S07-12): the drain cancelled the not-yet-started steps, the completed ones were kept.
+    boolean cancelling =
+        runRepository
+            .findRun(tenantId, runId)
+            .map(RunView::status)
+            .map(status -> WorkflowRunState.CANCEL_REQUESTED.equals(status))
+            .orElse(false);
+    if (cancelling) {
+      transitionRun(tenantId, runId, WorkflowRunState.CANCELLED, "run.cancelled");
+      return;
+    }
     if (allSucceeded) {
       transitionRun(tenantId, runId, WorkflowRunState.SUCCEEDED, "run.finished");
     } else {

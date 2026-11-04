@@ -6,6 +6,40 @@
 
 
 
+## S07-12 — Cancel a run (S07-12).
+
+
+
+- **Cooperative cancellation of a run (S07-12).** A user can now ask to cancel a run that is already running: `POST /api/v1/runs/{runId}/cancel` (in `WorkflowRunController`, returns `202`) hands the request to `RunService#requestCancellation(tenantId, runId, source)`, which moves the run `QUEUED → CANCEL_REQUESTED` through the run transition service. Cancel is **idempotent and one-way** (`RequestConflictException` if asked twice; a `no-op` when the run is already terminal or `CANCEL_REQUESTED`), so a duplicate request never fails loudly and never resurrects a run. The run stays `CANCEL_REQUESTED` until a worker observes it; the worker (`WorkflowWorker`) drains cooperatively rather than tearing anything down mid-flight. A step that is already `RUNNING` (holding its lease, executing its `StepHandler`) is **left to finish or fail on its own and its result is kept if it succeeded** — cancellation coordinates a stop at the next safe boundary, not a signal to abort a running side effect. The worker only moves the not-yet-started steps (`PENDING`/`READY`, and — via the new `RETRY_WAIT → CANCELLED` edge in `WorkflowStepState`, so a run parked in retry-backoff can still be cancelled) to `CANCELLED`; **every already-completed step's result and checkpoint is left untouched** (invariant 4: a completed result is never overwritten). Once every step is terminal, `reconcileRun` closes the run to `CANCELLED`. Cancellation therefore never erases a completed result and never moves an already-terminal run. This backs invariant 4 and the S07-12 acceptance criterion; it also fixes the race where a run whose last step is still running could otherwise appear cancelled while a completed result still sits on disk.
+- **Refuse cancel on an already-terminal run.** `POST /api/v1/runs/{runId}/cancel` on a run that has already reached a terminal state (`SUCCEEDED`/`FAILED`/`CANCELLED`) returns `409 Conflict` — the run transition service rejects the terminal→`CANCEL_REQUESTED` transition — so a late or duplicate cancel is a clear conflict, not a silent no-op and never a backwards state change.
+
+
+#### What changed
+- `workflowexecution.web.WorkflowRunController` — adds `POST /api/v1/runs/{runId}/cancel` returning `202 Accepted` (and, through `RunService`, `409` for a terminal run).
+- `workflowapplication.RunService` — `requestCancellation(tenantId, runId, source)`; the run transition is idempotent/one-way.
+- `workflowapplication.WorkflowWorker` — cooperative drain: detects `CANCEL_REQUESTED` and cancels only the not-yet-started steps, reconciling the run to `CANCELLED` once every step is terminal; completed steps and their results are left untouched.
+- `workflowexecution.domain.WorkflowStepState` — adds the `RETRY_WAIT → CANCELLED` edge so a run in retry-backoff remains cancellable.
+- `RunStateMachineService` / `WorkflowStepRunRepository` — the run-level transition to and from `CANCEL_REQUESTED`/`CANCELLED`, guarded by the existing lease fence (invariant 5).
+
+#### Why
+Without a cancel path a stuck or unwanted run can never be stopped; with a naive one it would either leave the run in an inconsistent `CANCEL_REQUESTED` forever, or clobber a result that already completed (invariant 4), or interrupt an in-flight external call and produce an ambiguous outcome the worker cannot reconcile. Cooperative draining at the next safe boundary keeps a completed result authoritative, bounds the blast radius of a cancel to not-yet-started work, and keeps cancellation idempotent so duplicate HTTP requests and at-least-once delivery cannot double-apply (invariant 3).
+
+#### Verification
+- `:apps:agentflow-app:check` — green (compile, unit, architecture, formatting, OpenAPI contract gates; `spotlessApply` applied): **BUILD SUCCESSFUL, 0 failures** across unit + architecture + formatting gates.
+- `:apps:agentflow-app:integrationTest` — **BUILD SUCCESSFUL**; `WorkflowCancelEndToEndIT` (real PostgreSQL, Testcontainers `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`) 3/3: `cancel_a_queued_run_drains_over_real_sql_and_cancels_the_not_started_steps`, `cancel_preserves_a_completed_step_and_cancels_only_the_pending_dependent`, `cancel_is_refused_on_an_already_completed_run_by_the_state_machine`.
+
+#### Tests
+- `WorkflowCancelEndToEndIT` (new, `src/integrationTest`, Testcontainers real PostgreSQL): `cancel_a_queued_run_drains_over_real_sql_and_cancels_the_not_started_steps`, `cancel_preserves_a_completed_step_and_cancels_only_the_pending_dependent`, `cancel_is_refused_on_an_already_completed_run_by_the_state_machine`.
+- `RunServiceTest` — `request_cancellation_moves_a_queued_run_to_cancelling`, plus idempotent/duplicate and terminal-run refusal cases.
+- `WorkflowWorkerTest` — drain cancels only the not-yet-started steps and preserves the completed step's result; a `CANCEL_REQUESTED` run closes to `CANCELLED` once every step is terminal.
+- `WorkflowRunControllerTest` — `POST /runs/{runId}/cancel` returns `202` and verifies `requestCancellation`.
+- `WorkflowStateMachineTest` / `TransitionTableServiceTest` — the new `RETRY_WAIT → CANCELLED` step edge.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section; `docs/architecture/run-state-machine.md` (drain design note) and `docs/architecture/step-state-machine.md` (cooperative cancel / incomplete-external-call note), both updated to match.
+
+#### Schema / contract
+Additive only: no new migration or column (`status` is still `TEXT`; `CANCEL_REQUESTED`/`CANCELLED` already exist on `WorkflowRunState` and `WorkflowStepState`), no change to API pagination, event shapes, or the module boundary beyond the new `/cancel` endpoint; the transition service gains the cancel path, the repository keeps its existing lease-fenced `transition`, and no existing call path changed behaviour.
 ## S07-10 — A retry policy value object with reproducible, bounded backoff (S07-10).
 
 

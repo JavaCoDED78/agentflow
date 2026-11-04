@@ -159,6 +159,24 @@ class WorkflowRunControllerTest {
         .andExpect(jsonPath("$.error_class").value("validation"));
   }
 
+  @Test
+  void cancel_run_returns_202_accepted_with_the_cancelled_snapshot() throws Exception {
+    UUID runId = UUID.randomUUID();
+    RunDto cancelled =
+        new RunDto(
+            runId, WORKFLOW, WorkflowRunState.CANCEL_REQUESTED.name(), 1, OffsetDateTime.now());
+    when(runService.requestCancellation(any(), eq(runId), any())).thenReturn(cancelled);
+
+    mockMvc
+        .perform(post("/api/v1/runs/" + runId + "/cancel"))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.id").value(runId.toString()))
+        .andExpect(jsonPath("$.status").value("CANCEL_REQUESTED"));
+
+    // the tenant (from the verified security context) and the configured actor reach the service
+    verify(runService).requestCancellation(eq(TENANT), eq(runId), eq("local"));
+  }
+
   private static RunDto queuedRun() {
     return new RunDto(
         UUID.randomUUID(), WORKFLOW, WorkflowRunState.QUEUED.name(), 1, OffsetDateTime.now());

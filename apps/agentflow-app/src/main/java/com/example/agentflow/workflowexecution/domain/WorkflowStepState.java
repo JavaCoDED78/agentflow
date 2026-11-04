@@ -27,7 +27,7 @@ import java.util.Set;
  *   READY                  -> RUNNING, SKIPPED, CANCELLED
  *   RUNNING                -> SUCCEEDED, RETRY_WAIT, WAITING_FOR_APPROVAL, FAILED, CANCELLED
  *   WAITING_FOR_APPROVAL   -> RUNNING, FAILED, CANCELLED
- *   RETRY_WAIT             -> RUNNING
+ *   RETRY_WAIT             -> RUNNING, CANCELLED
  *   SUCCEEDED, FAILED, SKIPPED, CANCELLED -> (terminal: no outgoing edge)
  * </pre>
  *
@@ -72,7 +72,10 @@ public enum WorkflowStepState {
    */
   WAITING_FOR_APPROVAL,
 
-  /** The step failed with a retryable error; it is in backoff before a re-claim. */
+  /**
+   * The step failed with a retryable error; it is in backoff before a re-claim. Cancelled while in
+   * backoff it drains to {@link #CANCELLED} (S07-12: cancel precedence over a pending retry).
+   */
   RETRY_WAIT,
 
   /** The step completed successfully and its output reference was persisted. */
@@ -87,7 +90,11 @@ public enum WorkflowStepState {
    */
   SKIPPED,
 
-  /** The step was cancelled while draining. */
+  /**
+   * The step did not execute: a failed predecessor cascaded the skip, an edge predicate was false,
+   * or the run's cancellation drained the step (S07-12) while it was {@link #PENDING}, {@link
+   * #READY}, {@link #RUNNING}, {@link #WAITING_FOR_APPROVAL} or {@link #RETRY_WAIT}.
+   */
   CANCELLED;
 
   private static final Map<WorkflowStepState, Set<WorkflowStepState>> ALLOWED_SUCCESSORS =
@@ -99,7 +106,7 @@ public enum WorkflowStepState {
     map.put(READY, EnumSet.of(RUNNING, SKIPPED, CANCELLED));
     map.put(RUNNING, EnumSet.of(SUCCEEDED, RETRY_WAIT, WAITING_FOR_APPROVAL, FAILED, CANCELLED));
     map.put(WAITING_FOR_APPROVAL, EnumSet.of(RUNNING, FAILED, CANCELLED));
-    map.put(RETRY_WAIT, EnumSet.of(RUNNING));
+    map.put(RETRY_WAIT, EnumSet.of(RUNNING, CANCELLED));
     map.put(SUCCEEDED, EnumSet.noneOf(WorkflowStepState.class));
     map.put(FAILED, EnumSet.noneOf(WorkflowStepState.class));
     map.put(SKIPPED, EnumSet.noneOf(WorkflowStepState.class));

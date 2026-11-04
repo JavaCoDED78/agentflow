@@ -175,6 +175,42 @@ public class WorkflowRunController {
   }
 
   /**
+   * Request cancellation of a run (S07-12): move it to {@code CANCEL_REQUESTED}, a cancellation the
+   * worker cooperatively drains (stops not-yet-started steps, keeps completed ones, closes to
+   * {@code CANCELLED} once drained).
+   *
+   * <p>The operation is idempotent and one-way (run-state-machine.md section 3): it is a no-op when
+   * the run is already {@code CANCELLED} or already {@code CANCEL_REQUESTED}, never moving a run
+   * out of a terminal state and never erasing a completed result. The {@code 202 Accepted} status
+   * reflects that the cancellation is requested and being drained, not yet closed (invariant 11).
+   * Tenant-scoped (invariant 1): a run of another tenant is a {@code 404}.
+   *
+   * @param runId the run to cancel
+   * @return the run status snapshot now reflecting {@code CANCEL_REQUESTED}, or the unchanged
+   *     snapshot when the run is already terminal or cancelling
+   */
+  @Operation(
+      operationId = "cancelRun",
+      summary = "Request cancellation of a run",
+      description =
+          "Moves the run to the cancellation-in-flight state CANCEL_REQUESTED; the worker "
+              + "drains it cooperatively (S07-12). Idempotent and one-way: a no-op on an "
+              + "already-terminal or already-cancelling run (never erases a completed "
+              + "result). Tenant-scoped (invariant 1): a run of another tenant is a 404.")
+  @ApiResponse(
+      responseCode = "202",
+      description = "cancellation requested; the run status snapshot")
+  @ApiResponse(
+      responseCode = "404",
+      description = "no run matches the (tenant_id, runId) the API was asked to cancel")
+  @ApiResponse(responseCode = "503", description = "no database connection is configured")
+  @PostMapping("/{runId}/cancel")
+  ResponseEntity<RunDto> cancelRun(@PathVariable UUID runId) {
+    return ResponseEntity.status(HttpStatus.ACCEPTED)
+        .body(runService.requestCancellation(tenantId, runId, actor));
+  }
+
+  /**
    * The key to deduplicate under: the {@code Idempotency-Key} header when present (the HTTP
    * idempotency-key convention), otherwise the body's {@code idempotencyKey}. A blank header is
    * treated as absent.

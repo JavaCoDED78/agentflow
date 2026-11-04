@@ -169,7 +169,11 @@ class TransitionTableServiceTest {
             15,
             WorkflowStepState.WAITING_FOR_APPROVAL,
             WorkflowStepState.CANCELLED,
-            "run.cancelled"));
+            "run.cancelled"),
+        // S07-12: a step backoff-waiting for a retry drains to CANCELLED when the run is
+        // cancelled (cancel precedence over a pending retry).
+        new StepEdge(
+            16, WorkflowStepState.RETRY_WAIT, WorkflowStepState.CANCELLED, "run.cancelled"));
   }
 
   @ParameterizedTest(name = "step guard {0}: {1} -> {2} via {3}")
