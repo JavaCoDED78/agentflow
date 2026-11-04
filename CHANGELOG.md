@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Stale-run recovery loop that re-claims runs whose lease expired (S07-09)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **A first workflow worker: a durable event loop that runs a claimed run to completion (S07-08)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Persist a redacted, reusable per-step checkpoint for recovery (S07-07)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Persist the attempt lifecycle so the crash window is diagnosable (S07-06)** — [detailed](docs/devlog/sprint-07-durable-execution.md)

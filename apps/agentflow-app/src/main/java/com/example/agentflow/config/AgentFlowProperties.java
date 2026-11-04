@@ -593,6 +593,34 @@ public class AgentFlowProperties {
     private String instanceId = null;
 
     /**
+     * Whether the stale-run recovery scheduler (S07-09) runs in this process. {@code false} by
+     * default so the skeleton (and the API role) does not reclaim runs; the {@code workflow-worker}
+     * role enables it, so the lease recovery lives only where a live worker can drive a re-claimed
+     * run to progress. Enabled explicitly, not "everywhere by default" (apps/agentflow-app
+     * AGENTS.md). Bound from {@code agentflow.worker.recovery-enabled}.
+     */
+    private boolean recoveryEnabled = false;
+
+    /**
+     * Maximum number of expired-lease runs the recovery scheduler re-claims in one pass (S07-09).
+     * Bounded so one recovery scan takes ownership of a limited batch rather than table-scanning
+     * and re-claiming every stale run at once. The worker processes runs serially, so this also
+     * bounds how many runs a single recovery pass takes ownership of. Default 8; a value below 1
+     * fails startup. Bound from {@code agentflow.worker.max-concurrent-runs}.
+     */
+    @Min(value = 1, message = "agentflow.worker.max-concurrent-runs must be at least 1")
+    private int maxConcurrentRuns = 8;
+
+    /**
+     * Recovery-scheduler poll cadence, in milliseconds (S07-09). Drives the {@code @Scheduled} scan
+     * so it runs at {@code recovery-interval-seconds} (the lease default is 5 s, hence 5000 ms). At
+     * least 1 s; a value below 1 fails startup. Bound from {@code
+     * agentflow.worker.recovery-fixed-rate-ms}.
+     */
+    @Min(value = 1, message = "agentflow.worker.recovery-fixed-rate-ms must be at least 1")
+    private long recoveryFixedRateMs = 5_000L;
+
+    /**
      * @return the lease tuning group
      */
     public Lease getLease() {
@@ -612,6 +640,51 @@ public class AgentFlowProperties {
      */
     public void setInstanceId(String instanceId) {
       this.instanceId = instanceId;
+    }
+
+    /**
+     * @return whether the stale-run recovery scheduler (S07-09) runs in this process (default
+     *     {@code false}, enabled by the {@code workflow-worker} role)
+     */
+    public boolean isRecoveryEnabled() {
+      return recoveryEnabled;
+    }
+
+    /**
+     * @param recoveryEnabled whether the recovery scheduler runs in this process (default {@code
+     *     false})
+     */
+    public void setRecoveryEnabled(boolean recoveryEnabled) {
+      this.recoveryEnabled = recoveryEnabled;
+    }
+
+    /**
+     * @return the maximum number of expired-lease runs the recovery scheduler re-claims per pass
+     *     (default {@code 8})
+     */
+    public int getMaxConcurrentRuns() {
+      return maxConcurrentRuns;
+    }
+
+    /**
+     * @param maxConcurrentRuns the per-pass re-claim bound (at least 1)
+     */
+    public void setMaxConcurrentRuns(int maxConcurrentRuns) {
+      this.maxConcurrentRuns = maxConcurrentRuns;
+    }
+
+    /**
+     * @return the recovery-scheduler poll cadence in milliseconds (default {@code 5000})
+     */
+    public long getRecoveryFixedRateMs() {
+      return recoveryFixedRateMs;
+    }
+
+    /**
+     * @param recoveryFixedRateMs the recovery-scheduler poll cadence in milliseconds (at least 1)
+     */
+    public void setRecoveryFixedRateMs(long recoveryFixedRateMs) {
+      this.recoveryFixedRateMs = recoveryFixedRateMs;
     }
 
     /**
