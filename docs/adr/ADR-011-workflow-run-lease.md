@@ -88,8 +88,13 @@ bound from `agentflow.worker.*`, added in `S07-03`), with the defaults below cho
 
 The recovery scan selects `workflow_runs` rows whose `lease_until < now()` and `lease_owner` is
 non-null (plus terminal-state rows are skipped, and concurrency limits are respected, `S07-09`) and
-re-claims them atomically. The index on `lease_until` (`S07-02`) backs that scan; without it the
-recovery loop would table-scan every run, which the operational consequences below forbid.
+re-claims them atomically. **Implemented in `S07-09`** (`WorkflowRecoveryScheduler`, `workflowexecution.worker`):
+the periodic `@Scheduled` scan — enabled by `agentflow.worker.recovery-enabled`, bounded by
+`agentflow.worker.max-concurrent-runs`, driven by `agentflow.worker.recovery-fixed-rate-ms` — re-claims
+through `RunLeaseService#claim` (bumping `lease_epoch`), skips a `-1` claim idempotently, and publishes
+the `agentflow.workflow.recoveries` counter once per reclaim (no `tenantId`/`runId` label, invariant 9).
+The index on `lease_until` (`S07-02`) backs that scan; without it the recovery loop would table-scan
+every run, which the operational consequences below forbid.
 
 **Fencing, not JVM state.** The fence lives in PostgreSQL (`lease_epoch`), not in in-process state
 (invariant 5). Two workers on one run are fenced at the row, so a `synchronized` block or an

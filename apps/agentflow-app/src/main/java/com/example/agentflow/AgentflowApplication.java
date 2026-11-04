@@ -4,6 +4,7 @@ import com.example.agentflow.config.AgentFlowProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Entry point of the AgentFlow Spring Boot artifact (S01-07).
@@ -14,6 +15,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  */
 @SpringBootApplication
 @EnableConfigurationProperties(AgentFlowProperties.class)
+@EnableScheduling
 public class AgentflowApplication {
 
   public static void main(String[] args) {

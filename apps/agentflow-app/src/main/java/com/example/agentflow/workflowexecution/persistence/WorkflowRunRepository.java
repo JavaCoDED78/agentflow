@@ -358,6 +358,43 @@ public class WorkflowRunRepository {
     return results;
   }
 
+  /**
+   * The stale-run recovery scan (S07-09, ADR-011): read the ids + tenants of runs whose run-level
+   * lease has <em>expired</em> — {@code lease_owner} is still set (some worker owned the run) but
+   * {@code lease_until} is already past (that worker stopped heartbeating — crashed, drained or
+   * terminated) — and the run is not in a terminal state (a terminal run is not recoverable). The
+   * results are ordered oldest-expiry-first so the most stale runs are reclaimed first, and bounded
+   * by {@code limit} (the recovery pass concurrency bound, S07-09) so one scan re-claims a limited
+   * batch rather than table-scanning every run.
+   *
+   * <p>This is a <b>platform-wide lease scan</b>, not a single-tenant read: the recovery scheduler
+   * is a background worker-infrastructure operation, not a user request, so there is no per-tenant
+   * security context to scope it to. It selects runs by their lease state, and every re-claim is
+   * still scoped to the run's own tenant through {@code RunLeaseService#claim(tenantId, runId)}
+   * (invariant 1 — the re-claim's {@code WHERE} re-checks {@code tenant_id}, so a cross-tenant id
+   * is indistinguishable from a missing run). The scan is backed by the {@code lease_until} index
+   * (S07-02); without it this would be a Seq Scan over every run, which the operational
+   * consequences in ADR-011 forbid.
+   *
+   * @param limit the maximum number of expired-lease runs to return (the recovery pass bound,
+   *     S07-09)
+   * @return at most {@code limit} {@link ExpiredLeaseRun} entries, oldest-expiry-first (empty when
+   *     none is expired)
+   */
+  public List<ExpiredLeaseRun> findExpiredLeaseRuns(int limit) {
+    List<ExpiredLeaseRun> results =
+        jdbc.query(
+            "SELECT id, tenant_id FROM "
+                + TABLE
+                + " WHERE lease_owner IS NOT NULL AND lease_until < now()"
+                + " AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')"
+                + " ORDER BY lease_until ASC LIMIT ?",
+            (rs, rowNum) ->
+                new ExpiredLeaseRun((UUID) rs.getObject("id"), (UUID) rs.getObject("tenant_id")),
+            limit);
+    return results;
+  }
+
   /** Binds a nullable {@code UUID} so an absent key is stored as SQL {@code NULL}. */
   private static void bindNullableKey(PreparedStatement ps, int index, UUID value)
       throws SQLException {
