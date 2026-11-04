@@ -263,7 +263,8 @@ class RunServiceAtomicIT {
             new WorkflowDefinitionRepository(jdbc),
             new WorkflowVersionRepository(jdbc),
             new AuditService(null),
-            null));
+            null),
+        null);
   }
 
   private static RunService runServiceWithFailingOutbox() {
@@ -282,7 +283,8 @@ class RunServiceAtomicIT {
             new WorkflowDefinitionRepository(jdbc),
             new WorkflowVersionRepository(jdbc),
             new AuditService(null),
-            null));
+            null),
+        null);
   }
 
   private static TransactionTemplate transaction() {

@@ -47,6 +47,7 @@ class RunServiceTest {
       new IdempotencyKeyService(runRepository);
   private final OutboxService outboxService = mock(OutboxService.class);
   private final WorkflowVersionService versionService = mock(WorkflowVersionService.class);
+  private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
 
   private RunService service;
 
@@ -63,7 +64,9 @@ class RunServiceTest {
 
   @BeforeEach
   void setUp() {
-    service = new RunService(runRepository, idempotencyKeyService, outboxService, versionService);
+    service =
+        new RunService(
+            runRepository, idempotencyKeyService, outboxService, versionService, transitionService);
   }
 
   @Test
@@ -128,7 +131,7 @@ class RunServiceTest {
   @Test
   void create_run_without_a_database_reports_unavailable() {
     RunService noDb =
-        new RunService(null, new IdempotencyKeyService(null), outboxService, versionService);
+        new RunService(null, new IdempotencyKeyService(null), outboxService, versionService, null);
 
     assertThatThrownBy(
             () -> noDb.createRun(tenant, "alice", new CreateRunRequest(workflow, null), null))
@@ -258,7 +261,8 @@ class RunServiceTest {
 
   @Test
   void get_run_without_a_database_reports_unavailable() {
-    RunService noDb = new RunService(null, idempotencyKeyService, outboxService, versionService);
+    RunService noDb =
+        new RunService(null, idempotencyKeyService, outboxService, versionService, null);
 
     assertThatThrownBy(() -> noDb.getRun(tenant, runId))
         .isInstanceOf(ResponseStatusException.class)
@@ -266,6 +270,71 @@ class RunServiceTest {
         .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     // No read is attempted when there is no database to read from (invariant 2).
     verify(runRepository, never()).findRun(any(), any());
+  }
+
+  // ---------------------------------------------------------------------------
+  // requestCancellation (S07-12): the two-phase cancel's first phase
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void request_cancellation_moves_a_queued_run_to_cancel_requested_and_returns_the_snapshot() {
+    // The initial read sees a QUEUED run; after the transition service commits the
+    // CANCEL_REQUESTED transition the service re-reads and sees the new state.
+    RunView queued = new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, created);
+    RunView cancelled =
+        new RunView(runId, versionId, WorkflowRunState.CANCEL_REQUESTED, 1, created);
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(Optional.of(queued))
+        .thenReturn(Optional.of(cancelled));
+
+    RunDto result = service.requestCancellation(tenant, runId, "alice");
+
+    // phase 1: the run is moved to the cancellation-in-flight state
+    assertThat(result.status()).isEqualTo("CANCEL_REQUESTED");
+    verify(transitionService)
+        .transitionRun(tenant, runId, WorkflowRunState.CANCEL_REQUESTED, "run.cancel", "alice");
+    // the returned snapshot reflects the new state (re-read after the transition)
+    assertThat(result).extracting("id").isEqualTo(runId);
+    assertThat(result).extracting("status").isEqualTo("CANCEL_REQUESTED");
+  }
+
+  @Test
+  void request_cancellation_is_a_no_op_on_an_already_terminal_run() {
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(new RunView(runId, versionId, WorkflowRunState.SUCCEEDED, 1, created)));
+
+    RunDto result = service.requestCancellation(tenant, runId, "alice");
+
+    // cancel never moves a run out of a terminal state (invariant 4): the snapshot is unchanged and
+    // no transition is attempted
+    assertThat(result.status()).isEqualTo("SUCCEEDED");
+    verify(transitionService, never()).transitionRun(any(), any(), any(), anyString(), any());
+  }
+
+  @Test
+  void request_cancellation_is_a_no_op_on_an_already_cancelling_run() {
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.CANCEL_REQUESTED, 1, created)));
+
+    RunDto result = service.requestCancellation(tenant, runId, "alice");
+
+    assertThat(result.status()).isEqualTo("CANCEL_REQUESTED");
+    // a duplicate request does not re-transition: the run is already cancelling
+    verify(transitionService, never()).transitionRun(any(), any(), any(), anyString(), any());
+  }
+
+  @Test
+  void request_cancellation_is_a_404_for_a_run_the_tenant_does_not_own() {
+    when(runRepository.findRun(tenant, runId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.requestCancellation(tenant, runId, "alice"))
+        .isInstanceOf(ResponseStatusException.class)
+        .extracting(e -> ((ResponseStatusException) e).getStatusCode())
+        .isEqualTo(HttpStatus.NOT_FOUND);
+    verify(transitionService, never()).transitionRun(any(), any(), any(), anyString(), any());
   }
 
   /** Builds the persistence view a keyed replay compares against, over {@code payload}. */

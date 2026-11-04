@@ -99,6 +99,14 @@ is driven by an explicit event or command, never by an assignment.
 - **`WAITING_FOR_APPROVAL` can end in two ways.** An approved gate resumes the run
   (`run.approved`); a rejected or expired gate fails it (`run.rejected`, guard 4),
   because the blocked side effect must not execute.
+- **Draining is cooperative, and a completed result is preserved.** When `CANCEL_REQUESTED`
+  completes to `CANCELLED` (guard 13), the worker drains the run rather than interrupting
+  mid-flight: it cancels only the not-yet-started steps (`PENDING`/`READY`/`RETRY_WAIT` →
+  `CANCELLED`, including the `RETRY_WAIT → CANCELLED` edge so a run parked in retry-backoff
+  can still be cancelled) and **leaves every already-completed step untouched** — a completed
+  step is terminal and its result/output is never overwritten (invariant 4). The run closes to
+  `CANCELLED` once every step is terminal. This backs the S07-12 acceptance criterion:
+  cancellation never erases a completed result.
 - **Terminal states are absorbing.** Guards 1–13 list no transition *out of*
   `SUCCEEDED`, `FAILED` or `CANCELLED`; the Java enum models them as terminal so a
   second transition on the same run is a domain error (`S05-10`).

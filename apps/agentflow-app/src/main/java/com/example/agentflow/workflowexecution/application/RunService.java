@@ -66,17 +66,20 @@ public class RunService {
   private final IdempotencyKeyService idempotencyKeyService;
   private final OutboxService outboxService;
   private final WorkflowVersionService versionService;
+  private final RunStateMachineService transitionService;
 
   @Autowired
   public RunService(
       @Autowired(required = false) WorkflowRunRepository runRepository,
       IdempotencyKeyService idempotencyKeyService,
       OutboxService outboxService,
-      WorkflowVersionService versionService) {
+      WorkflowVersionService versionService,
+      @Autowired(required = false) RunStateMachineService transitionService) {
     this.runRepository = runRepository;
     this.idempotencyKeyService = idempotencyKeyService;
     this.outboxService = outboxService;
     this.versionService = versionService;
+    this.transitionService = transitionService;
   }
 
   /**
@@ -179,6 +182,78 @@ public class RunService {
                 () ->
                     new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
+    return runDto(run);
+  }
+
+  /**
+   * Request cancellation of a run (S07-12): move it to the cancellation-in-flight state {@code
+   * CANCEL_REQUESTED}, which the worker cooperatively drains — it stops not-yet-started steps,
+   * keeps completed ones, and closes the run to {@code CANCELLED} once drained.
+   *
+   * <p>Cancellation is two-phase and one-way (run-state-machine.md section 3): a run never goes
+   * straight to the terminal {@code CANCELLED}. This method performs the first phase only. The
+   * second phase — {@code CANCEL_REQUESTED} → {@code CANCELLED} — is the worker's job (invariant 4:
+   * the single transition service applies it, fenced by the run's {@code lease_epoch}).
+   *
+   * <p>Cancel is a no-op once the run is already terminal or already cancelling: it never erases a
+   * completed result (invariant 4) and never moves a run out of a terminal state, so a double
+   * request is idempotent — it returns the current snapshot without a second event.
+   *
+   * <p>The {@code tenantId} comes from the verified security context; it is never taken from the
+   * request body or headers (invariant 1).
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param runId the run to cancel
+   * @param actor the cancelling actor recorded on the cancel event; {@code null} for a system actor
+   * @return the run status snapshot now reflecting {@code CANCEL_REQUESTED}; the unchanged snapshot
+   *     when the run is already terminal or already {@code CANCEL_REQUESTED}
+   * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
+   *     {@code 404} when no run matches {@code (tenant_id, runId)}, {@code 409} when the run is
+   *     already {@code CANCELLED} or {@code CANCEL_REQUESTED}
+   */
+  @Transactional
+  public RunDto requestCancellation(UUID tenantId, UUID runId, String actor) {
+    requireRepository(runRepository);
+    RunView run =
+        runRepository
+            .findRun(tenantId, runId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
+    // Already terminal (SUCCEEDED / FAILED / CANCELLED) or already cancelling: a no-op so a
+    // duplicate request never erases a completed result or re-drains an already-draining run.
+    if (run.status().isTerminal() || WorkflowRunState.CANCEL_REQUESTED.equals(run.status())) {
+      return runDto(run);
+    }
+    // Phase 1 of two-phase cancel: a single, transactional transition + event append via the
+    // transition service (invariant 4). The transition is atomic with the outbox event.
+    if (transitionService == null) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "cancelling a run is unavailable: no database connection is configured");
+    }
+    transitionService.transitionRun(
+        tenantId, runId, WorkflowRunState.CANCEL_REQUESTED, "run.cancel", actor);
+    // Re-read to reflect the new state in the returned snapshot (the event already committed
+    // with the run in the transition service's transaction).
+    RunView cancelled =
+        runRepository
+            .findRun(tenantId, runId)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "cancel did not persist: no run after a transition to CANCEL_REQUESTED"));
+    return runDto(cancelled);
+  }
+
+  /**
+   * Build the API {@link RunDto} from a tenant-scoped run snapshot.
+   *
+   * @param run the tenant-scoped run snapshot
+   * @return the API DTO
+   */
+  private static RunDto runDto(RunView run) {
     return new RunDto(
         run.runId(), run.workflowVersionId(), run.status().name(), run.attempt(), run.createdAt());
   }
