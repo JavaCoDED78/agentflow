@@ -127,6 +127,7 @@ each step transition appends a `workflow_events` row.
 | Concept | Shape | Meaning |
 |---|---|---|
 | **Lease** | `workflow_runs.lease_owner`, `lease_until`, `lease_epoch`; heartbeat; recovery job | A worker atomically claims a run and receives `lease_until`, `worker_id` and an incremented `lease_epoch`. Only the current owner may extend it; every worker write re-checks the expected `lease_epoch` (`fencing`) so a stale worker cannot overwrite the new owner's result. |
+| **Retry policy** | immutable value object (`maxAttempts`, `baseDelay`, `multiplier`, `maxDelay`, `jitter`); `agentflow.worker.retry.*` | The retry configuration a worker applies when a step fails (owned by `workflowexecution.domain`, `S07-10`). Computes the capped, optionally-jittered backoff and the next retry instant; it never sleeps — the worker stores `nextAttemptTime` and checks `now >= it` instead of busy-looping. `isRetryAllowed(attemptsUsed)` is `attemptsUsed < maxAttempts`, so the `maxAttempts`-th failure is terminal (invariant 10: the reference instant and jitter source are injected, so backoff is reproducible in tests). The classifier (`S07-11`) decides *whether* to retry against this policy's *how*. |
 
 ---
 
