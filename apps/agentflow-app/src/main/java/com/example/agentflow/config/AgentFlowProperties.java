@@ -583,6 +583,7 @@ public class AgentFlowProperties {
   public static class Worker {
 
     private final Lease lease = new Lease();
+    @Valid private final Retry retry = new Retry();
 
     /**
      * This worker instance id, bound from {@code agentflow.worker.instance-id}, recorded on {@code
@@ -625,6 +626,13 @@ public class AgentFlowProperties {
      */
     public Lease getLease() {
       return lease;
+    }
+
+    /**
+     * @return the retry-tuning group (S07-10)
+     */
+    public Retry getRetry() {
+      return retry;
     }
 
     /**
@@ -764,6 +772,124 @@ public class AgentFlowProperties {
        */
       public void setRecoveryIntervalSeconds(int recoveryIntervalSeconds) {
         this.recoveryIntervalSeconds = recoveryIntervalSeconds;
+      }
+    }
+
+    /**
+     * Retry policy for a failed step (S07-10). Bound from {@code agentflow.worker.retry.*}. The
+     * values back a {@link com.example.agentflow.workflowexecution.domain.RetryPolicy} value
+     * object; they are configuration, not magic numbers (apps/agentflow-app AGENTS.md: retry lives
+     * in configuration). The {@code multiplier} and the {@code maxDelay >= baseDelay} relationship
+     * are not Jakarta-validated here — {@link
+     * com.example.agentflow.workflowexecution.domain.RetryPolicy#of} rejects an invalid combination
+     * at bean creation, so a misconfiguration still fails boot.
+     */
+    public static class Retry {
+
+      /**
+       * Maximum number of attempts (the initial attempt plus retries) before a step fails
+       * permanently. Default 3.
+       */
+      @Min(value = 1, message = "agentflow.worker.retry.max-attempts must be at least 1")
+      private int maxAttempts = 3;
+
+      /**
+       * Base delay, in seconds, before the first retry ({@code multiplier^0}). Grows exponentially
+       * from it. Default 1; 0 is allowed (no delay on the first retry).
+       */
+      @Min(value = 0, message = "agentflow.worker.retry.base-delay-seconds must be non-negative")
+      private long baseDelaySeconds = 1;
+
+      /**
+       * Exponential growth factor applied per attempt. {@code 1.0} keeps the delay constant; a
+       * value above 1 grows it. Must be at least 1.0 (validated in {@link
+       * com.example.agentflow.workflowexecution.domain.RetryPolicy#of}). Default 2.0.
+       */
+      private double multiplier = 2.0;
+
+      /**
+       * Maximum delay, in seconds, every backoff is capped to. Must be at least {@code
+       * baseDelay-seconds} (validated in {@link
+       * com.example.agentflow.workflowexecution.domain.RetryPolicy#of}). Default 60.
+       */
+      @Min(value = 1, message = "agentflow.worker.retry.max-delay-seconds must be at least 1")
+      private long maxDelaySeconds = 60;
+
+      /**
+       * Whether full jitter is applied to the computed backoff (reduces a thundering herd while
+       * keeping the maximum wait bounded by {@code max-delay-seconds}). Default true.
+       */
+      private boolean jitter = true;
+
+      /**
+       * @return the maximum number of attempts before a step fails permanently (default {@code 3})
+       */
+      public int getMaxAttempts() {
+        return maxAttempts;
+      }
+
+      /**
+       * @param maxAttempts the maximum number of attempts before a step fails permanently (at least
+       *     1)
+       */
+      public void setMaxAttempts(int maxAttempts) {
+        this.maxAttempts = maxAttempts;
+      }
+
+      /**
+       * @return the base retry delay in seconds (default {@code 1})
+       */
+      public long getBaseDelaySeconds() {
+        return baseDelaySeconds;
+      }
+
+      /**
+       * @param baseDelaySeconds the base retry delay in seconds (non-negative)
+       */
+      public void setBaseDelaySeconds(long baseDelaySeconds) {
+        this.baseDelaySeconds = baseDelaySeconds;
+      }
+
+      /**
+       * @return the exponential growth factor (at least 1.0)
+       */
+      public double getMultiplier() {
+        return multiplier;
+      }
+
+      /**
+       * @param multiplier the exponential growth factor (at least 1.0)
+       */
+      public void setMultiplier(double multiplier) {
+        this.multiplier = multiplier;
+      }
+
+      /**
+       * @return the capped maximum retry delay in seconds (default {@code 60})
+       */
+      public long getMaxDelaySeconds() {
+        return maxDelaySeconds;
+      }
+
+      /**
+       * @param maxDelaySeconds the capped maximum retry delay in seconds (at least 1)
+       */
+      public void setMaxDelaySeconds(long maxDelaySeconds) {
+        this.maxDelaySeconds = maxDelaySeconds;
+      }
+
+      /**
+       * @return whether full jitter is applied to the backoff (default {@code true})
+       */
+      public boolean isJitter() {
+        return jitter;
+      }
+
+      /**
+       * @param jitter whether full jitter is applied to the backoff
+       */
+      public void setJitter(boolean jitter) {
+        this.jitter = jitter;
       }
     }
   }
