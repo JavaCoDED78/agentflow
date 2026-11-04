@@ -11,6 +11,7 @@ import com.example.agentflow.workflowdefinition.application.WorkflowVersionServi
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowDefinitionRepository;
 import com.example.agentflow.workflowdefinition.persistence.WorkflowVersionRepository;
+import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import com.example.agentflow.workflowexecution.persistence.CheckpointSnapshot;
@@ -115,6 +116,7 @@ class WorkflowWorkerEndToEndIT {
 
     transitionService = new RunStateMachineService(runRepo, stepRepo, eventService);
     leaseService = new RunLeaseService(runRepo, Clock.systemUTC(), properties);
+    RunHeartbeatService heartbeat = new RunHeartbeatService(runRepo, Clock.systemUTC(), properties);
     checkpointAdapter = new CheckpointAdapter(stepRepo, properties);
 
     // Build the worker with the MVP handler so the loop executes the deterministic NOOP graph.
@@ -124,9 +126,10 @@ class WorkflowWorkerEndToEndIT {
             stepRepo,
             versionService,
             leaseService,
+            heartbeat,
             transitionService,
             checkpointAdapter,
-            List.of(new DeterministicStepHandler()),
+            List.<StepHandler>of(new DeterministicStepHandler()),
             properties);
   }
 
