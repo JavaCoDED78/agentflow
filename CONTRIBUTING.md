@@ -86,9 +86,28 @@ safe to run.
 
 ## Changelog
 
-- Add a user-visible entry under `[Unreleased]` in
-  [`CHANGELOG.md`](CHANGELOG.md) (categories `Added` / `Changed` / `Fixed` /
-  `Security`) for notable API, event, security or operational changes.
+The changelog is split so the root file stays a fast, navigable index while the
+per-task detail stays readable. Keep the three layers in sync in one PR:
+
+- [`CHANGELOG.md`](CHANGELOG.md) is a **slim index**: one line per task with a
+  link to the detailed record. Do not paste the verbose `What changed` / `Why` /
+  `Verification` / `Tests` / `Docs` here — that detail lives in `docs/devlog/` or
+  `docs/changelog/` below.
+- [`docs/devlog/`](docs/devlog/README.md) holds the **detailed per-task records**
+  for recent work (current sprints — e.g. Sprint 6 messaging and Sprint 7 durable
+  execution). Add the detailed record for your task here, under the current
+  sprint's file, using its `## S##-## — <title>` heading. The root `CHANGELOG.md`
+  one-liner for the task links back here.
+- [`docs/changelog/`](docs/changelog/README.md) is the **archive** of detailed
+  records for the releases up to and including `0.9.3` (tasks `S01`–`S05`),
+  split by category (`added` / `changed` / `fixed` / `security`). Do not add new
+  records here unless a release is being retired into the archive.
+
+For a notable API, event, security or operational change, add one line under
+`[Unreleased]` (categories `Added` / `Changed` / `Fixed` / `Security`) in
+[`CHANGELOG.md`](CHANGELOG.md), linking to the detailed record in
+[`docs/devlog/`](docs/devlog/README.md).
+
 - If nothing in `CHANGELOG.md` needs updating, record `N/A` with a reason in the
   PR template rather than leaving an empty entry.
 
