@@ -4,6 +4,8 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import java.util.List;
+import java.util.UUID;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -620,6 +622,101 @@ public class AgentFlowProperties {
      */
     @Min(value = 1, message = "agentflow.worker.recovery-fixed-rate-ms must be at least 1")
     private long recoveryFixedRateMs = 5_000L;
+
+    /**
+     * Whether the worker poll loop (S07-13, the graceful-shutdown lifecycle) drives the {@link
+     * WorkflowWorker} in this process. {@code true} by default for the {@code workflow-worker}
+     * role; the {@code api} role and the skeleton leave it {@code false} so no loop runs without a
+     * live worker. Enabled explicitly, not "everywhere by default" (apps/agentflow-app AGENTS.md).
+     * Bound from {@code agentflow.worker.loop-enabled}.
+     */
+    private boolean loopEnabled = true;
+
+    /**
+     * The tenants the worker poll loop serves. The loop calls {@code WorkflowWorker#pollOnce} for
+     * each of these on every cadence; an empty list serves nothing until a tenant source is wired.
+     * This is the local-skeleton placeholder for the eventual per-tenant Kafka-consumer driver: the
+     * production driver discovers tenants from the trusted identity layer, never from a body/query
+     * header (invariant 1), so this list is an operator-set start-up set, never a trust anchor.
+     * Defaults to empty. Bound from {@code agentflow.worker.tenants}.
+     */
+    private List<UUID> tenants = List.of();
+
+    /**
+     * Maximum time in seconds the worker lifecycle waits for the in-flight step to finish before it
+     * abandons the drain on shutdown (S07-13). The bounded drain gives a step a fair chance to
+     * complete cleanly; when the timeout elapses the loop thread is left to run (its run-level
+     * lease then expires and the stale-run recovery scheduler re-claims the run, so termination
+     * never leaves a {@code RUNNING} run without recovery). At least 1 s; a value below 1 fails
+     * startup. Bound from {@code agentflow.worker.shutdown.timeout-seconds}.
+     */
+    @Min(value = 1, message = "agentflow.worker.shutdown.timeout-seconds must be at least 1")
+    private long shutdownTimeoutSeconds = 30L;
+
+    /**
+     * @return whether the worker poll loop runs in this process (see {@link #loopEnabled})
+     */
+    public boolean isLoopEnabled() {
+      return loopEnabled;
+    }
+
+    /**
+     * @param loopEnabled whether the worker poll loop runs in this process (default {@code true})
+     */
+    public void setLoopEnabled(boolean loopEnabled) {
+      this.loopEnabled = loopEnabled;
+    }
+
+    /**
+     * @return the tenants the worker poll loop serves (empty by default)
+     */
+    public List<UUID> getTenants() {
+      return tenants;
+    }
+
+    /**
+     * @param tenants the tenants the worker poll loop serves (an empty list serves nothing)
+     */
+    public void setTenants(List<UUID> tenants) {
+      this.tenants = tenants == null ? List.of() : tenants;
+    }
+
+    /**
+     * @return the bounded-drain ceiling on shutdown, in seconds (default {@code 30})
+     */
+    public long getShutdownTimeoutSeconds() {
+      return shutdownTimeoutSeconds;
+    }
+
+    /**
+     * @param shutdownTimeoutSeconds the bounded-drain ceiling on shutdown in seconds (at least 1)
+     */
+    public void setShutdownTimeoutSeconds(long shutdownTimeoutSeconds) {
+      this.shutdownTimeoutSeconds = shutdownTimeoutSeconds;
+    }
+
+    /**
+     * The worker poll loop cadence, in milliseconds (S07-13). The {@link WorkerLifecycle} sleeps
+     * this long between {@code WorkflowWorker#pollOnce} passes over the configured tenants. At
+     * least 100 ms; a value below 100 fails startup (a sub-second poll loop is not a loop, it is a
+     * spin). Bound from {@code agentflow.worker.poll-interval-ms}.
+     */
+    @Min(value = 100, message = "agentflow.worker.poll-interval-ms must be at least 100")
+    private long pollIntervalMs = 5_000L;
+
+    /**
+     * @return the worker poll loop cadence in milliseconds (default {@code 5000})
+     */
+    public long getPollIntervalMs() {
+      return pollIntervalMs;
+    }
+
+    /**
+     * @param pollIntervalMs the worker poll loop cadence in milliseconds (at least 100)
+     */
+    public void setPollIntervalMs(long pollIntervalMs) {
+      this.pollIntervalMs = pollIntervalMs;
+    }
 
     /**
      * @return the lease tuning group

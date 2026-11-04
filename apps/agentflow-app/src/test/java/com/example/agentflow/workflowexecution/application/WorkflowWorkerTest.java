@@ -538,6 +538,7 @@ class WorkflowWorkerTest {
         stepRepository,
         versionService,
         leaseService,
+        null,
         transitionService,
         checkpointAdapter,
         handlers,
