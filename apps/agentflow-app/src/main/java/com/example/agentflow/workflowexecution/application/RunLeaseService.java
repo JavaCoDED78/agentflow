@@ -37,6 +37,15 @@ public class RunLeaseService {
   private final AgentFlowProperties properties;
 
   /**
+   * This worker's stable identity as a {@link UUID}, memoized so every {@link #claim} and every
+   * heartbeat (the lease owner echoed on the fence) agree on one id. It is the configured {@code
+   * agentflow.worker.instance-id} when it is a valid UUID, otherwise a single generated one so
+   * {@code lease_owner} is never blank on the recovery scan. A configured id that is not a valid
+   * UUID falls through to generation rather than failing the claim.
+   */
+  private UUID workerId;
+
+  /**
    * @param runRepository the run repository, {@code null} when no {@link
    *     org.sql.javax.sql.DataSource} is configured (see S01-02)
    * @param clock the injected clock (UTC in production, fixed in time-dependent tests)
@@ -67,8 +76,21 @@ public class RunLeaseService {
     OffsetDateTime leaseUntil =
         OffsetDateTime.ofInstant(clock.instant(), clock.getZone())
             .plusSeconds(properties.getWorker().getLease().getDurationSeconds());
-    Optional<Integer> epoch = runRepository.claim(tenantId, runId, resolveWorkerId(), leaseUntil);
+    Optional<Integer> epoch = runRepository.claim(tenantId, runId, workerId(), leaseUntil);
     return epoch.orElse(-1);
+  }
+
+  /**
+   * @return this worker's stable instance id as a {@link UUID} (memoized): the configured {@code
+   *     agentflow.worker.instance-id} when it is a valid UUID, otherwise a single generated one.
+   *     Memoized so the worker echoes the exact {@code lease_owner} the claim returned on its
+   *     heartbeat fence (S07-04) — a freshly generated id per call would never match.
+   */
+  public UUID workerId() {
+    if (workerId == null) {
+      workerId = resolveWorkerId();
+    }
+    return workerId;
   }
 
   /**

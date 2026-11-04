@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Graceful shutdown of the workflow worker (S07-13)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Cooperative cancellation of a run (S07-12)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Classify step failures into a retry decision (`ErrorClass`; only transient faults retry, others terminate) (S07-11)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Retry policy value object with reproducible, bounded backoff (S07-10)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
@@ -45,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Transactional outbox table (`outbox_events`, `S06-03`)** — [detailed](docs/devlog/sprint-06-messaging.md)
 - **Kafka topic catalogue (`S06-02`)** — [detailed](docs/devlog/sprint-06-messaging.md)
 - **Event envelope v1 contract (`S06-01`)** — [detailed](docs/devlog/sprint-06-messaging.md)
+
+### Changed
+- **The workflow worker now heartbeats the run-level lease during a long-running step (so the lease cannot expire mid-run and trigger a spurious re-claim); the blocking step runs outside the poll transaction, committing each durable state change on its own (`S07-04`)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 
 ## Archived releases (≤ 0.9.3)
 

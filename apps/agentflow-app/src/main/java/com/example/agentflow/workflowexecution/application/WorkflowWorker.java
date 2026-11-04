@@ -21,8 +21,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -33,27 +40,51 @@ import org.springframework.web.server.ResponseStatusException;
  * fence (invariants 4 and 5); the worker holds no in-flight state of its own, so a restart leaves
  * each run at its last persisted state for recovery.
  *
+ * <p>The blocking {@link StepHandler#handle} runs <em>outside</em> any transaction: the claim and
+ * each step/run transition commit through their own {@code @Transactional} service method, so no
+ * transaction holds the {@code workflow_runs} row lock across the handler. That is deliberate — the
+ * run-level lease heartbeat ({@link RunHeartbeatService}, S07-04) extends {@code lease_until} from
+ * a dedicated thread <em>during</em> a long-running step, and a fenced lease {@code UPDATE} cannot
+ * run while this worker's poll transaction still locks the row (the gap-b fix). {@link #pollOnce}
+ * is therefore not itself {@code @Transactional}.
+ *
  * @see RunStateMachineService
+ * @see RunHeartbeatService
  */
-public class WorkflowWorker {
+public class WorkflowWorker implements DisposableBean {
 
   /** The output-schema version carried on every step checkpoint this worker persists (S07-07). */
   public static final String STEP_OUTPUT_SCHEMA_VERSION = "1";
+
+  private static final Logger log = LoggerFactory.getLogger(WorkflowWorker.class);
 
   private final WorkflowRunRepository runRepository;
   private final WorkflowStepRunRepository stepRepository;
   private final WorkflowVersionService versionService;
   private final RunLeaseService leaseService;
+  private final RunHeartbeatService heartbeat;
   private final RunStateMachineService transitionService;
   private final CheckpointAdapter checkpointAdapter;
   private final List<StepHandler> handlers;
   private final String actor;
+
+  private final AgentFlowProperties properties;
+
+  /**
+   * The heartbeat scheduler: a single daemon thread that extends the run's lease while a step is
+   * executing (S07-04, the gap-b fix). {@code null} when no {@link RunHeartbeatService} is wired —
+   * a DB-less skeleton has no lease to extend — so the loop never starts a thread that writes
+   * nothing.
+   */
+  private final ScheduledExecutorService heartbeatScheduler;
 
   /**
    * @param runRepository the tenant-scoped run repository
    * @param stepRepository the tenant-scoped step repository
    * @param versionService the pinned graph loader (the {@code workflowdefinition} public API)
    * @param leaseService the run claim service (S07-03)
+   * @param heartbeat the run lease heartbeat (S07-04); {@code null} when no database is configured
+   *     (a DB-less skeleton has no lease to extend), so the loop starts no heartbeat thread
    * @param transitionService the single step / run transition service (invariant 4)
    * @param checkpointAdapter the redacting, size-bounding checkpoint seam (S07-07)
    * @param handlers the {@link StepHandler} beans, resolved by node type at runtime
@@ -64,6 +95,7 @@ public class WorkflowWorker {
       WorkflowStepRunRepository stepRepository,
       WorkflowVersionService versionService,
       RunLeaseService leaseService,
+      RunHeartbeatService heartbeat,
       RunStateMachineService transitionService,
       CheckpointAdapter checkpointAdapter,
       List<StepHandler> handlers,
@@ -72,10 +104,58 @@ public class WorkflowWorker {
     this.stepRepository = stepRepository;
     this.versionService = versionService;
     this.leaseService = leaseService;
+    this.heartbeat = heartbeat;
     this.transitionService = transitionService;
     this.checkpointAdapter = checkpointAdapter;
     this.handlers = handlers;
     this.actor = resolveActor(properties);
+    this.properties = properties;
+    // A heartbeat thread only helps when there is a lease to extend. Guard on the same
+    // {@code null} the {@link #executeStep} heartbeat path guards, so a DB-less skeleton builds no
+    // scheduler at all.
+    this.heartbeatScheduler =
+        heartbeat == null
+            ? null
+            : Executors.newSingleThreadScheduledExecutor(heartbeatThreadFactory());
+  }
+
+  /**
+   * Graceful shutdown of the heartbeat scheduler (S07-13). The loop is driven by {@link
+   * WorkerLifecycle}, which stops the loop thread and the in-flight step; this releases the
+   * scheduler's daemon thread when the worker bean itself is destroyed. A heartbeat task already
+   * stopped cancelling the run's lease once its step concluded (see {@link #stopHeartbeat}).
+   */
+  @Override
+  public void destroy() {
+    ScheduledExecutorService scheduler = heartbeatScheduler;
+    if (scheduler != null) {
+      scheduler.shutdownNow();
+    }
+  }
+
+  /**
+   * Shutdown flag (S07-13, graceful-shutdown lifecycle). When set the poll loop stops claiming new
+   * runs and lets the in-flight run/step finish before it returns (bounded drain is the {@link
+   * WorkerLifecycle}'s job). It is {@code volatile} so a {@link #stop()} issued from the lifecycle
+   * thread is visible to the loop thread without a lock.
+   */
+  private volatile boolean shuttingDown;
+
+  /**
+   * @return {@code true} once {@link #stop()} has been called (the worker is shutting down)
+   */
+  public boolean isShuttingDown() {
+    return shuttingDown;
+  }
+
+  /**
+   * Begin a graceful shutdown (S07-13). Sets the shutdown flag so {@link #pollOnce} stops claiming
+   * new runs; an already in-flight run is allowed to finish its current step sequence (bounded
+   * drain), then the loop returns control to the caller. This is the worker's half of the shutdown
+   * contract the {@link WorkerLifecycle} drives on {@code SIGTERM}.
+   */
+  public void stop() {
+    shuttingDown = true;
   }
 
   /**
@@ -86,11 +166,22 @@ public class WorkflowWorker {
    * @return the number of runs the worker made progress on this poll (claimed and scheduled or
    *     finished at least one step, or moved to a terminal state)
    */
-  @Transactional
   public int pollOnce(UUID tenantId) {
+    // Graceful shutdown (S07-13): once shutting down, stop claiming new runs. An already in-flight
+    // run/step finishes on its own; the lifecycle bounds how long it is given. Returning zero here
+    // (rather than processing) is what lets termination stop making progress without losing runs —
+    // the lease expires and the stale-run recovery scheduler re-claims them.
+    if (shuttingDown) {
+      return 0;
+    }
     List<UUID> claimable = runRepository.findClaimableRuns(tenantId);
     int processed = 0;
     for (UUID runId : claimable) {
+      // Graceful shutdown (S07-13): stop starting new runs once shutting down; the run we are
+      // already processing finishes its current step sequence, then the loop returns.
+      if (shuttingDown) {
+        break;
+      }
       if (processRun(tenantId, runId)) {
         processed++;
       }
@@ -113,6 +204,11 @@ public class WorkflowWorker {
     if (epoch == -1) {
       return false;
     }
+    // The stable lease owner the claim stamped on {@code lease_owner} (memoized by
+    // RunLeaseService),
+    // echoed on the heartbeat fence below — a freshly generated id per call would never match the
+    // fenced heartbeat and every extension would be rejected.
+    UUID owner = leaseService.workerId();
     RunView run = runRepository.findRun(tenantId, runId).orElse(null);
     if (run == null) {
       return false;
@@ -133,7 +229,7 @@ public class WorkflowWorker {
       return false;
     }
     materializeSteps(tenantId, runId, graph, epoch);
-    executeUntilQuiesced(tenantId, runId, graph, epoch);
+    executeUntilQuiesced(tenantId, runId, graph, owner, epoch);
     reconcileRun(tenantId, runId);
     return true;
   }
@@ -194,7 +290,7 @@ public class WorkflowWorker {
    * through {@link CheckpointAdapter} so its output can be reused on recovery (S07-07).
    */
   private void executeUntilQuiesced(
-      UUID tenantId, UUID runId, WorkflowGraph graph, int leaseEpoch) {
+      UUID tenantId, UUID runId, WorkflowGraph graph, UUID owner, int leaseEpoch) {
     Map<String, WorkflowNode> nodes = byId(graph);
     List<String> order = graph.nodes().stream().map(WorkflowNode::id).collect(Collectors.toList());
     List<WorkflowEdge> edges = graph.edges();
@@ -209,7 +305,8 @@ public class WorkflowWorker {
                       LinkedHashMap::new));
       Map<String, String> outputs = stepRepository.findStepOutputs(tenantId, runId);
       boolean progressed =
-          executeReadySteps(tenantId, runId, order, edges, statusByKey, outputs, nodes, leaseEpoch);
+          executeReadySteps(
+              tenantId, runId, order, edges, statusByKey, outputs, nodes, owner, leaseEpoch);
       if (!progressed) {
         break;
       }
@@ -229,6 +326,7 @@ public class WorkflowWorker {
       Map<String, WorkflowStepState> statusByKey,
       Map<String, String> outputs,
       Map<String, WorkflowNode> nodes,
+      UUID owner,
       int leaseEpoch) {
     boolean progressed = false;
     for (String stepKey : order) {
@@ -253,7 +351,7 @@ public class WorkflowWorker {
           predecessors.stream()
               .allMatch(k -> WorkflowStepState.SUCCEEDED.equals(statusByKey.get(k)));
       if (ready) {
-        executeStep(tenantId, runId, stepKey, nodes.get(stepKey), outputs, leaseEpoch);
+        executeStep(tenantId, runId, stepKey, nodes.get(stepKey), outputs, owner, leaseEpoch);
         progressed = true;
       }
     }
@@ -279,9 +377,17 @@ public class WorkflowWorker {
       String stepKey,
       WorkflowNode node,
       Map<String, String> outputs,
+      UUID owner,
       int leaseEpoch) {
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.READY, "step.ready");
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.RUNNING, "step.running");
+    // Heartbeat (S07-04, the gap-b fix): while this step's handler runs — it may outlive the lease
+    // lifetime — extend the run's lease so the stale-run recovery scan (S07-09) does not mistake an
+    // actively-owned run for a crashed owner and re-claim it. The heartbeat runs on its own thread
+    // (the poll thread is blocked in the blocking {@link StepHandler#handle}) and outside the poll
+    // transaction (see the class Javadoc); the step's own fenced writes still fence through this
+    // worker's {@code lease_epoch}. The task is cancelled the instant the step concludes.
+    ScheduledFuture<?> leaseHeartbeat = startHeartbeat(tenantId, runId, owner, leaseEpoch);
     try {
       StepResult result =
           resolve(node.type()).handle(stepContext(tenantId, runId, stepKey, node, outputs));
@@ -308,6 +414,12 @@ public class WorkflowWorker {
           failureInfo.errorClass().errorClass(),
           failureInfo.safeReason(),
           "step." + next.name().toLowerCase(Locale.ROOT));
+    } finally {
+      // The step has concluded: stop extending the lease. A run that released it (terminal,
+      // approval
+      // pause, cancelled) matches zero rows on the next heartbeat anyway; reconcile (pollOnce)
+      // releases the lease when the run reaches a lease-releasing state.
+      stopHeartbeat(leaseHeartbeat);
     }
   }
 
@@ -453,5 +565,64 @@ public class WorkflowWorker {
   private String resolveActor(AgentFlowProperties properties) {
     String instanceId = properties.getWorker().getInstanceId();
     return (instanceId != null && !instanceId.isBlank()) ? instanceId : "agentflow-worker";
+  }
+
+  /**
+   * @return a daemon thread factory so the heartbeat thread never blocks JVM shutdown and carries a
+   *     recognizable name in the thread dump.
+   */
+  private static ThreadFactory heartbeatThreadFactory() {
+    return runnable -> {
+      Thread thread = new Thread(runnable, "agentflow-worker-heartbeat");
+      thread.setDaemon(true);
+      return thread;
+    };
+  }
+
+  /**
+   * Extend the run's lease once per {@code heartbeat-interval-seconds} until the returned task is
+   * cancelled (see {@link #executeStep}). Runs on the dedicated single-thread scheduler — never on
+   * the poll thread (whose blocking {@link StepHandler#handle} would starve it) and never inside
+   * the poll transaction (whose row lock would block the fenced lease update).
+   *
+   * @return the cancellable task, or {@code null} when no {@link RunHeartbeatService} is wired (a
+   *     DB-less skeleton has no lease to extend)
+   */
+  private ScheduledFuture<?> startHeartbeat(UUID tenantId, UUID runId, UUID owner, int epoch) {
+    if (heartbeat == null || heartbeatScheduler == null) {
+      return null;
+    }
+    long periodMs =
+        TimeUnit.SECONDS.toMillis(properties.getWorker().getLease().getHeartbeatIntervalSeconds());
+    if (periodMs <= 0) {
+      // Defensive: the lease config is @Min(1) in production; clamp a misconfigured zero so the
+      // scheduler never spins without yielding.
+      periodMs = 1L;
+    }
+    return heartbeatScheduler.scheduleAtFixedRate(
+        () -> {
+          try {
+            heartbeat.heartbeat(tenantId, runId, owner, epoch);
+          } catch (RuntimeException failure) {
+            // A rejected heartbeat (an old owner, a re-claimed run) or a DB hiccup is counted by
+            // RunHeartbeatService and surfaced as a metric (S07-09); never let one tick kill the
+            // scheduler's next beat.
+            log.debug("heartbeat for run {} rejected: {}", runId, failure.getMessage());
+          }
+        },
+        periodMs,
+        periodMs,
+        TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * Stop extending the lease once the step concluded. Cancelling the task leaves the lease to its
+   * {@code lease_until}; a run that released its lease matches zero rows on the next heartbeat
+   * anyway. A {@code null} task (no heartbeat wired) is a no-op.
+   */
+  private void stopHeartbeat(ScheduledFuture<?> heartbeat) {
+    if (heartbeat != null) {
+      heartbeat.cancel(false);
+    }
   }
 }
