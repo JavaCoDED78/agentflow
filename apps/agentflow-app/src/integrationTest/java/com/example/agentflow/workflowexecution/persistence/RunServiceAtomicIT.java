@@ -264,6 +264,7 @@ class RunServiceAtomicIT {
             new WorkflowVersionRepository(jdbc),
             new AuditService(null),
             null),
+        null,
         null);
   }
 
@@ -284,6 +285,7 @@ class RunServiceAtomicIT {
             new WorkflowVersionRepository(jdbc),
             new AuditService(null),
             null),
+        null,
         null);
   }
 

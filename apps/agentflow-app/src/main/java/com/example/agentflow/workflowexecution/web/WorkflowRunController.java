@@ -1,6 +1,7 @@
 package com.example.agentflow.workflowexecution.web;
 
 import com.example.agentflow.common.Fingerprint;
+import com.example.agentflow.workflowexecution.application.AttemptRecord;
 import com.example.agentflow.workflowexecution.application.CreateRunRequest;
 import com.example.agentflow.workflowexecution.application.RunDto;
 import com.example.agentflow.workflowexecution.application.RunService;
@@ -8,6 +9,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -172,6 +174,49 @@ public class WorkflowRunController {
   @GetMapping("/{runId}")
   ResponseEntity<RunDto> getRun(@PathVariable UUID runId) {
     return ResponseEntity.ok(runService.getRun(tenantId, runId));
+  }
+
+  /**
+   * Read a run's attempt history &mdash; {@code GET /api/v1/runs/{runId}/attempts} (S07-14).
+   *
+   * <p>Returns {@code 200 OK} with the list of {@link AttemptRecord}s: every attempt every step of
+   * the run made, grouped by step and attempt. Each record carries the attempt number, the worker
+   * that ran it, the outcome, the start/finish instants and the derived {@code durationSeconds},
+   * plus the <em>safe</em> error category (the {@code ErrorClass} token and a redacted reason)
+   * &mdash; never the secret payload (invariant 8), so a failed retry is investigable without
+   * viewing it. The run is loaded through the tenant-scoped {@link RunService#getAttemptHistory}
+   * lookup (invariant 1): a run of another tenant is indistinguishable from a missing run and is a
+   * {@code 404}, never a leak; the call is {@code 503 unavailable} when no database is configured.
+   *
+   * <p>The {@code tenantId} is read from the same application configuration as the other endpoints
+   * (the {@code agentflow.local.tenant-id} property, never from the request body or headers &mdash;
+   * invariant 1), exactly as {@code #create} and {@code #getRun} do.
+   *
+   * @param runId the run whose attempt history to read
+   * @return {@code 200 OK} with the attempt records (empty when the run has no recorded attempt),
+   *     or:
+   *     <ul>
+   *       <li>{@code 404 not_found} when no run matches {@code (tenant_id, runId)};
+   *       <li>{@code 503 unavailable} when no database is configured.
+   *     </ul>
+   */
+  @Operation(
+      operationId = "getAttemptHistory",
+      summary = "Read a run's attempt history",
+      description =
+          "Returns the run's per-attempt execution history (AttemptRecord): attempt number, "
+              + "worker instance, outcome, start/finish instants, durationSeconds and the safe "
+              + "error category (ErrorClass token + redacted reason), never the secret payload. "
+              + "Tenant-scoped (invariant 1): a run of another tenant is indistinguishable from "
+              + "a missing run and is a 404, never a leak.")
+  @ApiResponse(responseCode = "200", description = "the attempt history (AttemptRecord[])")
+  @ApiResponse(
+      responseCode = "404",
+      description = "no run matches the (tenant_id, runId) the API was asked to read")
+  @ApiResponse(responseCode = "503", description = "no database connection is configured")
+  @GetMapping("/{runId}/attempts")
+  ResponseEntity<List<AttemptRecord>> getAttemptHistory(@PathVariable UUID runId) {
+    return ResponseEntity.ok(runService.getAttemptHistory(tenantId, runId));
   }
 
   /**

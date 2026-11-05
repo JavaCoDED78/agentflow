@@ -286,7 +286,8 @@ class WorkflowStepRunRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void save_checkpoint_joins_the_parent_and_guards_by_status_lease_and_tenant() throws SQLException {
+  void save_checkpoint_joins_the_parent_and_guards_by_status_lease_and_tenant()
+      throws SQLException {
     // A checkpoint write is guarded exactly like any other step write: the parent's tenant_id is
     // part of the JOIN WHERE (invariant 1), and the step must still be SUCCEEDED and still hold the
     // lease_epoch fence (invariant 5) before the redacted output is stored (S07-07).

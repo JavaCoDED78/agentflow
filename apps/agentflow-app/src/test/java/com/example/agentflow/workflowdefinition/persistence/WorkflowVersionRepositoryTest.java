@@ -214,7 +214,8 @@ class WorkflowVersionRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void find_active_version_scopes_by_tenant_and_filters_to_the_active_version() throws SQLException {
+  void find_active_version_scopes_by_tenant_and_filters_to_the_active_version()
+      throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowVersionRepository repo = new WorkflowVersionRepository(jdbc);
     UUID tenant = UUID.randomUUID();

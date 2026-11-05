@@ -9,7 +9,9 @@ import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.persistence.IdempotentRunView;
 import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
+import com.example.agentflow.workflowexecution.persistence.WorkflowStepAttemptHistoryRepository;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,6 +69,7 @@ public class RunService {
   private final OutboxService outboxService;
   private final WorkflowVersionService versionService;
   private final RunStateMachineService transitionService;
+  private final WorkflowStepAttemptHistoryRepository attemptHistoryRepository;
 
   @Autowired
   public RunService(
@@ -74,12 +77,14 @@ public class RunService {
       IdempotencyKeyService idempotencyKeyService,
       OutboxService outboxService,
       WorkflowVersionService versionService,
-      @Autowired(required = false) RunStateMachineService transitionService) {
+      @Autowired(required = false) RunStateMachineService transitionService,
+      @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository) {
     this.runRepository = runRepository;
     this.idempotencyKeyService = idempotencyKeyService;
     this.outboxService = outboxService;
     this.versionService = versionService;
     this.transitionService = transitionService;
+    this.attemptHistoryRepository = attemptHistoryRepository;
   }
 
   /**
@@ -183,6 +188,41 @@ public class RunService {
                     new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
     return runDto(run);
+  }
+
+  /**
+   * Read the attempt history of a run (S07-14) — every attempt every step of the run made, grouped
+   * by step and attempt, most relevant first. Each {@link AttemptRecord} carries the attempt
+   * number, the worker that ran it, the outcome, the start/finish instants and the derived {@code
+   * durationSeconds}, plus the <em>safe</em> error category (the {@code ErrorClass} token and a
+   * redacted reason) — never the secret payload (invariant 8), so a failed retry is investigable
+   * without viewing it.
+   *
+   * <p>The run is loaded through the tenant-scoped {@link WorkflowRunRepository#findRun} lookup
+   * (invariant 1) first: a run of another tenant is a {@code 404}, never an empty list, so the read
+   * never leaks another tenant's history. The attempt rows are themselves read tenant-scoped (the
+   * history {@code JOIN}es {@code workflow_runs} and filters by the parent tenant). The call is
+   * {@code 503 unavailable} when no database is configured.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param runId the run whose attempt history to read
+   * @return the attempt rows, ordered by {@code step_key} then {@code attempt} (empty when the run
+   *     has no recorded attempt for this tenant)
+   * @throws org.springframework.web.server.ResponseStatusException {@code 503} if no database,
+   *     {@code 404} when no run matches {@code (tenant_id, runId)}
+   */
+  public List<AttemptRecord> getAttemptHistory(UUID tenantId, UUID runId) {
+    requireRepository(runRepository);
+    requireRepository(attemptHistoryRepository);
+    runRepository
+        .findRun(tenantId, runId)
+        .orElseThrow(
+            () ->
+                new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
+    return attemptHistoryRepository.findHistory(tenantId, runId).stream()
+        .map(AttemptRecord::fromRow)
+        .toList();
   }
 
   /**

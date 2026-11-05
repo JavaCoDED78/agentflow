@@ -8,6 +8,7 @@ import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import com.example.agentflow.workflowexecution.persistence.RunStateSnapshot;
 import com.example.agentflow.workflowexecution.persistence.StepStateSnapshot;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
+import com.example.agentflow.workflowexecution.persistence.WorkflowStepAttemptHistoryRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,9 +40,13 @@ import org.springframework.web.server.ResponseStatusException;
  *       ADR-004}).
  * </ol>
  *
- * <p>The methods are {@link Transactional}: the state and its event are one durable fact. When no
- * database is configured the dependency is {@link Autowired optional} and the service reports
- * {@code 503} instead of silently doing nothing (S01-02).
+ * <p>The methods are {@link Transactional}: the state and its event are one durable fact. The
+ * attempt lifecycle (S07-14) is recorded in the same transaction here — the attempt begins when the
+ * step enters {@code RUNNING} and concludes when it leaves it — so an attempt is never recorded
+ * without the state change it describes, and a failed retry is investigable through the
+ * tenant-scoped attempt-history read (no secret payload). When no database is configured the
+ * dependency is {@link Autowired optional} and the service reports {@code 503} instead of silently
+ * doing nothing (S01-02).
  *
  * <p>This type is the boundary that makes the state machine the only way state can change: it owns
  * the domain gate, the conditional update and the event append, and nothing else touches {@code
@@ -52,14 +57,17 @@ public class RunStateMachineService {
 
   private final WorkflowRunRepository runRepository;
   private final WorkflowStepRunRepository stepRepository;
+  private final WorkflowStepAttemptHistoryRepository attemptHistoryRepository;
   private final WorkflowEventService eventService;
 
   public RunStateMachineService(
       @Autowired(required = false) WorkflowRunRepository runRepository,
       @Autowired(required = false) WorkflowStepRunRepository stepRepository,
+      @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository,
       WorkflowEventService eventService) {
     this.runRepository = runRepository;
     this.stepRepository = stepRepository;
+    this.attemptHistoryRepository = attemptHistoryRepository;
     this.eventService = eventService;
   }
 
@@ -111,7 +119,8 @@ public class RunStateMachineService {
    * parent run is a different tenant is a {@code 404}), asserts {@code from -> to} with the domain
    * gate (a forbidden pair is a {@code 400}), applies a conditional update guarded by the {@code
    * lease_epoch} fence (a stale fence is a {@code 409}) and appends the transition fact in the same
-   * transaction.
+   * transaction. The attempt lifecycle (S07-14) is recorded in the same transaction: the attempt
+   * begins on entry to {@code RUNNING} and concludes on leaving it.
    *
    * @param tenantId the owning tenant, from the verified security context (invariant 1)
    * @param runId the run the step belongs to
@@ -150,6 +159,7 @@ public class RunStateMachineService {
     WorkflowStepState from = current.status();
     assertStepTransition(from, to);
     applyStepTransition(runId, tenantId, stepKey, from, current.leaseEpoch(), to);
+    recordStepAttempt(tenantId, runId, stepKey, from, to, actor, null, null);
     appendStepEvent(tenantId, runId, current.stepId(), stepKey, from, to, eventType, actor, null);
     return to;
   }
@@ -164,7 +174,9 @@ public class RunStateMachineService {
    * metadata is persisted in the same transaction as the step state and, for a terminal transition,
    * included in the step event payload. A {@code null} error class is recorded as no error: it is
    * used for a retry that carries no new fault and for a success, so a clean transition never
-   * clobbers an error a prior attempt left.
+   * clobbers an error a prior attempt left. The faulted attempt is also concluded in that same
+   * transaction (S07-14): the {@code error_class} / {@code safe_reason} recorded here are the safe
+   * error category the tenant-scoped attempt-history read surfaces, never the raw error.
    *
    * @param tenantId the owning tenant, from the verified security context (invariant 1)
    * @param runId the run the step belongs to
@@ -208,9 +220,56 @@ public class RunStateMachineService {
     assertStepTransition(from, to);
     applyStepTransition(
         runId, tenantId, stepKey, from, current.leaseEpoch(), to, errorClass, safeReason);
+    recordStepAttempt(tenantId, runId, stepKey, from, to, null, errorClass, safeReason);
     appendStepEvent(
         tenantId, runId, current.stepId(), stepKey, from, to, eventType, null, errorClass);
     return to;
+  }
+
+  /**
+   * Record the attempt lifecycle of a step transition in the {@code workflow_step_attempt_history}
+   * table (S07-14), joined to the same transaction as the state change (invariant 3): the attempt
+   * <em>begins</em> when the step enters {@code RUNNING} (a fresh, monotonic attempt number, the
+   * running worker instance and the start instant) and <em>concludes</em> when it leaves {@code
+   * RUNNING} for any other state (its outcome, the finish instant and, for a fault, the safe error
+   * category). A {@code null} history repository (no database configured, S01-02) is a no-op, so
+   * the transition still works in a DB-less skeleton. The two overloads share this one helper: the
+   * 6-arg clean path carries the {@code actor} as the worker instance; the 8-arg fault path carries
+   * the classified {@code errorClass} / {@code safeReason}.
+   *
+   * @param tenantId the owning tenant (verified by the caller's tenant-scoped read)
+   * @param runId the run the step belongs to
+   * @param stepKey the graph node the step runs
+   * @param from the state the step was in before the transition
+   * @param to the state the step moved to
+   * @param actor the worker instance recording the attempt (nullable)
+   * @param errorClass the fault's {@code ErrorClass} token (nullable: records no error)
+   * @param safeReason the short redacted reason (nullable: records no error)
+   */
+  private void recordStepAttempt(
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState from,
+      WorkflowStepState to,
+      String actor,
+      String errorClass,
+      String safeReason) {
+    WorkflowStepAttemptHistoryRepository repo = this.attemptHistoryRepository;
+    if (repo == null) {
+      return;
+    }
+    if (to == WorkflowStepState.RUNNING) {
+      // A step re-enters RUNNING (the first READY -> RUNNING and each retry-restart): a fresh
+      // attempt begins. The worker instance is the 6-arg actor; the 8-arg path (RETRY_WAIT ->
+      // RUNNING in tests) begins with a NULL worker instance, concluded later with the class.
+      repo.beginAttempt(tenantId, runId, stepKey, actor);
+    } else if (from == WorkflowStepState.RUNNING) {
+      // The attempt left RUNNING: a clean transition (SUCCEEDED / CANCELLED / WAITING_FOR_APPROVAL)
+      // records only its outcome; a fault (the 8-arg RETRY_WAIT / FAILED path) records the safe
+      // error category and the redacted reason. The worker instance set at begin survives.
+      repo.concludeAttempt(tenantId, runId, stepKey, to.name(), errorClass, safeReason);
+    }
   }
 
   /** Asserts the run edge, mapping the domain gate's refusal to a permanent {@code 400}. */

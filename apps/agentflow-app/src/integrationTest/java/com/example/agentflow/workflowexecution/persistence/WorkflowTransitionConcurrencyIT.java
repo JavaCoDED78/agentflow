@@ -137,6 +137,7 @@ class WorkflowTransitionConcurrencyIT {
         new RunStateMachineService(
             new WorkflowRunRepository(new JdbcTemplate(dataSource)),
             null,
+            null,
             new WorkflowEventService(new WorkflowEventRepository(new JdbcTemplate(dataSource))));
     // Each transaction over its own connection: a DriverManagerDataSource makes a fresh connection
     // per getConnection, so two transactions never share one and genuinely contend on the row.

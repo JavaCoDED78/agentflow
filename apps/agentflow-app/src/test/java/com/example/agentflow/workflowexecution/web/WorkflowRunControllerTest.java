@@ -7,16 +7,19 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.agentflow.common.error.GlobalExceptionHandler;
+import com.example.agentflow.workflowexecution.application.AttemptRecord;
 import com.example.agentflow.workflowexecution.application.CreateRunRequest;
 import com.example.agentflow.workflowexecution.application.RunDto;
 import com.example.agentflow.workflowexecution.application.RunService;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -175,6 +178,43 @@ class WorkflowRunControllerTest {
 
     // the tenant (from the verified security context) and the configured actor reach the service
     verify(runService).requestCancellation(eq(TENANT), eq(runId), eq("local"));
+  }
+
+  @Test
+  void get_attempt_history_returns_the_records_for_the_run() throws Exception {
+    UUID runId = UUID.randomUUID();
+    AttemptRecord attempt =
+        new AttemptRecord(
+            1, "send_email", "worker-1", "SUCCEEDED", OffsetDateTime.now(), null, 0L, null, null);
+    when(runService.getAttemptHistory(any(), eq(runId))).thenReturn(List.of(attempt));
+
+    // The run is loaded tenant-scoped first (invariant 1); the safe error category surfaces, never
+    // the secret payload. A clean attempt (errorClass null) is absent from the JSON.
+    mockMvc
+        .perform(get("/api/v1/runs/" + runId + "/attempts"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$[0].attempt").value(1))
+        .andExpect(jsonPath("$[0].stepKey").value("send_email"))
+        .andExpect(jsonPath("$[0].workerInstance").value("worker-1"))
+        .andExpect(jsonPath("$[0].errorClass").doesNotExist());
+
+    verify(runService).getAttemptHistory(eq(TENANT), eq(runId));
+  }
+
+  @Test
+  void get_attempt_history_on_an_unknown_run_is_a_404() throws Exception {
+    UUID runId = UUID.randomUUID();
+    when(runService.getAttemptHistory(any(), any()))
+        .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+    // A run of another tenant (or one that does not exist) is indistinguishable from a missing run
+    // and is a 404, never a leak (invariant 1).
+    mockMvc
+        .perform(get("/api/v1/runs/" + runId + "/attempts"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class").value("not_found"));
+
+    verify(runService).getAttemptHistory(any(), any());
   }
 
   private static RunDto queuedRun() {
