@@ -6,6 +6,67 @@
 
 
 
+## S07-15 — Worker kill / restart fault-injection test (S07-15).
+
+- **Worker kill / restart fault-injection test (S07-15).** A run owned by a worker that dies mid-step
+  is verified to be *not lost*: once its lease expires a fresh worker re-claims it (ownership transfer
+  fenced by the `lease_epoch` counter) and the run resumes no later than 60 seconds after the lease
+  expiry in the test configuration. The new `WorkflowWorkerCrashRecoveryIT`
+  (`integrationTest/com.example.agentflow.workflowexecution.application`) is a controlled standalone
+  real-PostgreSQL test in the same style as `WorkflowWorkerEndToEndIT`: one Testcontainers
+  `pgvector/pgvector:0.8.6-pg18` instance, the project migrations applied, and the handful of beans the
+  worker path touches wired against real SQL with real lease / fencing — no Kafka, Keycloak or Spring
+  context.
+- The scenario drives a run with a single `BLOCK` node: worker 1 claims it and blocks inside the step
+  handler (its heartbeat thread keeps `lease_until` alive); the persisted `RUNNING` run plus the
+  `RUNNING` step are the crash window; the worker is then *killed* by stopping its heartbeat scheduler
+  (`WorkflowWorker#destroy`), so `lease_until` stops advancing and expires `duration-seconds` later;
+  worker 2 is raised and its `pollOnce` re-claims the expired lease. The test asserts the fault-
+  injection result — `lease_owner` moved to the second worker, the `lease_epoch` fenced (bumped), the
+  lease renewed by the new owner, and the run still `RUNNING` (not lost) — and that the re-claim happens
+  within 60 s of the expiry, with the test config's `duration + recovery <= 60` bound confirming the
+  recovery SLA.
+
+#### What changed
+- `workflowexecution.application.WorkflowWorkerCrashRecoveryIT` (new integration test). It supplies a
+  `BlockingStepHandler` (a `StepHandler` for a `BLOCK` node that blocks until the test releases it) on
+  the worker's handler list — exactly how the per-module handlers are picked up by node type at
+  runtime (the runtime SPI) — and builds a second worker with a distinct instance id so its
+  `lease_owner` is distinguishable. Lease cadence is small but coherent (`duration=3`,
+  `heartbeat=1`, `recovery=5`; `duration + recovery = 8 <= 60`). The ownership / epoch / expiry are read
+  back through the raw `workflow_runs` lease columns (the same direct-`JdbcTemplate` read pattern the
+  sibling end-to-end test uses for its tenant insert).
+
+#### Why
+The run-level state machine has no `RUNNING → RUNNING` edge, so a worker that re-claims an already-
+running run cannot transition it forward again in the same poll — `WorkflowWorker#processRun` claims,
+then `transitionRun(RUNNING)` is denied and that poll makes no progress. The durable-recovery path is
+therefore the **lease re-claim** (ADR-011): `WorkflowRunRepository#claim` is one fenced
+`UPDATE ... RETURNING lease_epoch` that transfers `lease_owner` and bumps `lease_epoch`, so the run's
+ownership moves to the new worker and the stale worker's later writes are fenced out (invariant 5). That
+is precisely the "check the claim" the S07-15 acceptance asks for, rather than an impossible re-drive to
+completion on a run that is already `RUNNING`. The test proves the run survives the crash (still
+`RUNNING`, not silently failed or cancelled) and resumes within the SLA.
+
+#### Verification
+- `:apps:agentflow-app:compileIntegrationTestJava` — green.
+- `:apps:agentflow-app:integrationTest --tests "com.example.agentflow.workflowexecution.application.WorkflowWorkerCrashRecoveryIT"` —
+  **1/1 passed** (`time=3.422s`, real Postgres 18.6 via Testcontainers, 17 migrations applied to
+  `v3.3.16`, no `system-err`): `a_running_run_survives_its_worker_crash_and_is_reclaimed_within_sla`
+  asserts ownership transfer, epoch fencing, the run is not lost, and the re-claim within 60 s of the
+  lease expiry. `integrationTest` is the Testcontainers suite (run explicitly, not part of `check`).
+
+#### Tests
+- `WorkflowWorkerCrashRecoveryIT` (new, integration, real Postgres): the crash → kill → re-claim →
+  not-lost → within-SLA scenario above.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section.
+
+#### Schema / contract
+None — test-only addition; no change to the state machine, the lease model, migrations, the module
+boundary, or any production call path.
+
 ## S07-14 — Persistent per-attempt step execution history (S07-14).
 
 - **Persistent per-attempt step execution history (S07-14).** A step's history is now durable across
