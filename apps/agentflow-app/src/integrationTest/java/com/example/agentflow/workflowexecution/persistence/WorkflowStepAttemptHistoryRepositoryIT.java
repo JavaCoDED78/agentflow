@@ -118,6 +118,55 @@ class WorkflowStepAttemptHistoryRepositoryIT {
     assertThat(history.get(1).outcome()).isEqualTo("SUCCEEDED");
   }
 
+  // --- ambiguous external outcome (S07-16) -------------------------------------------------
+
+  @Test
+  void a_provider_timeout_is_recorded_as_a_retryable_ambiguous_attempt() {
+    UUID tenant = UUID.randomUUID();
+    UUID run = UUID.randomUUID();
+    seedRun(tenant, run);
+
+    // A provider timed out before returning a response, so the side effect *may* have completed.
+    // The attempt begins when the step enters RUNNING; the handler surfaced PROVIDER_TIMEOUT, and
+    // the classifier (S07-11) treats it as a transient, retryable fault.
+    repository.beginAttempt(tenant, run, "external_call", "worker-1");
+    repository.concludeAttempt(
+        tenant, run, "external_call", "RETRY_WAIT", "provider_timeout", "response lost on timeout");
+
+    // The ambiguous attempt is visible in history with its safe category (invariant 8): the
+    // operator sees "retryable provider timeout" without the secret payload, so the run is
+    // scheduled to be re-claimed — the step is neither SUCCEEDED nor FAILED.
+    AttemptHistoryRow row = readAttempt(tenant, run, "external_call", 1);
+    assertThat(row.outcome()).isEqualTo("RETRY_WAIT");
+    assertThat(row.errorClass()).isEqualTo("provider_timeout");
+    assertThat(row.errorSummary()).isEqualTo("response lost on timeout");
+
+    // A retry is a fresh, monotonic attempt: a re-run after an ambiguous outcome is possible, and
+    // the attempt counter makes it observable (the side effect may have run more than once).
+    repository.beginAttempt(tenant, run, "external_call", "worker-2");
+    repository.concludeAttempt(tenant, run, "external_call", "SUCCEEDED", null, null);
+    assertThat(readAttempt(tenant, run, "external_call", 2).attempt()).isEqualTo(2);
+  }
+
+  @Test
+  void an_in_flight_attempt_marks_the_ambiguous_crash_window_with_a_null_outcome() {
+    UUID tenant = UUID.randomUUID();
+    UUID run = UUID.randomUUID();
+    seedRun(tenant, run);
+
+    // The worker begins the attempt (the step is RUNNING) and then crashes mid-attempt before the
+    // outcome is recorded: the response is unknown, so the attempt is ambiguous.
+    repository.beginAttempt(tenant, run, "external_call", "worker-1");
+
+    // The history records the in-flight attempt with a NULL outcome — the crash-window marker,
+    // queryable tenant-scoped (invariant 1) — never a clean success/failure. Recovery re-claims it.
+    AttemptHistoryRow row = readAttempt(tenant, run, "external_call", 1);
+    assertThat(row.outcome()).isNull();
+    assertThat(row.finishedAt()).isNull();
+    assertThat(row.workerInstance()).isEqualTo("worker-1");
+    assertThat(repository.findHistory(tenant, run)).hasSize(1);
+  }
+
   // --- write side of tenant isolation (invariant 1) --------------------------------------------
 
   @Test
