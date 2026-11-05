@@ -160,7 +160,7 @@ it from the status alone.
 
 - [`module-map.md`](./module-map.md) — `common` is the cross-cutting owner of this taxonomy; every module classifies by it.
 - [`domain-glossary.md`](../domain-glossary.md) — canonical names for the concepts these errors describe (run, step, tool, approval, …).
-- **`durable-execution.md`** — state machine, lease, recovery; where `FAILED`/`RETRY_WAIT`/`CANCELLED` transitions are defined (`⚠ planned`, `S07-17`).
+- **`durable-execution.md`** — state machine, lease, recovery; where `FAILED`/`RETRY_WAIT`/`CANCELLED` transitions are defined.
 - **`kafka-topics.md`** — topics, partition keys, delivery and idempotency guarantees behind `transient_infra` and provider errors.
 - **`events/README.md`** — event catalogue, per-event payloads, retry/DLQ, outbox/inbox and the
   safe-contract-change rules (`S06-16`).

@@ -207,5 +207,5 @@ side effect impossible.
   and fixed-clock tests that make `lease_until`, heartbeat and recovery deterministic in tests.
 - Migration [`V3_3_6__create_workflow_runs_and_steps.sql`](../../apps/agentflow-app/src/main/resources/migrations/V3_3_6__create_workflow_runs_and_steps.sql) (`S05-08`) — the table carrying the three columns.
 - **Follow-ups:** `S07-02` (expired-lease index), `S07-03`…`S07-05`, `S07-09` (claim / heartbeat /
-  recovery), `S07-17` (`durable-execution.md` + recovery runbook). The planned `durable-execution.md`
-  (`⚠ planned`, `S07-17`) holds the comprehensive engineering guide; this ADR is the lease *decision*.
+  recovery), `S07-17` (`durable-execution.md` + recovery runbook). [`durable-execution.md`](../architecture/durable-execution.md)
+  holds the comprehensive engineering guide; this ADR is the lease *decision*.

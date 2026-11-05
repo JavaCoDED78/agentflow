@@ -238,7 +238,7 @@ check` gate to point to. It is verified by:
 - **Cross-references resolve.** Every relative link in this file points to a
   document that exists (the module map, the glossary, the system context, the
   `docs/` and `contracts/` indexes) or is marked `⚠ planned` for a not-yet-
-  created doc (`docs/architecture/durable-execution.md`, `S07-17`) and is not linked.
+  created doc and is not linked.
 - **Owner consistency.** The module → concept → table/owner triples match
   `docs/architecture/module-map.md` (S02-03) and the glossary's §13 authority
   table (one concept — one name).

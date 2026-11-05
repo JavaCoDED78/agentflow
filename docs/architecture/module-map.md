@@ -288,7 +288,7 @@ root `AGENTS.md` dependency rules). The resolution (plan open decision §4.2.3):
 - [`system-context.md`](./system-context.md) — C4 Level 1: externals, trust boundaries, trust flows.
 - [`domain-glossary.md`](../domain-glossary.md) — canonical names; concept → owner (§13) matches this map.
 - [`docs/threat-model/README.md`](../threat-model/README.md) — assets, attacker goals, mitigations (tenant isolation, prompt injection, SSRF).
-- **`durable-execution.md`** — run/step state machine, lease, recovery (`⚠ planned`, `S07-17`).
+- **`durable-execution.md`** — run/step state machine, lease, recovery.
 - [`error-taxonomy.md`](./error-taxonomy.md) — error classes and retryability (S02-10).
 - **`kafka-topics.md`** — topics, partition keys, topics & partition keys (`S06-02`).
 - **`events/README.md`** — event catalogue, topics, partition keys, envelope, at-least-once +

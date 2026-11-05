@@ -258,8 +258,7 @@ consistent with the run machine (`S05-01`):
   controller or Kafka listener never sets the status directly (`S05-11`).
 - **Lease and fencing govern the working transitions.** Only the current lease owner may move a
   step (`lease_epoch` check on every write). A stale worker's `RUNNING → SUCCEEDED`/`FAILED`/
-  `RETRY_WAIT` is fenced. Lease/fencing/recovery are covered by the planned
-  `durable-execution.md` (`⚠ planned`, `S07-17`).
+  `RETRY_WAIT` is fenced. Lease/fencing/recovery are covered by durable-execution.md.
 - **Retry vs permanent.** Only transient classes route through `RETRY_WAIT` (guards 4–5);
   permanent classes go straight to `FAILED` (guard 6), per [`error-taxonomy.md`](error-taxonomy.md).
 - **The enum is the single definition.** The Java `WorkflowStepState` enum (`workflowexecution.domain`,
@@ -269,7 +268,7 @@ consistent with the run machine (`S05-01`):
 ## 8. Related
 
 - **Run states** — the run-level machine this reconciles with ([`run-state-machine.md`](run-state-machine.md), `S05-01`).
-- **Lease, fencing and recovery** — `durable-execution.md` (`⚠ planned`, `S07-17`).
+- **Lease, fencing and recovery** — `durable-execution.md`.
 - **The step result as a checkpoint** — how `SUCCEEDED` persists a redacted, size-bounded, schema-versioned result for recovery (`S07-07`, `workflowexecution.application.CheckpointAdapter`).
 - **The pure state machine** — the enum and its `canTransitionTo` logic (`workflowexecution.domain`, DB-free, unit tested) in `S05-10`.
 - **Transition service** — the single point where transitions are applied with the optimistic lock and the append-only event (`S05-11`).
