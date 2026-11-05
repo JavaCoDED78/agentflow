@@ -54,7 +54,7 @@ docs/
 │   ├── module-api.md                  ← public API per module: services, event types, permitted DTOs, internal packages (S02-04)
 │   ├── run-state-machine.md           ← run state machine + transitions (S05-01)
 │   ├── step-state-machine.md          ← step state machine + run-state aggregation (S05-02)
-│   ├── durable-execution.md           ⚠ planned (S07-17) — lease, fencing, recovery
+│   ├── durable-execution.md               ← lease, fencing, recovery (S07-17)
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)

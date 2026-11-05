@@ -147,8 +147,7 @@ is driven by an explicit event or command, never by an assignment.
 - **Step states** — the analogous step-level state machine is documented in the
   step-state specification ([`step-state-machine.md`](step-state-machine.md), `S05-02`);
   run states are reconciled against it (§4).
-- **Lease, fencing and recovery** — covered by `durable-execution.md`
-  (`⚠ planned`, `S07-17`).
+- **Lease, fencing and recovery** — covered by `durable-execution.md`.
 - **Workflow DSL and graph validation** — the node types, IDs, edges and DAG
   constraints a run executes are in `docs/workflows/dsl-v1.md` (`S05-17`).
 - **The pure state machine** — the enum and its `canTransitionTo` logic

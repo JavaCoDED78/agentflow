@@ -6,6 +6,79 @@
 
 
 
+## S07-17 — Workflow run recovery runbook (S07-17).
+
+- **Workflow run recovery runbook (S07-17).** The durable-execution Sprint 7 design is now
+  documented as an operational runbook for on-call engineers: `docs/runbooks/workflow-recovery.md`.
+  `durable-execution.md` (`S07-17`) is the engineering model — the run/step state machine, the
+  run-level lease + heartbeat, `lease_epoch` fencing, the crash window and the recovery scheduler;
+  this runbook is the operational surface on top of it. It says **what an operator sees** (the
+  `agentflow.workflow.recoveries` counter, the worker/heartbeat/recovery log lines, the run lease
+  columns), **how to confirm what happened** (tenant-scoped PostgreSQL diagnostics against
+  `workflow_runs`/`workflow_step_runs`/`workflow_step_attempt_history`/`workflow_events`) and **what
+  to do about it** — cancelling a run (`POST /api/v1/runs/{runId}/cancel` → `202`), retrying a failed
+  run for a transient `error_class`, or — as a last resort — force-reclaiming a stale lease / forcing
+  a run terminal when no worker will recover it. It distinguishes the **automatic** path (worker drain
+  stops the heartbeat, the lease expires, the S07-09 recovery scheduler re-claims within ≤60 s) from
+  the cases that need an operator: a run **parked** in `WAITING_FOR_APPROVAL` (waiting on an approval, lease
+  released per `step-state-machine.md` §10 — fix the approval, not the run) or `RETRY_WAIT`
+  (back-pressure, re-claimed automatically), and a run **failed** after the retry policy exhausted
+  (`error-taxonomy.md` transient vs permanent). It encodes the invariants the recovery path serves —
+  tenant isolation (a run is read by `(tenantId, runId)`, §4 queries are tenant-scoped), at-least-once
+  never exactly-once (an ambiguous external outcome is visible in attempt history, never a silent
+  success/failure), `lease_epoch` fencing (a forced re-claim bumps the epoch), no secrets in metric
+  labels (invariant 9) and no manual row edit as a normal operation (the API and the state machine own
+  transitions).
+
+#### What changed
+- `docs/runbooks/workflow-recovery.md` — new operator runbook (created by this task): fast triage,
+  the automatic recovery path, the metrics/logs an operator reads, tenant-scoped diagnostic queries,
+  the four diagnoses (`RUNNING` stuck, `WAITING_FOR_APPROVAL`/`RETRY_WAIT` parked, `FAILED` exhausted),
+  the acting section (cancel, retry, force a lease, force terminal), the "did not resume after an
+  approval" recovery, escalation signals, and a reference table of the exact identifiers (metric,
+  log line, query, API) used.
+- `docs/runbooks/README.md` — the runbook now links `workflow-recovery.md` (the engineering model it
+  sits on is `durable-execution.md`); the old broken link to a never-created `runbook-recovery.md` is
+  removed.
+- `docs/README.md` — the architecture tree no longer marks `durable-execution.md` `⚠ planned`.
+- `docs/architecture/README.md` — `durable-execution.md` moves out of the `⚠ planned` list into the
+  "exist today" table, with a pointer to the runbook.
+- `docs/architecture/{error-taxonomy,run-state-machine,step-state-machine,module-map,module-api}.md`
+  and `docs/adr/ADR-011-workflow-run-lease.md` — the `⚠ planned (S07-17)` pointers to the not-yet
+  created `durable-execution.md` are converted to real links (it exists now).
+
+#### Why
+`durable-execution.md` documents the design, but a stuck or failed run is an on-call moment and the
+design doc is not shaped for that: it is an engineering reference, not a "look here, then do this"
+troubleshooting path. `S07-17` closes the gap so an operator can confirm a run's state from real
+metrics/logs/SQL and act without opening the code. It also fixes the runbook index, which linked a
+runbook file that never existed.
+
+#### Verification
+- This is a **documentation-only** task, so there is no `./gradlew check` gate. Verification is link
+  integrity: `git diff --check` passes and every relative in-document link in the new and edited files
+  resolves to a present, on-topic destination — in particular `docs/runbooks/workflow-recovery.md`
+  (the new runbook) and `durable-execution.md` (the engineering model) and the ADR, state-machine,
+  taxonomy and module docs they cite.
+- Every identifier the runbook cites is the real one from the code: the `agentflow.workflow.recoveries`
+  counter (`WorkflowRecoveryScheduler`), the run-heartbeat failed-heartbeat counter (`RunHeartbeatService`),
+  the worker drain/heartbeat log lines (`WorkerLifecycle`/`WorkflowWorker`), the `workflow_runs`
+  lease columns, the `workflow_step_attempt_history`/`workflow_events` reads, `GET /api/v1/runs/{runId}`
+  and `GET /api/v1/runs/{runId}/attempts`, and `POST /api/v1/runs/{runId}/cancel` → `202`
+  (`WorkflowRunController`).
+
+#### Tests
+None — documentation-only addition; no code, test, contract, migration or module-boundary change.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section; the runbook (`workflow-recovery.md`) and the
+`durable-execution.md` engineering guide (both `S07-17`).
+
+#### Schema / contract
+None — no change to the state machine, the lease model, migrations, the module boundary, any API
+endpoint, or any production call path. The cancel/attempt/read APIs already exist (S07-08/S07-12/S07-14);
+the runbook only documents them.
+
 ## S07-16 — Ambiguous external-outcome policy (S07-16).
 
 - **Ambiguous external-outcome policy (S07-16).** An external call (an `LLM_*` node, a `TOOL_CALL`, or a `RETRIEVE_CONTEXT` retrieval) performs a *side effect on a system outside the engine* — a model may run and bill, a tool may write, an upstream API may change state — and the engine can only ever **observe** the response, never control or fully trust that the side effect completed. A call whose side effect **may have completed but whose response was lost** therefore has an **ambiguous outcome**: it is neither a clean `SUCCEEDED` nor a decided `FAILED`. `S07-16` makes the policy explicit — the engine **does not** treat such a call as exactly-once (`ADR-003`, invariant 6); it **marks the attempt, keeps it visible in `workflow_step_attempt_history`, and re-claims it** rather than assuming it failed.
