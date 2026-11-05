@@ -6,6 +6,41 @@
 
 
 
+## S07-16 — Ambiguous external-outcome policy (S07-16).
+
+- **Ambiguous external-outcome policy (S07-16).** An external call (an `LLM_*` node, a `TOOL_CALL`, or a `RETRIEVE_CONTEXT` retrieval) performs a *side effect on a system outside the engine* — a model may run and bill, a tool may write, an upstream API may change state — and the engine can only ever **observe** the response, never control or fully trust that the side effect completed. A call whose side effect **may have completed but whose response was lost** therefore has an **ambiguous outcome**: it is neither a clean `SUCCEEDED` nor a decided `FAILED`. `S07-16` makes the policy explicit — the engine **does not** treat such a call as exactly-once (`ADR-003`, invariant 6); it **marks the attempt, keeps it visible in `workflow_step_attempt_history`, and re-claims it** rather than assuming it failed.
+- **Two distinct causes, both recorded in the attempt history.** (1) *Handler-observed timeout* — the side effect *may* have completed, the call exceeded its timeout, and the handler surfaced `ErrorClass#PROVIDER_TIMEOUT`; the classifier (`S07-11`) treats it as transient/retryable, so the worker concludes `RUNNING → RETRY_WAIT` with `error_class = provider_timeout` — that recorded row *is* the ambiguous attempt made visible (safe category, never the secret payload). (2) *Worker crash mid-attempt* — the worker dies before the outcome is recorded, so the step stays `RUNNING` with `attempt_started_at` set and no terminal event after the `RUNNING` transition (`S07-06` crash window); the attempt-history row for that attempt has `outcome = NULL` (in flight). The stale-run recovery scheduler re-claims the run (`ADR-011`) and a fresh, monotonic attempt (`MAX + 1`) begins (`S07-14`).
+- **No exactly-once.** A re-run after an ambiguous outcome **may re-execute** the side effect; that is honest and visible, not hidden — the cost budget and audit reflect what actually happened (`ADR-003`, invariant 6).
+- **Retry is defined per the tool's idempotency.** Idempotent external calls (a read, or a write deduped by a stable `Idempotency-Key`) are safe to re-run; non-idempotent external calls (a debit, an approve, any state-changing action without a dedup key) have an ambiguous outcome that must be **resolved, not blindly retried** — via the tool's own idempotency key / checkpoint / operator decision. The tool-level idempotency metadata is the `toolexecution` tool registry's concern (`TOOL_CALL`, `ToolDescriptor.retryPolicy`, risk class `EXTERNAL_SIDE_EFFECT`, `S08`); the `workflowexecution` worker applies the policy direction here and defers the tool-specific resolution to `S08`. No blind retry of a non-idempotent side effect is introduced.
+
+The policy was formalized in `docs/architecture/step-state-machine.md` (§3, *Ambiguous external outcomes*); existing docs already stated "no exactly-once" (`ADR-003`, `engineering-conventions.md` line 37, glossary §5 *Attempt*), but did not cover the handler-observed-timeout cause or the idempotent/non-idempotent retry distinction.
+
+#### What changed
+- `docs/architecture/step-state-machine.md` — new `### Ambiguous external outcomes` section: the two ambiguous causes, what the history shows, the "no exactly-once for external side effects" statement, and the retry-per-idempotency policy (resolved by the tool layer, `S08`).
+- `apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/domain/StepResult.java` — clarified the Javadoc so a *decided* `FAILED` is distinguished from an *ambiguous* external outcome (response lost) so the two concepts are no longer conflated (`RETRY_WAIT`/`provider_timeout` is the retryable ambiguous path; `S08` resolves non-idempotent).
+- `docs/domain-glossary.md` §5 — the *Attempt* row now points at the Ambiguous external outcomes policy and the idempotent/non-idempotent retry distinction.
+- `CHANGELOG.md` `[Unreleased] → Added` — `S07-16` entry.
+- `docs/devlog/sprint-07-durable-execution.md` — this devlog section.
+
+#### Why
+`S07-06` (crash window) and `S07-14` (attempt history) made the ambiguous attempt observable, and `ADR-003` / invariant 6 stated "no exactly-once", but nothing tied the two together under a single policy or said what to do with a *handler-observed* timeout (the "the action ran, the answer was lost" case) — the classifier retried `provider_timeout` without distinguishing an idempotent re-run from a non-idempotent one. `S07-16` documents the policy so the ambiguity is a first-class, diagnosable state, the "no exactly-once" claim is honest about external side effects, and the retry direction is explicit (idempotent safe / non-idempotent resolved, not blindly retried) with the tool-level work deferred to `S08`.
+
+#### Verification
+- `:apps:agentflow-app:compileTestJava` — green.
+- `:apps:agentflow-app:compileIntegrationTestJava` — green.
+- `:apps:agentflow-app:integrationTest --tests "com.example.agentflow.workflowexecution.persistence.WorkflowStepAttemptHistoryRepositoryIT"` — run below.
+
+#### Tests
+- `WorkflowStepAttemptHistoryRepositoryIT` (integration, real PostgreSQL via Testcontainers) — added two tests for the ambiguous outcome (S07-16):
+  - `a_provider_timeout_is_recorded_as_a_retryable_ambiguous_attempt`: a step handler that timed out concludes `RETRY_WAIT` with `error_class = provider_timeout`; the attempt is visible in history with its safe category (invariant 8) and a retry gets a fresh, monotonic attempt number — the ambiguous attempt is observable, never assumed to have failed.
+  - `an_in_flight_attempt_marks_the_ambiguous_crash_window_with_a_null_outcome`: a step whose attempt began (entered `RUNNING`) but was not concluded records an `outcome = NULL` row — the crash-window marker — queryable tenant-scoped (invariant 1), never a clean success/failure.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; `docs/architecture/step-state-machine.md` (Ambiguous external outcomes), `docs/domain-glossary.md` (§5 *Attempt*), this devlog section.
+
+#### Schema / contract
+None — documentation and test-only additions; no change to the state machine, the attempt-history schema, migrations, the module boundary, or any production call path. The `StepResult` Javadoc change is comment-only.
+
 ## S07-15 — Worker kill / restart fault-injection test (S07-15).
 
 - **Worker kill / restart fault-injection test (S07-15).** A run owned by a worker that dies mid-step

@@ -138,6 +138,30 @@ permits it.
   whose output contract changed is re-executed rather than served a stale value. Reuse is a
   recovery-time decision, independent of the transition itself.
 
+### Ambiguous external outcomes
+
+An **external call** (an `LLM_*` node, a `TOOL_CALL`, or a `RETRIEVE_CONTEXT` retrieval) is a *side effect on a system outside the engine*: a model may run and bill, a tool may write, an upstream API may change state. The engine can only ever *observe* the response — it cannot control or fully trust that the side effect completed. A call whose **side effect may have completed but whose response was lost** therefore has an **ambiguous outcome**: the step is neither a clean `SUCCEEDED` nor a decided `FAILED`. The engine does **not** treat such a call as exactly-once (`ADR-003`, invariant 6); it **marks the attempt, keeps it visible in history, and re-claims it** rather than assuming it failed.
+
+Two distinct causes produce the ambiguity; both are recorded in the attempt history:
+
+1. **Handler-observed timeout (the "the action ran, the answer was lost" case).** The step handler ran the external call, the call exceeded its timeout before returning a response, and the handler surfaced a timeout (`ErrorClass#PROVIDER_TIMEOUT`). The side effect *may have completed*. The classifier (`S07-11`) treats a provider timeout as a **transient, retryable** fault, so the worker concludes the attempt `RUNNING → RETRY_WAIT` and records it in `workflow_step_attempt_history` with `outcome = RETRY_WAIT` and `error_class = provider_timeout`. That recorded row *is* the ambiguous attempt made visible: the operator sees, from the safe category alone, that the response was lost and the step is scheduled to be re-claimed — never the secret payload.
+2. **Worker crash mid-attempt (the crash window, `S07-06`).** The worker dies after the side effect began but before the outcome was recorded. The step stays `RUNNING` with `attempt_started_at` set and no terminal `workflow_events` row after the `RUNNING` transition; the attempt-history row for that attempt has `outcome = NULL` (in flight, outcome unknown). The stale-run recovery scheduler re-claims the run (`ADR-011`), a fresh attempt begins (its `attempt` number is `MAX + 1`, monotonic), and the run is driven forward again.
+
+**What the history shows (acceptance, `S07-16`).** Every attempt a step makes is one row in `workflow_step_attempt_history` (`S07-14`): the `attempt` number, the `worker_instance`, the `outcome`, the `started_at`/`finished_at` and the safe `error_class`. An ambiguous attempt is diagnosable there:
+
+- an **in-flight** attempt (entered `RUNNING`, not yet concluded) has `outcome = NULL` — ambiguous, unknown — and is queryable tenant-scoped;
+- a **concluded** ambiguous attempt (`RETRY_WAIT` / `provider_timeout`, or `FAILED` once the budget is exhausted) carries its safe `error_class` and a redacted reason;
+- the `attempt` counter (bumped on every re-run) plus `workflow_step_runs.attempt_started_at` and the append-only `workflow_events` let an operator see *how many times* and *when* the step ran — so a retry that re-executed the side effect is visible, and nothing is asserted to have run exactly once.
+
+**No exactly-once for external side effects.** Per `ADR-003` and invariant 6 the engine **does not promise** that an external side effect ran once. A re-run after an ambiguous outcome **may re-execute** the side effect; that is honest and visible, not hidden — the cost budget and the audit reflect what actually happened. The durable model makes ownership (the lease) and recovery explicit precisely so the ambiguity can be resolved, not so it can be pretended away.
+
+**Retry is defined per the tool's idempotency (policy — resolved by the tool layer, `S08`).** Whether re-running an ambiguous attempt is *safe* depends on the tool, which the `workflowexecution` worker cannot know in isolation:
+
+- **Idempotent external call** (a read, or a write deduped by a stable `Idempotency-Key` / unique key): re-running is benign even if the first attempt already completed, so the worker retries it with bounded backoff per `RetryPolicy` (`S07-10`) like any transient fault.
+- **Non-idempotent external call** (a debit, an approve, any state-changing action without a dedup key): the ambiguous outcome must be **resolved, not blindly retried** — via the tool's own idempotency key / checkpoint, an operator decision, or a bounded hold — or the side effect could apply twice. Until the tool registry carries per-tool idempotency metadata (`TOOL_CALL`, `ToolDescriptor.retryPolicy` / idempotency, risk class `EXTERNAL_SIDE_EFFECT`, `S08`), the worker marks the attempt and surfaces it in history; the tool-specific resolution is a follow-up, and the operator inspects the attempt before deciding.
+
+This is a policy statement about the boundary the `workflowexecution` worker owns; the tool-level idempotency it defers to is the `toolexecution` tool registry's concern, and no blind retry of a non-idempotent side effect is introduced here.
+
 ## 4. Run-state aggregation
 
 The run state is the primary driver, but its terminal states are **derived** from step
