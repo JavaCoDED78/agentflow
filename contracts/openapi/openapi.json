@@ -221,6 +221,55 @@
         }
       }
     },
+    "/api/v1/runs/{runId}/cancel" : {
+      "post" : {
+        "tags" : [ "workflow-run-controller" ],
+        "summary" : "Request cancellation of a run",
+        "description" : "Moves the run to the cancellation-in-flight state CANCEL_REQUESTED; the worker drains it cooperatively (S07-12). Idempotent and one-way: a no-op on an already-terminal or already-cancelling run (never erases a completed result). Tenant-scoped (invariant 1): a run of another tenant is a 404.",
+        "operationId" : "cancelRun",
+        "parameters" : [ {
+          "name" : "runId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "202" : {
+            "description" : "cancellation requested; the run status snapshot",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "no run matches the (tenant_id, runId) the API was asked to cancel",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workflows/{workflowId}" : {
       "get" : {
         "tags" : [ "workflow-definition-controller" ],
@@ -290,6 +339,64 @@
               "*/*" : {
                 "schema" : {
                   "$ref" : "#/components/schemas/RunDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{runId}/attempts" : {
+      "get" : {
+        "tags" : [ "workflow-run-controller" ],
+        "summary" : "Read a run's attempt history",
+        "description" : "Returns the run's per-attempt execution history (AttemptRecord): attempt number, worker instance, outcome, start/finish instants, durationSeconds and the safe error category (ErrorClass token + redacted reason), never the secret payload. Tenant-scoped (invariant 1): a run of another tenant is indistinguishable from a missing run and is a 404, never a leak.",
+        "operationId" : "getAttemptHistory",
+        "parameters" : [ {
+          "name" : "runId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "the attempt history (AttemptRecord[])",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/AttemptRecord"
+                  }
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "no run matches the (tenant_id, runId) the API was asked to read",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/AttemptRecord"
+                  }
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/AttemptRecord"
+                  }
                 }
               }
             }
@@ -451,6 +558,42 @@
           },
           "hasPrevious" : {
             "type" : "boolean"
+          }
+        }
+      },
+      "AttemptRecord" : {
+        "type" : "object",
+        "properties" : {
+          "attempt" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "stepKey" : {
+            "type" : "string"
+          },
+          "workerInstance" : {
+            "type" : "string"
+          },
+          "outcome" : {
+            "type" : "string"
+          },
+          "startedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "finishedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "durationSeconds" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "errorClass" : {
+            "type" : "string"
+          },
+          "errorSummary" : {
+            "type" : "string"
           }
         }
       }

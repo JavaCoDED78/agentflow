@@ -288,7 +288,7 @@ class WorkflowTransitionIntegrationTest {
 
     WorkflowRunRepository runRepo = new WorkflowRunRepository(jdbc);
     WorkflowEventService events = new WorkflowEventService(new WorkflowEventRepository(jdbc));
-    RunStateMachineService service = new RunStateMachineService(runRepo, null, events);
+    RunStateMachineService service = new RunStateMachineService(runRepo, null, null, events);
 
     // Refused: the run is QUEUED and QUEUED -> SUCCEEDED has no edge, so the domain gate refuses
     // (400) before any write and no history row is appended.
@@ -317,7 +317,7 @@ class WorkflowTransitionIntegrationTest {
     seedRun(tenant, runId);
     WorkflowRunRepository runRepo = new WorkflowRunRepository(jdbc);
     WorkflowEventService events = new WorkflowEventService(new WorkflowEventRepository(jdbc));
-    RunStateMachineService service = new RunStateMachineService(runRepo, null, events);
+    RunStateMachineService service = new RunStateMachineService(runRepo, null, null, events);
 
     assertThatThrownBy(
             () ->

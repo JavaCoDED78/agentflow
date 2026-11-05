@@ -6,6 +6,87 @@
 
 
 
+## S07-14 — Persistent per-attempt step execution history (S07-14).
+
+- **Persistent per-attempt step execution history (S07-14).** A step's history is now durable across
+  every attempt it makes, so a failed retry is investigable without re-running it and without viewing
+  the secret payload. The new `workflow_step_attempt_history` table (`V3_3_16`, `workflowexecution`)
+  records one row per `(run_id, step_key, attempt)`: the `attempt` number (1-based, `MAX(attempt)+1`
+  per `(run_id, step_key)` so a retry gets a fresh, monotonic number), the `worker_instance` that ran
+  it, the `outcome` it reached (`SUCCEEDED`/`FAILED`/`RETRY_WAIT`/`WAITING_FOR_APPROVAL`/`CANCELLED`;
+  `NULL` while still running), the `started_at` (the step entering `RUNNING`, before the side effect)
+  and `finished_at` (`NULL` while in flight), and the safe fault metadata — the `error_class` ErrorClass
+  token and the short redacted `error_summary` (S07-11) — never the raw error and never the secret
+  payload (invariant 8). The writes join the single `@Transactional` step-writer, `RunStateMachineService`:
+  a step begins an attempt when it enters `RUNNING` (`beginAttempt`) and concludes when it leaves it
+  (`concludeAttempt`), both in the same transaction as the state change (invariant 3); the highest
+  attempt is fenced by `COALESCE(MAX(attempt))` on conclude so a duplicate conclude can never double-write.
+  The table stores no `tenant_id`: tenant isolation flows through the parent run — every read and write
+  `JOIN`s `workflow_runs` and filters by the parent's `tenant_id` (invariant 1), so a cross-tenant run is
+  indistinguishable from a missing one. The API exposes the history through `GET /api/v1/runs/{runId}/attempts`
+  (in `WorkflowRunController`), served by `RunService#getAttemptHistory`, which first loads the run through
+  the tenant-scoped `WorkflowRunRepository#findRun` (a cross-tenant/missing run is a `404`, never an empty
+  list — no leak), then maps the rows to `AttemptRecord`, deriving `durationSeconds` from `started_at`/
+  `finished_at` (invariant 10 — derived, never stored; `0` while in flight) and surfacing only the safe
+  error category. The bean is `@ConditionalOnBean(DataSource.class)`, so the DB-less skeleton (S01-02) still
+  boots: `beginAttempt`/`concludeAttempt` are a no-op when the repository is absent, and `getAttemptHistory`
+  reports `503 unavailable`.
+
+#### What changed
+- Migration `V3_3_16__create_step_attempt_history.sql` (`owner: workflowexecution`) adds the
+  `workflow_step_attempt_history` table (`id PK`, `run_id FK → workflow_runs`, `step_key`, `attempt`,
+  `worker_instance`, `outcome`, `started_at`, `finished_at`, `error_class`, `error_summary`, `created_at`)
+  with a composite unique index `(run_id, step_key, attempt)`; every column carries a S07-14 /
+  `workflowexecution` comment.
+- `workflowexecution.persistence.WorkflowStepAttemptHistoryRepository` (new, `@ConditionalOnBean(DataSource.class)`)
+  — `beginAttempt` (the next `attempt` number + a NULL-outcome row), `concludeAttempt` (tenant-scoped,
+  fenced update of the highest attempt with `COALESCE` guards so a prior class survives a later clean
+  outcome), and `findHistory` (tenant-scoped `JOIN`, ordered by step then attempt).
+- `workflowexecution.persistence.AttemptHistoryRow` — the row-mapped projection.
+- `workflowexecution.application.AttemptRecord` — the API record; `fromRow` derives `durationSeconds`
+  from the start/finish instants (`0` while in flight) and carries only the safe error category.
+- `workflowexecution.application.RunStateMachineService` — `recordStepAttempt(...)` (null-guarded) begins
+  an attempt on entry to `RUNNING` and concludes it on leaving it, in the same `@Transactional` transition;
+  both the 6-arg and the 8-arg (`errorClass`) step transitions call it.
+- `workflowexecution.application.RunService` — `getAttemptHistory(tenantId, runId)`: a tenant-scoped 404
+  pre-check on the run, then the tenant-scoped history mapped to `AttemptRecord` (503 when no database).
+- `workflowexecution.web.WorkflowRunController` — `GET /api/v1/runs/{runId}/attempts` returning
+  `ResponseEntity<List<AttemptRecord>>`.
+
+#### Why
+A worker that failed a step and retried left no durable, queryable trace of *what each attempt did* —
+only the current attempt's row on `workflow_step_runs`. To investigate why a retry failed an operator
+either re-ran the step (re-executing an untrusted side effect) or read the raw error (which can carry
+the secret payload — invariant 8). `S07-14` records the attempt lifecycle durably and safely: the attempt
+identity, its start/finish, the worker that ran it, and the safe error category (a redacted `ErrorClass`
+token + short reason), so a failed retry is investigable in the history API without re-running or viewing
+the secret. Recording begin/conclude through the single transition service keeps it in the same transaction
+as the state change (invariant 3) and fenced by the same tenant-scoped read as the rest of the run
+(invariant 1), and the derived `durationSeconds` (invariant 10) is observable without a new stored column.
+
+#### Verification
+- `:apps:agentflow-app:compileTestJava` — green (main + test).
+- `:apps:agentflow-app:test --tests "com.example.agentflow.workflowexecution.application.AttemptRecordTest"` —
+  3/3: `fromRow_maps_the_identity_and_the_safe_error_category`,
+  `fromRow_derives_duration_from_start_and_finish_in_whole_seconds`,
+  `fromRow_reports_zero_duration_while_the_attempt_is_in_flight`.
+- `:apps:agentflow-app:test --tests "com.example.agentflow.workflowexecution.web.WorkflowRunControllerTest"` —
+  green: `get_attempt_history_returns_the_records_for_the_run` (200 with the safe records, a clean attempt's
+  `errorClass` absent from the JSON) and `get_attempt_history_on_an_unknown_run_is_a_404` (a missing/foreign
+  run surfaces as `404 not found`, never a leak).
+
+#### Tests
+- `AttemptRecordTest` (new, unit, DB-free): the three methods above.
+- `WorkflowRunControllerTest` — the two methods above (`200` happy path + the tenant-scoped `404`).
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section; the endpoint added to the OpenAPI contract
+(`generateOpenApiContract`).
+
+#### Schema / contract
+Additive only: one new table (`V3_3_16`) and one new read-only endpoint (`GET /api/v1/runs/{runId}/attempts`);
+no change to the `WorkflowStepState` enum, event shapes, the module boundary, or any existing call path — the
+transition service gains the null-guarded `recordStepAttempt` hook, and no existing transition changed behaviour.
 ## S07-13 — Graceful shutdown of the workflow worker (S07-13).
 
 - **Graceful shutdown of the workflow worker (S07-13).** The worker event loop is now driven by a Spring `Lifecycle` bean, `WorkerLifecycle` (`workflowexecution.worker`), and termination on SIGTERM no longer leaves a run `RUNNING` without recovery. `WorkerLifecycle.start()` spins a loop thread that drives `WorkflowWorker#pollOnce` per configured tenant every `agentflow.worker.poll-interval-ms`; `WorkerLifecycle.stop()` sets the worker's cooperative `shuttingDown` flag (so `pollOnce` stops claiming new runs — `pollOnce` returns `0` once the flag is set, and the per-run loop `break`s before starting a run it has not begun), then joins the loop thread for up to `agentflow.worker.shutdown-timeout-seconds` (a bounded drain of the step currently executing), and if the in-flight step is still running it **abandons the loop thread and logs a warning** — the run is never lost: its run-level lease expires and the S07-09 stale-run recovery loop re-claims it. `WorkerLifecycle` is `@ConditionalOnProperty(name = "agentflow.worker.loop-enabled", matchIfMissing = true)`, so it is active where the loop matters (the `workflow-worker` role) and harmless in the `api` role, mirroring the recovery scheduler. New config (in `agentflow.worker`): `poll-interval-ms` (default `5000`, `@Min 100`) is the poll cadence, `shutdown-timeout-seconds` bounds the drain, `loop-enabled` toggles the driver, and `tenants` is the operator-set startup set (an operator hint, never a trust anchor — invariant 1).
