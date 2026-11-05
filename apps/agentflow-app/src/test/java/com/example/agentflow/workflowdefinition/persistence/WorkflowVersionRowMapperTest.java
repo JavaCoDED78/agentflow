@@ -19,7 +19,7 @@ class WorkflowVersionRowMapperTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void mapRow_reads_every_column_and_roundTripsGraph() throws SQLException {
+  void map_row_reads_every_column_and_round_trips_graph() throws SQLException {
     ResultSet rs = mock(ResultSet.class);
     UUID id = UUID.randomUUID();
     UUID workflowId = UUID.randomUUID();

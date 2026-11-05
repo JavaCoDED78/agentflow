@@ -61,7 +61,7 @@ class RunStateMachineServiceTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void transitionRun_reads_asserts_updates_and_appends_event_in_order() {
+  void transition_run_reads_asserts_updates_and_appends_event_in_order() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
@@ -81,7 +81,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionRun_appends_the_actor_in_the_event_payload_when_supplied() {
+  void transition_run_appends_the_actor_in_the_event_payload_when_supplied() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
@@ -94,7 +94,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionRun_forbidden_transition_is_a_400_the_state_machine_cannot_be_bypassed() {
+  void transition_run_forbidden_transition_is_a_400_the_state_machine_cannot_be_bypassed() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     // SUCCEEDED is terminal: a re-delivered event must not move it again (the gate holds).
@@ -114,7 +114,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionRun_null_target_state_is_a_400() {
+  void transition_run_null_target_state_is_a_400() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
@@ -127,7 +127,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionRun_unknown_run_is_a_404_cross_tenant_is_indistinguishable_from_missing() {
+  void transition_run_unknown_run_is_a_404_cross_tenant_is_indistinguishable_from_missing() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId)).thenReturn(Optional.empty());
@@ -142,7 +142,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionRun_conditional_update_conflict_is_a_409() {
+  void transition_run_conditional_update_conflict_is_a_409() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
@@ -163,7 +163,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionRun_no_database_is_a_503_not_a_silent_no_op() {
+  void transition_run_no_database_is_a_503_not_a_silent_no_op() {
     RunStateMachineService noDb = new RunStateMachineService(null, stepRepository, eventService);
 
     ResponseStatusException ex =
@@ -180,7 +180,7 @@ class RunStateMachineServiceTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void transitionStep_reads_asserts_updates_and_appends_a_scoped_event_in_order() {
+  void transition_step_reads_asserts_updates_and_appends_a_scoped_event_in_order() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID stepId = UUID.randomUUID();
@@ -204,7 +204,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionStep_forbidden_transition_is_a_400() {
+  void transition_step_forbidden_transition_is_a_400() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID stepId = UUID.randomUUID();
@@ -225,7 +225,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionStep_missing_step_is_a_404() {
+  void transition_step_missing_step_is_a_404() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     String stepKey = "tool_call";
@@ -241,7 +241,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionStep_conditional_update_conflict_is_a_409() {
+  void transition_step_conditional_update_conflict_is_a_409() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID stepId = UUID.randomUUID();
@@ -264,7 +264,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionStep_records_the_error_class_and_appends_it_to_the_event_for_a_fault() {
+  void transition_step_records_the_error_class_and_appends_it_to_the_event_for_a_fault() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID stepId = UUID.randomUUID();
@@ -308,7 +308,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionStep_records_no_error_class_on_a_normal_retry_transition() {
+  void transition_step_records_no_error_class_on_a_normal_retry_transition() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID stepId = UUID.randomUUID();
@@ -338,7 +338,7 @@ class RunStateMachineServiceTest {
   }
 
   @Test
-  void transitionStep_no_database_is_a_503() {
+  void transition_step_no_database_is_a_503() {
     RunStateMachineService noDb = new RunStateMachineService(runRepository, null, eventService);
 
     ResponseStatusException ex =

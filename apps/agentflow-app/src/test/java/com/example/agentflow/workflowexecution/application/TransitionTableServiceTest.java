@@ -43,8 +43,8 @@ import org.springframework.web.server.ResponseStatusException;
  * application boundary (the same DB-free convention as {@link RunStateMachineServiceTest}).
  *
  * <p>Three shapes make the acceptance criterion concrete: {@link
- * #allowedRunTransitions_applies_and_appends_event} and {@link
- * #allowedStepTransitions_applies_and_appends_event} drive every edge in the tables; the named
+ * #allowed_run_transitions_applies_and_appends_event} and {@link
+ * #allowed_step_transitions_applies_and_appends_event} drive every edge in the tables; the named
  * scenarios from the task &mdash; terminal states, retry, cancel and the approval pause/resume
  * &mdash; are asserted as multi-step sequences; and the forbidden-edge table asserts the {@code
  * 400} no-op.
@@ -100,7 +100,7 @@ class TransitionTableServiceTest {
   @ParameterizedTest(name = "run guard {0}: {1} -> {2} via {3}")
   @MethodSource("allowedRunEdges")
   @DisplayName("run: every documented edge applies and appends one prior->new event")
-  void allowedRunTransitions_applies_and_appends_event(RunEdge edge) {
+  void allowed_run_transitions_applies_and_appends_event(RunEdge edge) {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
@@ -123,7 +123,7 @@ class TransitionTableServiceTest {
   @ParameterizedTest(name = "run guard {0}: {1} -> {2} (no edge) must be refused")
   @MethodSource("forbiddenRunEdges")
   @DisplayName("run: a forbidden edge is a 400 and appends nothing")
-  void forbiddenRunTransition_is_a_400_and_appends_nothing(RunEdge edge) {
+  void forbidden_run_transition_is_a_400_and_appends_nothing(RunEdge edge) {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     when(runRepository.findState(tenant, runId))
@@ -179,7 +179,7 @@ class TransitionTableServiceTest {
   @ParameterizedTest(name = "step guard {0}: {1} -> {2} via {3}")
   @MethodSource("allowedStepEdges")
   @DisplayName("step: every documented edge applies and appends one scoped prior->new event")
-  void allowedStepTransitions_applies_and_appends_event(StepEdge edge) {
+  void allowed_step_transitions_applies_and_appends_event(StepEdge edge) {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID stepId = UUID.randomUUID();
@@ -205,7 +205,7 @@ class TransitionTableServiceTest {
   @ParameterizedTest(name = "step guard {0}: {1} -> {2} (no edge) must be refused")
   @MethodSource("forbiddenStepEdges")
   @DisplayName("step: a forbidden edge is a 400 and appends nothing")
-  void forbiddenStepTransition_is_a_400_and_appends_nothing(StepEdge edge) {
+  void forbidden_step_transition_is_a_400_and_appends_nothing(StepEdge edge) {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     String stepKey = "node";

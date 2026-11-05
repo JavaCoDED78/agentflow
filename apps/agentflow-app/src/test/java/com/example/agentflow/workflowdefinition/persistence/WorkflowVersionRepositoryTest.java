@@ -193,7 +193,7 @@ class WorkflowVersionRepositoryTest {
   }
 
   @Test
-  void nextVersionNumber_returns_max_plus_one_tenant_scoped() {
+  void next_version_number_returns_max_plus_one_tenant_scoped() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowVersionRepository repo = new WorkflowVersionRepository(jdbc);
     UUID tenant = UUID.randomUUID();
@@ -214,7 +214,7 @@ class WorkflowVersionRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void findActiveVersion_scopes_by_tenant_and_filters_to_the_active_version() throws SQLException {
+  void find_active_version_scopes_by_tenant_and_filters_to_the_active_version() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowVersionRepository repo = new WorkflowVersionRepository(jdbc);
     UUID tenant = UUID.randomUUID();
@@ -246,7 +246,7 @@ class WorkflowVersionRepositoryTest {
   }
 
   @Test
-  void findActiveVersion_returns_empty_when_no_version_is_active() {
+  void find_active_version_returns_empty_when_no_version_is_active() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowVersionRepository repo = new WorkflowVersionRepository(jdbc);
     when(jdbc.query(anyString(), any(PreparedStatementSetter.class), any(RowMapper.class)))

@@ -35,7 +35,7 @@ class WorkflowNodeTypeRegistryTest {
   }
 
   @Test
-  void assertKnown_accepts_every_glossary_type() {
+  void assert_known_accepts_every_glossary_type() {
     for (String type : GLOSSARY_TYPES) {
       assertThatNoException()
           .as("assertKnown must not throw for the allowed node type %s", type)
@@ -53,7 +53,7 @@ class WorkflowNodeTypeRegistryTest {
   }
 
   @Test
-  void assertKnown_rejects_null_and_blank() {
+  void assert_known_rejects_null_and_blank() {
     assertThatThrownBy(() -> WorkflowNodeTypeRegistry.assertKnown(null))
         .isInstanceOf(InvalidGraphException.class)
         .hasMessageContaining("unknown workflow node type");
@@ -63,7 +63,7 @@ class WorkflowNodeTypeRegistryTest {
   }
 
   @Test
-  void assertKnown_rejects_the_forbidden_executable_code_type() {
+  void assert_known_rejects_the_forbidden_executable_code_type() {
     // ADR-005 forbids a SCRIPT/JAVASCRIPT node that runs user-supplied code; the closed registry
     // rejects it, so it can never be registered as an executable type (S05-07, invariant 7).
     assertThatThrownBy(() -> WorkflowNodeTypeRegistry.assertKnown("SCRIPT"))

@@ -32,7 +32,7 @@ class WorkflowDefinitionRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void findByTenantAndId_binds_the_tenant_in_the_where_clause() throws SQLException {
+  void find_by_tenant_and_id_binds_the_tenant_in_the_where_clause() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);
     UUID tenant = UUID.randomUUID();
@@ -134,7 +134,7 @@ class WorkflowDefinitionRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void updateMetadata_foreignTenant_affects_zero_rows() throws SQLException {
+  void update_metadata_foreign_tenant_affects_zero_rows() throws SQLException {
     // S04-07: a write scoped to the wrong tenant must affect zero rows. The tenant_id guard in the
     // WHERE clause (invariant 1) scopes every write to its owning tenant, so guessing another
     // tenant's resource id grants no update — the write is denied (409), never a silent no-op that
@@ -161,7 +161,7 @@ class WorkflowDefinitionRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void listByTenant_binds_the_tenant_orders_by_created_at_id_and_bounds_the_page()
+  void list_by_tenant_binds_the_tenant_orders_by_created_at_id_and_bounds_the_page()
       throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowDefinitionRepository repo = new WorkflowDefinitionRepository(jdbc);

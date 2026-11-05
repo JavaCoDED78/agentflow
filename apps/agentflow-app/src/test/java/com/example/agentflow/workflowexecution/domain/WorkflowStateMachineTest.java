@@ -125,7 +125,7 @@ class WorkflowStateMachineTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void assertAllowed_throws_a_domain_error_on_forbidden_transition() {
+  void assert_allowed_throws_a_domain_error_on_forbidden_transition() {
     assertThatThrownBy(
             () ->
                 WorkflowRunState.assertAllowed(
@@ -143,7 +143,7 @@ class WorkflowStateMachineTest {
   }
 
   @Test
-  void assertAllowed_rejects_null_states() {
+  void assert_allowed_rejects_null_states() {
     assertThatThrownBy(() -> WorkflowRunState.assertAllowed(null, WorkflowRunState.RUNNING))
         .isInstanceOf(InvalidStateException.class);
     assertThatThrownBy(() -> WorkflowRunState.assertAllowed(WorkflowRunState.RUNNING, null))
@@ -153,7 +153,7 @@ class WorkflowStateMachineTest {
   }
 
   @Test
-  void assertAllowed_passes_on_an_allowed_transition() {
+  void assert_allowed_passes_on_an_allowed_transition() {
     WorkflowRunState.assertAllowed(WorkflowRunState.RUNNING, WorkflowRunState.SUCCEEDED);
     WorkflowStepState.assertAllowed(WorkflowStepState.READY, WorkflowStepState.RUNNING);
   }
