@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Worker kill / restart fault-injection test (S07-15): an actively-owned run whose worker dies mid-step survives — once its lease expires a second worker re-claims it (ownership transfer fenced by `lease_epoch`) and the run resumes within 60 s, verified against real PostgreSQL via Testcontainers** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Persistent per-attempt step execution history (attempt number, start/finish, worker instance, safe error category + duration) with tenant-scoped reading — a failed retry is investigable without viewing the secret payload (S07-14)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Integration suite for the per-attempt step execution history repository (S07-14): exercises the real repository against PostgreSQL via Testcontainers (monotonic attempt numbering, COALESCE fencing, tenant-scoped read, `setNull` worker bind, `TIMESTAMPTZ` round-trip) rather than a mocked `JdbcTemplate`** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 - **Graceful shutdown of the workflow worker (S07-13)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
