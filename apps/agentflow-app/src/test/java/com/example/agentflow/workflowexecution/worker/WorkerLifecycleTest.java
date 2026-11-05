@@ -61,7 +61,7 @@ class WorkerLifecycleTest {
   private final CheckpointAdapter checkpointAdapter = mock(CheckpointAdapter.class);
 
   @Test
-  void startThenStop_setsShuttingDownAndDrainsTheLoop() throws Exception {
+  void start_then_stop_sets_shutting_down_and_drains_the_loop() throws Exception {
     AgentFlowProperties properties = workerProperties(50L, 30L);
     properties.getWorker().setTenants(List.of(UUID.randomUUID()));
 
@@ -92,7 +92,7 @@ class WorkerLifecycleTest {
   }
 
   @Test
-  void stopWithoutStart_isAnNoOp() {
+  void stop_without_start_is_an_no_op() {
     AgentFlowProperties properties = workerProperties(50L, 30L);
     WorkflowWorker worker =
         new WorkflowWorker(
@@ -114,7 +114,7 @@ class WorkerLifecycleTest {
   }
 
   @Test
-  void stopDrainsWithinTheBoundedTimeEvenWhenTheStepBlocks() throws Exception {
+  void stop_drains_within_the_bounded_time_even_when_the_step_blocks() throws Exception {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID versionId = UUID.randomUUID();

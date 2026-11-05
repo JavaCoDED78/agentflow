@@ -46,7 +46,7 @@ class IdempotencyKeyServiceTest {
   }
 
   @Test
-  void findByKey_delegates_to_the_repository() {
+  void find_by_key_delegates_to_the_repository() {
     IdempotentRunView stored = storedRun("fp");
     when(runRepository.findByIdempotencyKey(tenant, key)).thenReturn(Optional.of(stored));
 
@@ -57,7 +57,7 @@ class IdempotencyKeyServiceTest {
   }
 
   @Test
-  void answerReplay_with_a_matching_fingerprint_returns_the_original_run() {
+  void answer_replay_with_a_matching_fingerprint_returns_the_original_run() {
     IdempotentRunView stored = storedRun("fp");
 
     RunDto result = service.answerReplay(stored, "fp", key);
@@ -70,7 +70,7 @@ class IdempotencyKeyServiceTest {
   }
 
   @Test
-  void answerReplay_with_a_mismatching_fingerprint_is_a_conflict_not_an_overwrite() {
+  void answer_replay_with_a_mismatching_fingerprint_is_a_conflict_not_an_overwrite() {
     IdempotentRunView stored = storedRun("stored-fp");
 
     assertThatThrownBy(() -> service.answerReplay(stored, "incoming-fp", key))
@@ -81,7 +81,7 @@ class IdempotencyKeyServiceTest {
   }
 
   @Test
-  void findByKey_without_a_database_reports_unavailable() {
+  void find_by_key_without_a_database_reports_unavailable() {
     IdempotencyKeyService noDb = new IdempotencyKeyService(null);
 
     assertThatThrownBy(() -> noDb.findByIdempotencyKey(tenant, key))

@@ -34,7 +34,7 @@ class WorkflowEventServiceTest {
   }
 
   @Test
-  void historyByRun_forwards_tenant_and_run() {
+  void history_by_run_forwards_tenant_and_run() {
     WorkflowEventService service = new WorkflowEventService(repository);
     UUID tenant = UUID.randomUUID();
     UUID run = UUID.randomUUID();

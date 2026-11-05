@@ -35,7 +35,7 @@ class WorkflowRunRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void findState_binds_the_tenant_in_the_where_clause() throws SQLException {
+  void find_state_binds_the_tenant_in_the_where_clause() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowRunRepository repo = new WorkflowRunRepository(jdbc);
     UUID tenant = UUID.randomUUID();
@@ -56,7 +56,7 @@ class WorkflowRunRepositoryTest {
   }
 
   @Test
-  void findState_returns_empty_for_a_cross_tenant_run() {
+  void find_state_returns_empty_for_a_cross_tenant_run() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowRunRepository repo = new WorkflowRunRepository(jdbc);
     when(jdbc.query(anyString(), any(RowMapper.class), any())).thenReturn(Collections.emptyList());

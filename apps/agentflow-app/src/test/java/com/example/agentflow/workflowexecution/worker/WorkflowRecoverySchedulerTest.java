@@ -35,7 +35,7 @@ class WorkflowRecoverySchedulerTest {
   }
 
   @Test
-  void reclaimsAnExpiredRunAndPublishesTheCounter() {
+  void reclaims_an_expired_run_and_publishes_the_counter() {
     UUID runId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();
     when(runRepository.findExpiredLeaseRuns(8))
@@ -52,7 +52,7 @@ class WorkflowRecoverySchedulerTest {
   }
 
   @Test
-  void skipsARunClaimThatReturnsMinusOne() {
+  void skips_a_run_claim_that_returns_minus_one() {
     // A claim of -1 means the run is terminal, was just taken by another worker, or a cross-tenant
     // / missing id — the recovery skips it (idempotent re-claim, never a lost run).
     UUID runId = UUID.randomUUID();
@@ -70,7 +70,7 @@ class WorkflowRecoverySchedulerTest {
   }
 
   @Test
-  void claimsOnlyTheRunsThatMatch() {
+  void claims_only_the_runs_that_match() {
     UUID firstRun = UUID.randomUUID();
     UUID firstTenant = UUID.randomUUID();
     UUID secondRun = UUID.randomUUID();
@@ -93,7 +93,7 @@ class WorkflowRecoverySchedulerTest {
   }
 
   @Test
-  void scansOnlyUpToTheConcurrencyLimit() {
+  void scans_only_up_to_the_concurrency_limit() {
     // The bound is passed to the scan as the LIMIT, so a pass re-claims at most `limit` runs.
     when(runRepository.findExpiredLeaseRuns(8)).thenReturn(List.of());
     scheduler().recoverPass();
@@ -101,14 +101,14 @@ class WorkflowRecoverySchedulerTest {
   }
 
   @Test
-  void failsLoudlyWhenNoDatabaseConnectionIsConfigured() {
+  void fails_loudly_when_no_database_connection_is_configured() {
     WorkflowRecoveryScheduler scheduler =
         new WorkflowRecoveryScheduler(null, leaseService, properties, meterRegistry);
     assertThatThrownBy(scheduler::recoverPass).isInstanceOf(IllegalStateException.class);
   }
 
   @Test
-  void publishesTheCounterWithoutTenantOrRunLabels() {
+  void publishes_the_counter_without_tenant_or_run_labels() {
     // invariant 9 — the counter carries no high-cardinality label.
     UUID runId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();

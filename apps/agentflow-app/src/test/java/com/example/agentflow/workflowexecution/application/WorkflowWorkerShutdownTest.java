@@ -44,7 +44,7 @@ class WorkflowWorkerShutdownTest {
   private final CheckpointAdapter checkpointAdapter = mock(CheckpointAdapter.class);
 
   @Test
-  void pollOnce_returnsZeroAndSkipsClaimingOnceStopping() {
+  void poll_once_returns_zero_and_skips_claiming_once_stopping() {
     WorkflowWorker worker = buildWorker();
 
     assertThat(worker.isShuttingDown()).isFalse();
@@ -59,7 +59,7 @@ class WorkflowWorkerShutdownTest {
   }
 
   @Test
-  void shutdown_extendsNothingOnTheLeaseAfterStopping() {
+  void shutdown_extends_nothing_on_the_lease_after_stopping() {
     UUID tenant = UUID.randomUUID();
 
     WorkflowWorker worker = buildWorker();
@@ -77,7 +77,7 @@ class WorkflowWorkerShutdownTest {
   }
 
   @Test
-  void stop_setsTheShuttingDownFlag() {
+  void stop_sets_the_shutting_down_flag() {
     WorkflowWorker worker = buildWorker();
 
     assertThat(worker.isShuttingDown()).isFalse();
@@ -88,7 +88,7 @@ class WorkflowWorkerShutdownTest {
   }
 
   @Test
-  void pollOnce_processesRunsNormallyBeforeStopping() {
+  void poll_once_processes_runs_normally_before_stopping() {
     UUID tenant = UUID.randomUUID();
     UUID runId = UUID.randomUUID();
     UUID versionId = UUID.randomUUID();

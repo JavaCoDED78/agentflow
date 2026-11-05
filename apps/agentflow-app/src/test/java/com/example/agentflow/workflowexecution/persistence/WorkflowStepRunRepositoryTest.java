@@ -40,7 +40,7 @@ class WorkflowStepRunRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void findState_joins_the_parent_run_and_scopes_by_tenant() throws SQLException {
+  void find_state_joins_the_parent_run_and_scopes_by_tenant() throws SQLException {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
     UUID tenant = UUID.randomUUID();
@@ -63,7 +63,7 @@ class WorkflowStepRunRepositoryTest {
   }
 
   @Test
-  void findState_returns_empty_for_a_cross_tenant_step() {
+  void find_state_returns_empty_for_a_cross_tenant_step() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
     when(jdbc.query(anyString(), any(RowMapper.class), any())).thenReturn(Collections.emptyList());
@@ -286,7 +286,7 @@ class WorkflowStepRunRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void saveCheckpoint_joins_the_parent_and_guards_by_status_lease_and_tenant() throws SQLException {
+  void save_checkpoint_joins_the_parent_and_guards_by_status_lease_and_tenant() throws SQLException {
     // A checkpoint write is guarded exactly like any other step write: the parent's tenant_id is
     // part of the JOIN WHERE (invariant 1), and the step must still be SUCCEEDED and still hold the
     // lease_epoch fence (invariant 5) before the redacted output is stored (S07-07).
@@ -319,7 +319,7 @@ class WorkflowStepRunRepositoryTest {
   }
 
   @Test
-  void saveCheckpoint_zero_rows_becomes_a_conflict() {
+  void save_checkpoint_zero_rows_becomes_a_conflict() {
     // The step is not SUCCEEDED, is gone, is a different tenant, or the lease fence moved: the
     // guarded UPDATE affects no row and must not silently write a bogus checkpoint (invariant 4).
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
@@ -336,7 +336,7 @@ class WorkflowStepRunRepositoryTest {
 
   @Test
   @SuppressWarnings("unchecked")
-  void findCheckpoint_joins_the_parent_run_and_scopes_by_tenant() {
+  void find_checkpoint_joins_the_parent_run_and_scopes_by_tenant() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
     UUID tenant = UUID.randomUUID();
@@ -360,7 +360,7 @@ class WorkflowStepRunRepositoryTest {
   }
 
   @Test
-  void findCheckpoint_returns_empty_for_a_cross_tenant_step() {
+  void find_checkpoint_returns_empty_for_a_cross_tenant_step() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
     when(jdbc.query(anyString(), any(RowMapper.class), any())).thenReturn(Collections.emptyList());
@@ -369,7 +369,7 @@ class WorkflowStepRunRepositoryTest {
   }
 
   @Test
-  void findCheckpoint_reads_the_stored_output_and_schema_version() {
+  void find_checkpoint_reads_the_stored_output_and_schema_version() {
     JdbcTemplate jdbc = mock(JdbcTemplate.class);
     WorkflowStepRunRepository repo = new WorkflowStepRunRepository(jdbc);
     ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);

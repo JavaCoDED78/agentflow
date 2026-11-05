@@ -20,19 +20,19 @@ class InboxErrorPolicyTest {
   private final InboxErrorPolicy policy = InboxErrorPolicy.defaults();
 
   @Test
-  void IllegalArgumentException_is_permanent() {
+  void illegal_argument_exception_is_permanent() {
     assertThat(policy.classify(new IllegalArgumentException("malformed envelope")))
         .isEqualTo(InboxErrorClassification.PERMANENT);
   }
 
   @Test
-  void IllegalStateException_is_permanent() {
+  void illegal_state_exception_is_permanent() {
     assertThat(policy.classify(new IllegalStateException("step out of order")))
         .isEqualTo(InboxErrorClassification.PERMANENT);
   }
 
   @Test
-  void NullPointerException_is_permanent() {
+  void null_pointer_exception_is_permanent() {
     assertThat(policy.classify(new NullPointerException("null action")))
         .isEqualTo(InboxErrorClassification.PERMANENT);
   }

@@ -83,7 +83,7 @@ class WorkflowEventRepositoryTest {
   }
 
   @Test
-  void findByTenantAndRunId_scopes_by_run_and_tenant_and_orders() throws SQLException {
+  void find_by_tenant_and_run_id_scopes_by_run_and_tenant_and_orders() throws SQLException {
     WorkflowEventRepository repository = new WorkflowEventRepository(jdbc);
     UUID tenant = UUID.randomUUID();
     UUID run = UUID.randomUUID();
