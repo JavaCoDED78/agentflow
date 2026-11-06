@@ -4,6 +4,21 @@
 # Sprint 8 — Tool registry
 
 
+## S08-05 — The safe calculator evaluator (S08-05).
+
+### What changed
+A pure, dependency-free [`Calculator`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/domain/Calculator.java) (`toolexecution.domain`) closing the concrete `calculator.evaluate`: a self-contained recursive-descent operator-precedence parser over a closed numeric dialect (operands are typed {@link BigDecimal}s, exact and typed) built from {@code + - * /}, parentheses and decimal/scientific literals. It is an evaluator, never a general interpreter — no {@code eval}, no shell, no reflection, no class loading, no access to any language feature (invariant 7 / ADR-006). Addition, subtraction and multiplication are exact {@link BigDecimal} operations; division is bounded to 34 fractional digits half-up ({@code 1/3} deterministic, {@code 10/4} exact), a divide-by-zero throws, and every intermediate result is magnitude-bounded to {@code 1E1000} so growth turns into a deterministic {@code overflow}. The new {@link CalculationException} carries a stable {@code reason()} code (`invalid-token`, `empty-expression`, `division-by-zero`, `overflow`) — the calculator-layer counterpart of `SchemaValidationException`.
+
+### Why
+`BuiltInTools` already seeded a read-only `calculator` descriptor (S08-02); its behaviour was unspecified. The plan task ("safe calculator: safe parser") needs a real, deterministic, dependency-free evaluator — not a call out to an external `ScriptEngine`/`eval` (an invariant: an untrusted Planner is never a code interpreter). The recursive-descent parser is the smallest implementation that closes the loop and adds no escape surface, so it is the right tool, not a general-purpose expression engine built only for novelty.
+
+### Verification
+Unit, DB-free, no model/Kafka/system clock: `CalculatorTest` (29 tests) — operator precedence ({@code 2 + 3 * 4 == 14}), nested parentheses, unary signs ({@code -(-5)}), exact and scientific literals ({@code 1.5E2 + 1 == 151}), division exactness ({@code 10/4}) and rounding ({@code 1/3}), division-by-zero ({@code "(2 - 2)"}) and direct zero, overflow ({@code 1E600 * 1E600}), and every malformed-input reason — all assertions pass. A stray operator / unbalanced parenthesis throws {@code invalid-token} (not {@code IndexOutOfBoundsException}); the `seenDot` fix parses decimals and exponents correctly. `:apps:agentflow-app:check` green (unit + architecture gates + spotless + OpenAPI).
+
+### Docs
+- `docs/architecture/module-api.md` — added the `toolexecution.domain` row (`Calculator` + `CalculationException`; `SchemaValidator`/`SchemaValidationException`).
+- `CHANGELOG.md` — added the S08-05 bullet under `Unreleased → Added`.
+
 ## S08-04 — Output-schema validation (S08-04).
 
 ### What changed
