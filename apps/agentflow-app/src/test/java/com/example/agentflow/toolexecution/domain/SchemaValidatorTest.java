@@ -330,4 +330,136 @@ class SchemaValidatorTest {
     assertThat(error.reason()).isEqualTo("type-mismatch");
     assertThat(error.getMessage()).contains("type-mismatch");
   }
+
+  // ---- S08-04: output (result) validation --------------------------------
+  //
+  // S08-03 proved an invalid <em>input</em> is blocked before any side effect. S08-04 closes the
+  // loop the other way: the executor resolves the tool's {@link ToolDescriptor#outputSchema()} and
+  // validates the tool's <em>result</em> against it <em>after</em> the tool runs and
+  // <em>before</em>
+  // the step is marked SUCCEEDED, so an invalid result is never accepted, forwarded to the next
+  // step, or checkpointed. The engine is the very same {@link SchemaValidator} (schema-agnostic: it
+  // validates any parsed value against any parsed schema), and the acceptance criterion — "an
+  // invalid output is not marked as a successful step result" — is what the {@link
+  // OutputResultGate} harness below asserts. It also makes the S08-04 distinction explicit: a
+  // <b>schema mismatch</b> (a produced result that does not conform to the output schema) is a
+  // {@link SchemaValidationException}; a <b>transient execution error</b> (the tool throws before
+  // producing a result, e.g. a provider timeout) is a different failure the output gate never sees
+  // —
+  // it short-circuits on the tool call and is classified separately. DB-free (no database, Kafka,
+  // model or system clock).
+
+  /**
+   * A minimal stand-in for the TOOL_CALL handler contract (S08-05+): it runs the tool, then
+   * validates the tool's parsed <em>result</em> against the output schema <em>before</em> marking
+   * the step succeeded. This models S08-04's after-call gate and the acceptance criterion.
+   */
+  private static final class OutputResultGate {
+    boolean markedSucceeded = false;
+
+    /**
+     * Runs {@code toolCall}, then validates its parsed result against {@code outputValidator}
+     * before marking the step succeeded.
+     *
+     * @param outputValidator the validator bound to the descriptor's {@code outputSchema}
+     * @param toolCall the tool execution, which either returns a parsed result or throws before
+     *     producing one (a transient execution error)
+     */
+    void produce(SchemaValidator outputValidator, java.util.function.Supplier<Object> toolCall) {
+      Object result = toolCall.get(); // a transient failure throws here, before validation
+      outputValidator.validate(result); // the S08-04 after-call gate; throws on a mismatch
+      markedSucceeded = true;
+    }
+  }
+
+  @Test
+  void a_tool_result_matching_its_output_schema_is_marked_succeeded() {
+    SchemaValidator output =
+        SchemaValidator.of(objectSchema("properties", props("value", "number")));
+    OutputResultGate gate = new OutputResultGate();
+
+    gate.produce(output, () -> Map.of("value", 42L));
+
+    assertThat(gate.markedSucceeded).isTrue();
+  }
+
+  @Test
+  void a_tool_result_that_types_mismatch_its_output_schema_is_not_marked_succeeded() {
+    SchemaValidator output =
+        SchemaValidator.of(objectSchema("properties", props("value", "number")));
+    OutputResultGate gate = new OutputResultGate();
+
+    assertThatThrownBy(() -> gate.produce(output, () -> Map.of("value", "not-a-number")))
+        .isInstanceOf(SchemaValidationException.class)
+        .extracting("reason")
+        .isEqualTo("type-mismatch");
+    // The acceptance criterion: a non-conforming result is not marked as a successful step.
+    assertThat(gate.markedSucceeded).isFalse();
+  }
+
+  @Test
+  void a_tool_result_missing_a_required_output_field_is_not_marked_succeeded() {
+    SchemaValidator output =
+        SchemaValidator.of(
+            objectSchema("properties", props("value", "number"), "required", List.of("value")));
+    OutputResultGate gate = new OutputResultGate();
+
+    assertThatThrownBy(() -> gate.produce(output, () -> Map.of()))
+        .isInstanceOf(SchemaValidationException.class)
+        .extracting("reason")
+        .isEqualTo("missing-required");
+    assertThat(gate.markedSucceeded).isFalse();
+  }
+
+  @Test
+  void an_unknown_property_is_rejected_in_a_strict_output_contract() {
+    SchemaValidator output =
+        SchemaValidator.of(
+            objectSchema(
+                "properties", props("value", "number"), "additionalProperties", Boolean.FALSE));
+    OutputResultGate gate = new OutputResultGate();
+
+    assertThatThrownBy(() -> gate.produce(output, () -> Map.of("value", 1L, "extra", 2L)))
+        .isInstanceOf(SchemaValidationException.class)
+        .extracting("reason")
+        .isEqualTo("unknown-property");
+    assertThat(gate.markedSucceeded).isFalse();
+  }
+
+  @Test
+  void an_output_exceeding_the_size_limit_is_not_marked_succeeded() {
+    SchemaValidator output =
+        SchemaValidator.of(objectSchema(), 50, SchemaValidator.DEFAULT_MAX_DEPTH);
+    OutputResultGate gate = new OutputResultGate();
+    java.util.LinkedHashMap<String, Object> oversized = new java.util.LinkedHashMap<>();
+    for (int i = 0; i < 100; i++) {
+      oversized.put("field" + i, "v");
+    }
+
+    assertThatThrownBy(() -> gate.produce(output, () -> oversized))
+        .isInstanceOf(SchemaValidationException.class)
+        .extracting("reason")
+        .isEqualTo("payload-too-large");
+    assertThat(gate.markedSucceeded).isFalse();
+  }
+
+  @Test
+  void a_transient_tool_failure_is_reported_as_a_transient_error_not_a_schema_mismatch() {
+    SchemaValidator output =
+        SchemaValidator.of(objectSchema("properties", props("value", "number")));
+    OutputResultGate gate = new OutputResultGate();
+
+    // The tool throws before producing a result (a provider/network timeout): the after-call gate
+    // is never reached, so this is a transient execution error, not a SchemaValidationException.
+    assertThatThrownBy(
+            () ->
+                gate.produce(
+                    output,
+                    () -> {
+                      throw new IllegalStateException("provider_timeout");
+                    }))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("provider_timeout");
+    assertThat(gate.markedSucceeded).isFalse();
+  }
 }
