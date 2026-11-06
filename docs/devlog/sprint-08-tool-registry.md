@@ -20,7 +20,6 @@ The S08-03 plan task ("validate types and required fields before the call; limit
 ### Docs
 - `CHANGELOG.md` (Unreleased → Added, newest-first).
 - This file.
-- `docs/architecture/module-api.md` — `toolexecution.domain` public surface (`SchemaValidator`, `SchemaValidationException`).
 
 ---
 
