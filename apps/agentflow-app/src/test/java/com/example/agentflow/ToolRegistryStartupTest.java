@@ -40,10 +40,12 @@ class ToolRegistryStartupTest {
               ToolRegistry registry = context.getBean(ToolRegistry.class);
               assertThat(registry).isNotNull();
               assertThat(registry.size()).isGreaterThanOrEqualTo(2);
-              // The built-in tools resolve; an unknown tool does not (unknown -> never called).
+              // The built-in tools resolve; a still-unknown tool does not (unknown -> never
+              // called).
               assertThat(registry.resolve("calculator", "1")).isPresent();
               assertThat(registry.resolve("report", "1")).isPresent();
-              assertThat(registry.resolve("ticket", "1")).isEmpty();
+              assertThat(registry.resolve("ticket", "1")).isPresent();
+              assertThat(registry.resolve("nonexistent-tool", "1")).isEmpty();
             });
   }
 
