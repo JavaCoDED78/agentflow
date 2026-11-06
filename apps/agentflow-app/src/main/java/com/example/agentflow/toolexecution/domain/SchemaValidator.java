@@ -13,8 +13,11 @@ import java.util.Map;
  * any tool side effect</b>. The executor resolves the tool's {@link ToolDescriptor#inputSchema()}
  * and validates the Planner's arguments against it <em>before</em> invoking the tool, so a value
  * that does not match the contract never reaches the executor (and therefore never triggers a side
- * effect). It is therefore a <b>before-call gate</b>, not a result validator — {@code S08-04}
- * validates the tool's <em>output</em> with the very same engine.
+ * effect). It closes <b>S08-04</b> the other way: it validates the tool's <em>output</em> against
+ * {@link ToolDescriptor#outputSchema()} <em>after</em> the tool runs and <em>before</em> the step
+ * is marked SUCCEEDED, so an invalid result is never accepted, forwarded to the next step, or
+ * checkpointed — a schema mismatch throws {@link SchemaValidationException}, distinct from a
+ * transient execution error the tool itself may raise before producing a result.
  *
  * <p>It supports the subset of JSON Schema a tool call needs — and nothing a full schema engine
  * would add only for novelty:
@@ -100,11 +103,15 @@ public final class SchemaValidator {
   }
 
   /**
-   * Validates the parsed argument value against the bound schema and the payload limits, throwing a
-   * {@link SchemaValidationException} on the first violation — <em>before the tool is invoked</em>,
-   * so an invalid payload is blocked before any side effect.
+   * Validates a parsed JSON value against the bound schema and the payload limits, throwing a
+   * {@link SchemaValidationException} on the first violation. It is used for both roles the engine
+   * serves: validating the tool's <em>arguments</em> ({@code S08-03}, blocking an invalid payload
+   * <em>before</em> the tool is invoked and any side effect) and validating the tool's
+   * <em>result</em> ({@code S08-04}, blocking a non-conforming output <em>before</em> the step is
+   * marked succeeded).
    *
-   * @param argument the parsed tool-call arguments (a {@code Map}/{@code List}/scalar tree)
+   * @param argument the parsed value to check — the tool-call arguments (S08-03) or the tool's
+   *     result (S08-04) — a {@code Map}/{@code List}/scalar tree
    * @throws SchemaValidationException if the value is too large, too deeply nested, or does not
    *     conform to the schema
    */
