@@ -121,7 +121,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `agentcatalog` | agent profiles, model policy, tool allowlist, tool risk classes | `identity`, PostgreSQL |
 | `workflowdefinition` | versioned workflow graph, DSL/graph validation, activation | `agentcatalog` |
 | `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, `StepHandler` port | `workflowdefinition`, messaging (outbox/inbox) |
-| `toolexecution` | typed tool registry, permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
+| `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
 | `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port), object storage |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
