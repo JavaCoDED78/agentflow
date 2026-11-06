@@ -3,6 +3,21 @@
 
 # Sprint 8 — Tool registry
 
+## S08-06 — The report formatter (S08-06).
+
+### What changed
+A pure, dependency-free [`ReportFormatter`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/domain/ReportFormatter.java) (`toolexecution.domain`) closing the concrete `report.format`: it takes structured {@link StructuredFact}s and their {@link Citation}s and renders them into an HTML-escaped {@link ReportFormat#MARKDOWN} or {@link ReportFormat#JSON} report. Every dynamic value (fact text and every citation source/url) is HTML-escaped <em>both</em> formats, so a hostile or prompt-injected fact (documents and tool outputs are untrusted content, invariant 7) can never turn the report into executable markup (`<script>` → `&lt;script&gt;`). The report is capped at {@code 4000} characters: facts are included <em>whole</em> (never cut mid-fact) and the rest are dropped, marked {@link ReportResult#truncated()} — this is what keeps the output schema stable for empty, valid and oversized inputs (the S08-06 acceptance). Holds its input as {@link ReportRequest} and its output as {@link ReportResult}; a {@code null} facts list is normalised to empty at construction, a {@code null} fact entry is skipped, and a {@code null} format defaults to {@link ReportFormat#MARKDOWN}, so none of them throws. It reads no time, no randomness, no Spring or I/O — a pure, testable value (invariant 10). The supporting value objects are {@link ReportFormat} (`MARKDOWN`/`JSON`), {@link Citation} (`source`, `url`), {@link StructuredFact} (`text`, `citations`), {@link ReportRequest} and {@link ReportResult}.
+
+### Why
+`BuiltInTools` already seeded a read-only `report` descriptor (S08-02); its behaviour was unspecified. The plan task ("format structured facts and citations into a Markdown or JSON report; no executable HTML; limit result length; stable schema for empty, valid and oversized inputs") needs a real, deterministic, dependency-free renderer — not a call out to a markup/HTML library that could emit executable HTML. Escaping is the smallest implementation that closes the loop and adds no escape surface, and whole-fact truncation is the only scheme that keeps a Markdown line and a JSON object well-formed while bounding the result — so it is the right tool, not a general-purpose HTML renderer built only for novelty. As with S08-05, the executor that invokes `report` by name (permission check, timeout, output-schema validation) is built later (S08-08), so this task delivers the pure formatter and leaves the descriptor seeded by S08-02 untouched (re-registering it would be a duplicate that breaks startup).
+
+### Verification
+Unit, DB-free, no model/Kafka/system clock: `ReportFormatterTest` (19 tests) — empty, `null` facts and a `null` format all yield the same stable shape (JSON: `{"truncated":false,"factCount":0,"facts":[]}`; Markdown: `# Report\nNo facts to report.`), valid Markdown/JSON render facts and citations correctly (with a URL, with a {@code null} URL, a blank source skipped, a `null` entry skipped), `<script>` and `a & <b>` are HTML-escaped in both formats (no {@code <}/{@code >} in the output), and a 300-fact oversized input is truncated (whole facts dropped, {@code truncated=true}, {@code charCount ≤ 4000}) while keeping the same keys. `:apps:agentflow-app:check` green — compilation, unit, architecture gate (the change adds no new dependency edge), spotless formatting, and OpenAPI contract (the new `domain` values add no controller, so the contract does not drift).
+
+### Docs
+- `docs/architecture/module-api.md` — extended the `toolexecution.domain` row with `ReportFormatter` (+ `ReportFormat`, `Citation`, `StructuredFact`, `ReportRequest`, `ReportResult`).
+- `CHANGELOG.md` — added the S08-06 bullet under `Unreleased → Added` (newest-first).
+- This file.
 
 ## S08-05 — The safe calculator evaluator (S08-05).
 
