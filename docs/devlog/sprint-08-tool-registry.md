@@ -5,6 +5,25 @@
 
 
 
+## S08-03 — Input-schema validation (S08-03).
+
+### What changed
+A pure, dependency-free [`SchemaValidator`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/domain/SchemaValidator.java) (`toolexecution.domain`) that validates a parsed JSON value — the tool-call arguments — against the tool's machine-readable {@link ToolDescriptor#inputSchema()} (a {@link JsonSchema} draft 2020-12 root held as an immutable `Map` tree), so an invalid payload is blocked <em>before any tool side effect</em>. It is bound to a schema with `SchemaValidator.of(JsonSchema)` and injectable limits (defaults `DEFAULT_MAX_NODES = 1_000`, `DEFAULT_MAX_DEPTH = 20`). It validates the subset of JSON Schema a tool call needs: {@code type} matching for every JSON value type (object, string, integer, number, boolean, array, null — an {@code integer} schema accepts an integral value, including an integral double such as {@code 2.0}, but not a fractional {@code 2.5} or the string {@code "5"}), {@code required} fields, {@code properties} typing, {@code items} typing for arrays, and {@code additionalProperties: false} (the "strict contract" that rejects unknown properties; the default — absent or `true` — allows them), plus two protective payload limits, a maximum node count and a maximum nesting depth. On the first violation it throws a [`SchemaValidationException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/domain/SchemaValidationException.java) carrying a stable {@code reason()} code (`type-mismatch`, `missing-required`, `unknown-property`, `payload-too-large`, `payload-too-deep`) so the executor can classify the failure without parsing the message. It reads no time, no randomness, no Spring or I/O — it walks the already-parsed `Map`/`List` tree exactly as `JsonSchema` holds its schema as a parsed tree — so it is a pure, testable value.
+
+### Why
+The S08-03 plan task ("validate types and required fields before the call; limit payload size/depth; in strict contracts reject unknown properties") had no implementation yet. This closes the acceptance criterion: an invalid payload is blocked before any side effect. It lives in `domain` (not `application`) because schema validation is a pure, dependency-free value that reads neither time nor randomness (invariant 10), so it is testable in isolation and has no I/O; `JsonSchema` and `ToolDescriptor` already live in `domain`, and `ToolDescriptor.inputSchema()` is exactly what `SchemaValidator` validates against. The registry (S08-02) is what hands `SchemaValidator` its schema — the planner/permission layers read a tool's schema **through** the descriptor — so validation stays close to the contract it validates, without coupling to the application port. The stable `reason()` is deliberate: the tool executor classifies the failure (S08-13) without string parsing.
+
+### Verification
+- Unit, DB-free, no model/Kafka/system clock: `SchemaValidatorTest` (21 tests) — `type` matching per JSON value (object/string/integer/number/boolean/array/null; integral `2.0` accepted by `integer`, `2.5` and `"5"` rejected), `required` fields (missing, blank-string, wrong type), `properties` typing, `items` typing for arrays, nested objects, strict-contract `additionalProperties: false` rejects an unknown property while the default allows it, payload node-count limit (`payload-too-large`), nesting-depth limit (`payload-too-deep`), injected limits, and the stable `reason()` code (`missing-required`); a recording executor proves a valid input reaches the tool while an invalid one is blocked before the call.
+- `:apps:agentflow-app:check` green — compilation, unit, architecture gate (package/module), spotless formatting, and OpenAPI contract (`OpenApiContractCheckTest`); the new `domain` value adds no controller, so the contract does not drift.
+
+### Docs
+- `CHANGELOG.md` (Unreleased → Added, newest-first).
+- This file.
+- `docs/architecture/module-api.md` — `toolexecution.domain` public surface (`SchemaValidator`, `SchemaValidationException`).
+
+---
+
 ## S08-02 — The deterministic tool registry (S08-02).
 
 ### What changed
