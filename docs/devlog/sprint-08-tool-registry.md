@@ -5,6 +5,36 @@
 
 
 
+## S08-02 — The deterministic tool registry (S08-02).
+
+### What changed
+An in-memory, deterministic [`ToolRegistry`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/application/ToolRegistry.java) (`toolexecution.application`), the single source of *which tools are registered*. The platform registers the built-in tool descriptors once at startup (via the `toolRegistry` `@Bean`, `config/ToolRegistryConfiguration.java`); the Planner chooses a tool **through** it and every permission check reads a tool's risk class and required scopes **through** it. A tool is therefore never callable unless it is registered.
+
+Built around:
+- `ToolRegistry` — `register(descriptor)`, `resolve(name, version)` → `Optional<ToolDescriptor>` (empty for an unknown pair), `containsTool`, `all()` (unmodifiable snapshot), `size`. Thread-safe (`ConcurrentMap`, atomic `putIfAbsent`). Holds descriptors **only** (metadata); the executors are registered separately by name in S08-05/S08-06/S08-08.
+- `ToolKey` — the package-private `(name, version)` value key (record). The dedup key is the pair the Planner references, **not** the descriptor `id` (which stays a stable unique identifier on the descriptor for audit/persistence).
+- `DuplicateToolRegistrationException` — extends `IllegalStateException`; a startup/config error, thrown by `register` on a duplicate `(name, version)`.
+- `BuiltInTools` — the factory that seeds `calculator` (S08-05) and `report` (S08-06) descriptors at startup.
+
+### Why
+The S08-02 plan task ("register adapters at startup; reject duplicate ID/version; forbid dynamic registration by the LLM/user; deterministic registry") had no implementation yet. This closes the acceptance criteria:
+- **Unknown tool is never called.** `resolve` returns `Optional.empty()` for any pair never registered; the planner/permission layers treat that as "not callable", so an unknown or never-registered tool cannot be invoked.
+- **Duplicate registration clearly breaks startup.** A duplicate `(name, version)` throws `DuplicateToolRegistrationException` *from the `@Bean` factory method*, so the Spring context fails to start — a mis-wired registry is a configuration error that is visible, not silently kept (one of two tools).
+- **No dynamic registration by the LLM/user.** There is **no HTTP endpoint**; registration is a platform operation at startup only, an invariant (`AGENTS.md` "Forbidden": dynamic tool registration by the LLM or a user).
+- **Recovery.** The registry is in-memory with no external dependency (no DB), so it is safe in every profile (API role, DB-less skeleton). It holds no secrets, no prompt, no `tenantId`/`runId`; its `all()` snapshot is metric/log-safe.
+
+### Verification
+- Unit, DB-free, no model/Kafka/system clock: `ToolRegistryTest` (7 tests) — resolve by `(name, version)`; unknown **name** / wrong **version** / blank **version** all resolve empty (unknown → never called); duplicate `(name, version)` rejected (first descriptor still stands); two distinct versions are distinct tools; `all()` is an unmodifiable snapshot; `null` descriptor rejected; 16 threads registering concurrent distinct keys do not lose entries (and concurrent `resolve` never throws).
+- Lightweight Spring-context test (no server, no DB, no Kafka): `ToolRegistryStartupTest` — the real `ToolRegistryConfiguration` boots the context seeded with the built-in tools and resolves them while an unknown one resolves empty; a duplicate registration from the `@Bean` factory fails context startup with `DuplicateToolRegistrationException` as the root cause.
+- `./gradlew :apps:agentflow-app:check` green — compilation, unit, architecture gate (package/module), spotless formatting, and OpenAPI contract (`OpenApiContractCheckTest`); the new bean adds no controller, so the contract does not drift. `AgentflowApplicationTests` (`@SpringBootTest`, default profile) still loads the full context with the new bean.
+
+### Docs
+- `CHANGELOG.md` (Unreleased → Added, newest-first).
+- This file.
+- `docs/architecture/module-api.md` / `docs/architecture/module-map.md` — `toolexecution.application` public surface (`ToolRegistry`, `DuplicateToolRegistrationException`, `BuiltInTools`).
+
+---
+
 ## S08-01 — The registered-tool contract (S08-01).
 
 
