@@ -69,7 +69,9 @@ docs/
 │   └── README.md                      ← scaffold (S01-03); full model added S11
 ├── workflows/
 │   └── dsl-v1.md                      ← workflow DSL v1: shape, node types, validation, examples (S05-17)
-├── tools/, ai/, rag/, evaluation/     ⚠ planned — tool registry, providers, RAG, eval sets
+├── tools/
+│   └── README.md                      ← tool authoring guide (S08-15)
+├── ai/, rag/, evaluation/             ⚠ planned — providers, RAG, eval sets
 ├── observability/                     ⚠ planned (S13) — standards, metric catalogue, SLOs
 └── load-tests/                        ⚠ planned — k6 scenarios, reports, environment description
 ```
@@ -103,7 +105,8 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Architecture internals (modules, events, DB, etc.) | `docs/architecture/` | this index |
 | Security & threat model | `docs/security/`, `docs/threat-model/` | `permissions.md` (S04-04 catalogue), `tenant-claim.md` (S04-05 tenant claim), `response-policy.md` (S04-09 masking policy); rest ⚠ planned (`S11`) |
 | Workflow DSL & examples | `docs/workflows/` | `docs/workflows/dsl-v1.md` (S05-17) |
-| Tools, AI, RAG, evaluation | `docs/tools/`, `docs/ai/`, `docs/rag/`, `docs/evaluation/` | ⚠ planned |
+| Tools | `docs/tools/` | `README.md` authoring guide (S08-15) |
+| AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | ⚠ planned |
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
 | Usage, costs, budgets, audit | `docs/usage-and-costs.md` | ⚠ planned |
