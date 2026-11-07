@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kafka topic catalogue (`S06-02`)** — [detailed](docs/devlog/sprint-06-messaging.md)
 - **Event envelope v1 contract (`S06-01`)** — [detailed](docs/devlog/sprint-06-messaging.md)
 
+### Fixed
+- **The S08-10 executor-cap startup validation actually fires: a missing {@code @Valid} cascade on {@code AgentFlowProperties.Tools#executor} let a non-positive {@code agentflow.tools.executor.*} cap boot silently instead of failing startup as documented.** The cascade is added, and the wiring is now covered end-to-end by {@code ToolExecutionConfigurationTest} (3 DB-free {@code ApplicationContextRunner} tests: validated defaults bind and the wired {@code BoundedToolExecutor} bean runs a call, custom caps bind from {@code agentflow.tools.executor.*}, a {@code 0} cap fails startup with {@code ConfigurationPropertiesBindException}) — [detailed](docs/devlog/sprint-08-tool-registry.md)
+
 ### Changed
 - **The workflow worker now heartbeats the run-level lease during a long-running step (so the lease cannot expire mid-run and trigger a spurious re-claim); the blocking step runs outside the poll transaction, committing each durable state change on its own (`S07-04`)** — [detailed](docs/devlog/sprint-07-durable-execution.md)
 

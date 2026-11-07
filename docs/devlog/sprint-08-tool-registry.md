@@ -34,6 +34,9 @@ Unit, DB-free, no model/Kafka/system-clock dependency: `BoundedToolExecutorTest`
 ### Follow-up
 S08-12 wires the real per-tool adapter (resolved through `ToolRegistry`, permission re-check S08-09 included) into the `ToolInvocation` port and drives it from the `TOOL_CALL` `StepHandler`; that is also where the S08-03/04 `SchemaValidator` payload limits (whose defaults the earlier changelog entries noted as "tunable from configuration") get their production construction site — until a caller builds validators in the call path, a config knob for them would be an unread stub, so only the executor caps are configurable in this change.
 
+### Follow-up (same session) — configuration-wiring test and a validation-cascade fix
+A full Testcontainers integration test is deliberately **not** added for S08-10: the executor touches no database, Kafka, Redis or network (there is nothing to integrate with — the risk matrix points at deterministic unit tests for concurrency behaviour, which `BoundedToolExecutorTest` provides). What the unit suite cannot reach is the *configuration-to-bean* path, so `ToolExecutionConfigurationTest` (3 DB-free `ApplicationContextRunner` tests, following the `AgentFlowPropertiesStartupTest` precedent) proves the validated defaults bind, custom `agentflow.tools.executor.*` values bind, the wired `boundedToolExecutor` bean actually runs a call, and a `0` cap fails startup. Writing it surfaced a real defect: the `@Min` annotations on `AgentFlowProperties.Tools.Executor` never fired because the `executor` group field lacked the `@Valid` cascade — a non-positive cap would have booted silently, contradicting the documented "a misconfigured bound fails startup". Fixed by adding `@Valid` to `AgentFlowProperties.Tools#executor`; recorded under `Fixed` in `CHANGELOG.md`.
+
 ## S08-08 — The tool execution context (S08-08).
 
 ### What changed

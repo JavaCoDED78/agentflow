@@ -1008,7 +1008,7 @@ public class AgentFlowProperties {
    */
   public static class Tools {
 
-    private final Executor executor = new Executor();
+    @Valid private final Executor executor = new Executor();
 
     /**
      * @return the validated tool-executor pool/concurrency settings
