@@ -50,6 +50,31 @@ public record AuditEvent(
       AuditAction action,
       AuditResourceType resourceType,
       UUID resourceId) {
+    return created(tenantId, actorSubject, action, resourceType, resourceId, null);
+  }
+
+  /**
+   * Build a successful audit record carrying redacted free-text metadata (S08-13: a side-effect
+   * tool invocation names the tool and version it ran, {@code tool=<name>:<version>}). The {@code
+   * id}, {@link AuditOutcome#SUCCEEDED} outcome and {@code createdAt} instant are assigned here;
+   * {@code correlationId} remains {@code null} until a later task threads it from the trace.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param actorSubject the actor that performed the action (never a token)
+   * @param action the audited verb ({@link AuditAction})
+   * @param resourceType the entity the action refers to ({@link AuditResourceType})
+   * @param resourceId the affected resource id (null when the action has no single resource)
+   * @param metadataRedacted redacted free-text metadata (never raw arguments, payload or secrets);
+   *     {@code null} when the action carries none
+   * @return the audit record ready to persist
+   */
+  public static AuditEvent created(
+      UUID tenantId,
+      String actorSubject,
+      AuditAction action,
+      AuditResourceType resourceType,
+      UUID resourceId,
+      String metadataRedacted) {
     return new AuditEvent(
         UUID.randomUUID(),
         tenantId,
@@ -59,7 +84,7 @@ public record AuditEvent(
         resourceId,
         AuditOutcome.SUCCEEDED,
         null,
-        null,
+        metadataRedacted,
         Instant.now());
   }
 }

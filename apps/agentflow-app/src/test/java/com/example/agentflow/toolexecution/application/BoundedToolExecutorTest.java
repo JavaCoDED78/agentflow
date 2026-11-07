@@ -4,11 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.agentflow.agentcatalog.domain.ToolRiskClass;
+import com.example.agentflow.toolexecution.domain.CalculationException;
 import com.example.agentflow.toolexecution.domain.JsonSchema;
 import com.example.agentflow.toolexecution.domain.RetryPolicy;
 import com.example.agentflow.toolexecution.domain.ToolDescriptor;
 import com.example.agentflow.toolexecution.domain.ToolExecutionContext;
+import com.example.agentflow.toolexecution.domain.ToolInvocationOutcome;
+import com.example.agentflow.toolexecution.domain.ToolInvocationRecord;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -16,6 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -356,8 +362,201 @@ class BoundedToolExecutorTest {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // invocation history (S08-13) — every concluded call becomes one metadata record
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void a_successful_call_is_reported_as_succeeded_with_the_output_reference() {
+    RecordingHistory history = new RecordingHistory();
+    AtomicLong nanos = new AtomicLong(0);
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1, history, nanos::get);
+
+    String result = executor.execute(context(TENANT_A), descriptor(GENEROUS_TIMEOUT), () -> "ok");
+
+    assertThat(result).isEqualTo("ok");
+    assertThat(history.records).hasSize(1);
+    ToolInvocationRecord record = history.records.get(0);
+    assertThat(record.tenantId()).isEqualTo(TENANT_A);
+    assertThat(record.runId()).isEqualTo(RUN);
+    assertThat(record.stepRunId()).isEqualTo("step-1");
+    assertThat(record.toolName()).isEqualTo("test-tool");
+    assertThat(record.toolVersion()).isEqualTo("1");
+    assertThat(record.riskClass()).isEqualTo(ToolRiskClass.READ_ONLY);
+    assertThat(record.attempt()).isEqualTo(1);
+    assertThat(record.outcome()).isEqualTo(ToolInvocationOutcome.SUCCEEDED);
+    assertThat(record.latencyMs()).isZero();
+    assertThat(record.outputReference()).isEqualTo("step-run:step-1");
+    assertThat(record.errorClass()).isNull();
+    assertThat(record.errorSummary()).isNull();
+  }
+
+  @Test
+  void the_latency_is_measured_on_the_injected_clock_and_the_attempt_is_reported() {
+    RecordingHistory history = new RecordingHistory();
+    // The admission read sees 1 ms on the injected clock; the tool advances it to 6 ms before
+    // answering, so the record must carry the measured 5 ms — never wall time (invariant 10).
+    AtomicLong nanos = new AtomicLong(1_000_000L);
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1, history, nanos::get);
+
+    executor.execute(
+        context(TENANT_A),
+        descriptor(GENEROUS_TIMEOUT),
+        () -> {
+          nanos.set(6_000_000L);
+          return "ok";
+        },
+        3);
+
+    assertThat(history.records).hasSize(1);
+    ToolInvocationRecord record = history.records.get(0);
+    assertThat(record.latencyMs()).isEqualTo(5);
+    assertThat(record.attempt()).isEqualTo(3);
+  }
+
+  @Test
+  void a_throttled_call_is_reported_without_an_output_reference() throws Exception {
+    RecordingHistory history = new RecordingHistory();
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 1, 8, history);
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    Thread firstCaller = runInThread(() -> blockedCall(executor, TENANT_A, entered, release));
+    try {
+      assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+
+      assertThatThrownBy(
+              () ->
+                  executor.execute(
+                      context(TENANT_A), descriptor(GENEROUS_TIMEOUT), () -> "rejected"))
+          .isInstanceOf(ToolExecutionThrottleException.class);
+
+      assertThat(history.records).hasSize(1);
+      ToolInvocationRecord record = history.records.get(0);
+      assertThat(record.outcome()).isEqualTo(ToolInvocationOutcome.THROTTLED);
+      assertThat(record.errorClass())
+          .isEqualTo(ToolExecutionThrottleException.REASON_CONCURRENCY_LIMITED);
+      assertThat(record.outputReference()).isNull();
+      // The rejected call never started: there is no redacted summary, only the stable reason.
+      assertThat(record.errorSummary()).isNull();
+    } finally {
+      release.countDown();
+      firstCaller.join(5_000);
+    }
+  }
+
+  @Test
+  void a_timed_out_call_is_reported_as_the_ambiguous_outcome() {
+    RecordingHistory history = new RecordingHistory();
+    ExecutorService single = Executors.newSingleThreadExecutor();
+    try {
+      BoundedToolExecutor executor = new BoundedToolExecutor(single, 1, 1, history);
+      ToolInvocation<String> hungCall = sleepThenReturn(Duration.ofSeconds(2), "too-late");
+
+      assertThatThrownBy(
+              () ->
+                  executor.execute(context(TENANT_A), descriptor(Duration.ofMillis(50)), hungCall))
+          .isInstanceOf(ToolExecutionThrottleException.class)
+          .extracting(e -> ((ToolExecutionThrottleException) e).reason())
+          .isEqualTo(ToolExecutionThrottleException.REASON_TOOL_TIMEOUT);
+
+      assertThat(history.records).hasSize(1);
+      ToolInvocationRecord record = history.records.get(0);
+      assertThat(record.outcome()).isEqualTo(ToolInvocationOutcome.TIMED_OUT);
+      assertThat(record.errorClass()).isEqualTo(ToolExecutionThrottleException.REASON_TOOL_TIMEOUT);
+      assertThat(record.outputReference()).isNull();
+    } finally {
+      single.shutdownNow();
+    }
+  }
+
+  @Test
+  void a_tool_fault_is_reported_with_a_redacted_stable_token_never_the_message() {
+    RecordingHistory history = new RecordingHistory();
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1, history);
+    CalculationException toolFault = new CalculationException("division-by-zero");
+
+    assertThatThrownBy(
+            () ->
+                executor.execute(
+                    context(TENANT_A),
+                    descriptor(GENEROUS_TIMEOUT),
+                    () -> {
+                      throw toolFault;
+                    }))
+        .isSameAs(toolFault);
+
+    assertThat(history.records).hasSize(1);
+    ToolInvocationRecord record = history.records.get(0);
+    assertThat(record.outcome()).isEqualTo(ToolInvocationOutcome.FAULTED);
+    // The stable reason code classifies without parsing a message; the message — which can quote
+    // untrusted input or a secret — is never stored (invariant 8).
+    assertThat(record.errorClass()).isEqualTo("division-by-zero");
+    assertThat(record.errorSummary()).isEqualTo("CalculationException(division-by-zero)");
+    assertThat(record.errorSummary()).doesNotContain("calculation failed");
+  }
+
+  @Test
+  void a_history_listener_failure_does_not_change_the_calls_outcome() {
+    ToolInvocationListener failing =
+        record -> {
+          throw new IllegalStateException("history store down");
+        };
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1, failing);
+
+    // Success: the result stands even though the report threw.
+    assertThat(executor.execute(context(TENANT_A), descriptor(GENEROUS_TIMEOUT), () -> "ok"))
+        .isEqualTo("ok");
+
+    // Fault: the tool's own fault still propagates unchanged; the history fault was logged only.
+    CalculationException toolFault = new CalculationException("overflow");
+    assertThatThrownBy(
+            () ->
+                executor.execute(
+                    context(TENANT_A),
+                    descriptor(GENEROUS_TIMEOUT),
+                    () -> {
+                      throw toolFault;
+                    }))
+        .isSameAs(toolFault);
+  }
+
+  @Test
+  void an_attempt_below_one_is_rejected_before_the_call_runs() {
+    RecordingHistory history = new RecordingHistory();
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1, history);
+
+    assertThatThrownBy(
+            () -> executor.execute(context(TENANT_A), descriptor(GENEROUS_TIMEOUT), () -> "ok", 0))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("attempt");
+
+    // The call never ran and nothing was reported: the guard fires before the bounded section.
+    assertThat(history.records).isEmpty();
+  }
+
+  @Test
+  void the_three_argument_execute_reports_attempt_one() {
+    RecordingHistory history = new RecordingHistory();
+    BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1, history);
+
+    executor.execute(context(TENANT_A), descriptor(GENEROUS_TIMEOUT), () -> "ok");
+
+    assertThat(history.records.get(0).attempt()).isEqualTo(1);
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // helpers
   // ---------------------------------------------------------------------------------------------
+
+  /** In-memory listener capturing every reported record, for the S08-13 history assertions. */
+  private static final class RecordingHistory implements ToolInvocationListener {
+
+    private final List<ToolInvocationRecord> records = new ArrayList<>();
+
+    @Override
+    public void record(ToolInvocationRecord record) {
+      records.add(record);
+    }
+  }
 
   private String blockedCall(
       BoundedToolExecutor executor, UUID tenant, CountDownLatch entered, CountDownLatch release) {
