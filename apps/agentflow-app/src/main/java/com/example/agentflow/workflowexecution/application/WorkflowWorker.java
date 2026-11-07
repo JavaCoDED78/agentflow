@@ -2,9 +2,9 @@ package com.example.agentflow.workflowexecution.application;
 
 import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
-import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
+import com.example.agentflow.workflowexecution.domain.DagReadinessResolver;
 import com.example.agentflow.workflowexecution.domain.StepExecutionContext;
 import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
@@ -15,7 +15,6 @@ import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -69,6 +68,13 @@ public class WorkflowWorker implements DisposableBean {
   private final String actor;
 
   private final AgentFlowProperties properties;
+
+  /**
+   * The DAG readiness resolver (S08-11): the pure gate that turns the pinned graph plus the
+   * persisted step states into this pass's ready / skipped / cancelled step lists. Stateless, so a
+   * single instance serves the worker's whole lifetime.
+   */
+  private final DagReadinessResolver readinessResolver = new DagReadinessResolver();
 
   /**
    * The heartbeat scheduler: a single daemon thread that extends the run's lease while a step is
@@ -283,17 +289,14 @@ public class WorkflowWorker implements DisposableBean {
   }
 
   /**
-   * Execute ready steps until no more are ready or a step fails permanently (S07-08). A {@code
-   * PENDING} step is <em>ready</em> when all of its predecessors are {@code SUCCEEDED} (a step with
-   * no predecessor is ready immediately), <em>skipped</em> when a predecessor {@code FAILED} or was
-   * skipped (cascade), and otherwise left for the next pass. Each executed step is checkpointed
+   * Execute ready steps until no more are ready or a step fails permanently (S07-08); the per-pass
+   * readiness decisions, the failure/skip/cancel propagation and the deterministic execution order
+   * are the {@link DagReadinessResolver}'s contract (S08-11). Each executed step is checkpointed
    * through {@link CheckpointAdapter} so its output can be reused on recovery (S07-07).
    */
   private void executeUntilQuiesced(
       UUID tenantId, UUID runId, WorkflowGraph graph, UUID owner, int leaseEpoch) {
     Map<String, WorkflowNode> nodes = byId(graph);
-    List<String> order = graph.nodes().stream().map(WorkflowNode::id).collect(Collectors.toList());
-    List<WorkflowEdge> edges = graph.edges();
     for (; ; ) {
       Map<String, WorkflowStepState> statusByKey =
           stepRepository.findStepStatuses(tenantId, runId).stream()
@@ -304,9 +307,14 @@ public class WorkflowWorker implements DisposableBean {
                       (a, b) -> a,
                       LinkedHashMap::new));
       Map<String, String> outputs = stepRepository.findStepOutputs(tenantId, runId);
+      // The readiness gate is pure and reads only the persisted states: a PENDING step is ready
+      // only when every predecessor has SUCCEEDED, is cascade-skipped by a FAILED / SKIPPED
+      // predecessor, and is cancelled by a CANCELLED predecessor (invariant 7 — the graph is
+      // data). A still-running, retrying or approval-paused predecessor leaves the step waiting
+      // for the next pass.
+      DagReadinessResolver.Resolution resolution = readinessResolver.resolve(graph, statusByKey);
       boolean progressed =
-          executeReadySteps(
-              tenantId, runId, order, edges, statusByKey, outputs, nodes, owner, leaseEpoch);
+          applyResolution(tenantId, runId, resolution, nodes, outputs, owner, leaseEpoch);
       if (!progressed) {
         break;
       }
@@ -314,46 +322,36 @@ public class WorkflowWorker implements DisposableBean {
   }
 
   /**
-   * Execute the ready steps of one pass (see {@link #executeUntilQuiesced}).
+   * Apply one pass of the {@link DagReadinessResolver}'s resolution (see {@link
+   * #executeUntilQuiesced}).
    *
-   * @return {@code true} when at least one step was scheduled, skipped or completed this pass
+   * @return {@code true} when at least one step was executed, skipped or cancelled this pass
    */
-  private boolean executeReadySteps(
+  private boolean applyResolution(
       UUID tenantId,
       UUID runId,
-      List<String> order,
-      List<WorkflowEdge> edges,
-      Map<String, WorkflowStepState> statusByKey,
-      Map<String, String> outputs,
+      DagReadinessResolver.Resolution resolution,
       Map<String, WorkflowNode> nodes,
+      Map<String, String> outputs,
       UUID owner,
       int leaseEpoch) {
     boolean progressed = false;
-    for (String stepKey : order) {
-      if (!WorkflowStepState.PENDING.equals(statusByKey.get(stepKey))) {
-        continue;
-      }
-      Set<String> predecessors = predecessors(stepKey, edges);
-      if (hasFailedPredecessor(predecessors, statusByKey)) {
-        // Cascade skip: a failed or skipped predecessor means this node can never run (invariant 7
-        // — the DSL is data, so a failed predecessor is not "unknown" — it is a decided outcome).
-        transitionStep(tenantId, runId, stepKey, WorkflowStepState.SKIPPED, "step.skipped");
-        progressed = true;
-        continue;
-      }
-      // A PENDING step is <em>ready</em> when every predecessor has SUCCEEDED (a step with no
-      // predecessor is ready immediately — allMatch over the empty predecessor set is true). The
-      // failed-predecessor cascade handled above already covers FAILED / SKIPPED predecessors; a
-      // still-running, retrying, approval-paused or not-yet-successful predecessor leaves the step
-      // not-ready for this pass, so it is left for the next one (invariant 7 — the graph is data,
-      // the readiness decision is a pure gate over already-persisted step states).
-      boolean ready =
-          predecessors.stream()
-              .allMatch(k -> WorkflowStepState.SUCCEEDED.equals(statusByKey.get(k)));
-      if (ready) {
-        executeStep(tenantId, runId, stepKey, nodes.get(stepKey), outputs, owner, leaseEpoch);
-        progressed = true;
-      }
+    // Cancel propagation and the failure cascade are decided outcomes: record them through the
+    // state machine before any new step starts, so this pass's executions never outrun a
+    // downstream cancellation (invariant 4 — every change through the single transition service).
+    for (String stepKey : resolution.cancelled()) {
+      transitionStep(tenantId, runId, stepKey, WorkflowStepState.CANCELLED, "step.cancelled");
+      progressed = true;
+    }
+    for (String stepKey : resolution.skipped()) {
+      transitionStep(tenantId, runId, stepKey, WorkflowStepState.SKIPPED, "step.skipped");
+      progressed = true;
+    }
+    // Ready steps run sequentially, in the resolver's deterministic topological order (S08-11) —
+    // a parallel executor is a later, measured change.
+    for (String stepKey : resolution.ready()) {
+      executeStep(tenantId, runId, stepKey, nodes.get(stepKey), outputs, owner, leaseEpoch);
+      progressed = true;
     }
     return progressed;
   }
@@ -489,31 +487,6 @@ public class WorkflowWorker implements DisposableBean {
       byId.put(node.id(), node);
     }
     return byId;
-  }
-
-  /**
-   * @return the predecessor node ids of a step, from the edges whose {@code to} is the step.
-   */
-  private Set<String> predecessors(String stepKey, List<WorkflowEdge> edges) {
-    Set<String> predecessors = new LinkedHashSet<>();
-    for (WorkflowEdge edge : edges) {
-      if (edge.to().equals(stepKey)) {
-        predecessors.add(edge.from());
-      }
-    }
-    return predecessors;
-  }
-
-  /**
-   * @return {@code true} when any predecessor has reached a non-success terminal state.
-   */
-  private boolean hasFailedPredecessor(
-      Set<String> predecessors, Map<String, WorkflowStepState> statusByKey) {
-    return predecessors.stream()
-        .anyMatch(
-            key ->
-                WorkflowStepState.FAILED.equals(statusByKey.get(key))
-                    || WorkflowStepState.SKIPPED.equals(statusByKey.get(key)));
   }
 
   /**

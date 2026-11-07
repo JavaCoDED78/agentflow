@@ -3,6 +3,34 @@
 
 # Sprint 8 — Tool registry
 
+## S08-11 — The DAG readiness resolver: dependency resolution, failure/skip/cancel propagation and a deterministic execution order (S08-11).
+
+### What changed
+The [`DagReadinessResolver`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/domain/DagReadinessResolver.java) (`workflowexecution.domain`) — the pure gate that owns the readiness decision the worker event loop had inlined since S07-08. Given the pinned graph and the already-persisted step states it resolves every `PENDING` step exactly once, into a `Resolution` of three ordered lists:
+
+- **Ready** — every predecessor `SUCCEEDED` (a step with no predecessors is ready immediately). The list is ordered topologically: Kahn's algorithm with the free-choice tie broken by the node's declaration order in `WorkflowGraph.nodes()`. The resolution never iterates the input state map to build its output order, so the result is independent of the map's implementation or iteration order — the acceptance ("the order follows the graph edges and does not depend on the incidental ordering of collections") is a property of the algorithm, not of prose.
+- **Skipped** — a predecessor `FAILED` or `SKIPPED` (the cascade is transitive: a decided outcome can never be retried into existence, so the dependent step can never run).
+- **Cancelled** — a predecessor `CANCELLED` (S07-12 semantics: a step downstream of a drained predecessor can never observe the predecessor output it needs). A failure cascade takes precedence over cancel propagation — a decided failure classifies the step as `SKIPPED` even when another predecessor was cancelled.
+
+Everything else — a predecessor still `RUNNING`, `READY`, `RETRY_WAIT` or `WAITING_FOR_APPROVAL`, or a step row not yet materialized — waits for the next pass; an absent row is never read as succeeded. A step in any non-`PENDING` state is never reconsidered (terminal states are absorbing, invariant 4). The propagation for failure/skip/cancel the plan asks for is exactly these three lists.
+
+[`WorkflowWorker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/application/WorkflowWorker.java) now drives its per-pass decisions through the resolver: `executeUntilQuiesced` resolves once per pass and `applyResolution` records the cancels, then the cascade skips, then executes the ready steps **sequentially** in the resolver's topological order ("execute ready steps sequentially first" — a parallel executor is a later, measured change). Every transition still goes through the single transition service (invariant 4), and the readiness gate itself reads only persisted state — the graph is data, the decision is a pure function over it (invariant 7). The worker's inline `predecessors` / `hasFailedPredecessor` helpers are deleted; the cancel propagation they could not express is new behaviour, consistent with the S07-12 drain.
+
+The resolver is pure — no Spring, persistence, time or randomness (invariant 10) — and defensive about its input: the activation validator rejects a cyclic graph and dangling edges before persistence, but the resolver never trusts its input, so a cycle's nodes are simply never emitted into the topological order (the run parks instead of executing out of order) and a dangling edge endpoint is ignored. No new cross-module compile edge: the resolver reads only the immutable `workflowdefinition` graph value objects the module's public API already hands across the `workflowexecution` boundary (the module-map arrow 15 edge the worker itself already uses).
+
+### Why
+S07-08 shipped the loop with the readiness logic inlined in the worker, as private helpers over the persisted step statuses. That worked, but the decision — the plan's S08-11 "dependency resolver" — was nowhere testable as a unit: the only evidence for the readiness gate, the cascade and the order was whole-worker tests, and the ordering guarantee ("follows the graph edges, not the incidental ordering of collections") was implicit in a loop that happened to scan the declaration order. Extracting the resolver makes the contract explicit and independently verifiable, and it is the seam S08-12 (step input mapping) and any future parallel executor build on: the resolver decides *what* may run and *in which order*; the worker only *runs* what it is given.
+
+### Verification
+Unit, DB-free, no model/Kafka/system-clock dependency. `DagReadinessResolverTest` (15 tests): a root is ready immediately; readiness needs *every* predecessor succeeded (the diamond's `d` waits for both `b` and `c`); the ready list's free-choice tie follows declaration order under a deliberately scrambled declaration (`[c, a, d, b]` resolves to `[c, b]` once `a` succeeded); the `Resolution` is value-equal across forward-inserted, reverse-inserted and `HashMap`-ordered state maps; a `FAILED` predecessor cascades the skip, a `SKIPPED` predecessor cascades it transitively through a chain, a `CANCELLED` predecessor propagates the cancellation, and a failure cascade wins over cancel propagation; a `RUNNING` / `RETRY_WAIT` / `WAITING_FOR_APPROVAL` predecessor keeps the step waiting; a missing predecessor row is never read as succeeded; a non-`PENDING` step is never reconsidered; a mixed graph classifies every pending step exactly once; a cycle never makes its nodes ready (an acyclic root outside the cycle is unaffected); a dangling edge endpoint is ignored; null arguments throw `IllegalArgumentException`; the resolution lists are unmodifiable. `WorkflowWorkerTest` gains a recording-handler test proving the worker executes a scrambled-declaration diamond (`[d, b, c, a]`, edges `a→b, a→c, b→d, c→d`) in the exact topological order `a, b, c, d`, and all pre-existing worker tests (chain, cascade-fail, diamond, transient/permanent fault classification, cancellation drain) pass unchanged against the resolver-driven loop. `:apps:agentflow-app:check` green — compilation, all unit tests, spotless formatting, the OpenAPI contract gate and the architecture gates; the change adds no cross-module compile edge (`workflowexecution` still compiles only against its own package plus `workflowdefinition` and `messaging`).
+
+### Docs
+- `CHANGELOG.md` — added the S08-11 bullet under `Unreleased → Added` (newest-first).
+- This file.
+
+### Follow-up
+S08-12 builds the step input mapping on this seam: the worker already hands each executed step the upstream outputs map, and the resolver's topological order is the order those outputs become available in. A parallel executor would consume the same `Resolution` — the determinism guarantee is what makes parallelism safe to reason about later.
+
 ## S08-10 — The bounded tool executor: per-tool timeout and global / per-tenant concurrency caps (S08-10).
 
 ### What changed

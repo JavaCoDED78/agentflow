@@ -27,6 +27,7 @@ import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -242,6 +243,74 @@ class WorkflowWorkerTest {
     assertThat(runStates).contains(WorkflowRunState.RUNNING);
     // the final reconcile moves the run to SUCCEEDED once every step succeeded
     assertThat(runStates.get(runStates.size() - 1)).isEqualTo(WorkflowRunState.SUCCEEDED);
+  }
+
+  @Test
+  void executes_ready_steps_in_topological_order_regardless_of_declaration_order() {
+    // S08-11: the graph declares its nodes in an order that violates the topology; the worker must
+    // still execute a -> b, a -> c, (b, c) -> d with every edge respected and the free-choice
+    // tie broken by declaration order — never by the incidental ordering of a collection.
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    for (String n : List.of("d", "b", "c", "a")) {
+      stepState.put(n, WorkflowStepState.PENDING);
+    }
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(node("d", "NOOP"), node("b", "NOOP"), node("c", "NOOP"), node("a", "NOOP")),
+            List.of(edge("a", "b"), edge("a", "c"), edge("b", "d"), edge("c", "d")));
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    List<String> executionOrder = new ArrayList<>();
+    StepHandler recording =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "NOOP".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            executionOrder.add(context.stepKey());
+            return StepResult.succeeded("done:" + context.stepKey());
+          }
+        };
+    WorkflowWorker worker = buildWorker(List.of(recording));
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    // the execution order follows the graph edges exactly, independent of the scrambled
+    // declaration order: a before b and c, and b and c before d
+    assertThat(executionOrder).containsExactly("a", "b", "c", "d");
+    assertThat(stepState)
+        .containsEntry("a", WorkflowStepState.SUCCEEDED)
+        .containsEntry("b", WorkflowStepState.SUCCEEDED)
+        .containsEntry("c", WorkflowStepState.SUCCEEDED)
+        .containsEntry("d", WorkflowStepState.SUCCEEDED);
   }
 
   @Test
