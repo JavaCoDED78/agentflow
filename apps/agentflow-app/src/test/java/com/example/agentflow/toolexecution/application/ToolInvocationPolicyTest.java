@@ -87,8 +87,9 @@ class ToolInvocationPolicyTest {
   void an_allowed_call_passes_when_the_current_capabilities_hold_every_required_scope() {
     seed(registry);
 
+    // The approval precondition is held (grant attested) so this test isolates the scope axis.
     PermissionDecision decision =
-        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1");
+        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1", true);
 
     assertThat(decision.outcome()).isEqualTo(ToolExecutionOutcome.ALLOWED);
     assertThat(decision.reason()).isEqualTo(ToolInvocationPolicy.REASON_ALLOWED);
@@ -113,7 +114,8 @@ class ToolInvocationPolicyTest {
     seed(registry);
 
     PermissionDecision decision =
-        guard.decide(context(Set.of("tool:send-email", "mail:send", "workflow:read")), EMAIL, "1");
+        guard.decide(
+            context(Set.of("tool:send-email", "mail:send", "workflow:read")), EMAIL, "1", true);
 
     assertThat(decision.outcome()).isEqualTo(ToolExecutionOutcome.ALLOWED);
     assertThat(decision.missingScopes()).isEmpty();
@@ -190,8 +192,9 @@ class ToolInvocationPolicyTest {
     seed(registry);
 
     PermissionDecision atActivation =
-        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1");
-    PermissionDecision atInvocationAfterRevocation = guard.decide(context(Set.of()), EMAIL, "1");
+        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1", true);
+    PermissionDecision atInvocationAfterRevocation =
+        guard.decide(context(Set.of()), EMAIL, "1", true);
 
     assertThat(atActivation.outcome()).isEqualTo(ToolExecutionOutcome.ALLOWED);
     assertThat(atInvocationAfterRevocation.outcome()).isEqualTo(ToolExecutionOutcome.DENIED);
@@ -210,8 +213,8 @@ class ToolInvocationPolicyTest {
     seed(registry);
 
     PermissionDecision first =
-        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1");
-    PermissionDecision again = guard.decide(context(Set.of("tool:send-email")), EMAIL, "1");
+        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1", true);
+    PermissionDecision again = guard.decide(context(Set.of("tool:send-email")), EMAIL, "1", true);
 
     assertThat(first.outcome()).isEqualTo(ToolExecutionOutcome.ALLOWED);
     assertThat(again.outcome()).isEqualTo(ToolExecutionOutcome.DENIED);
@@ -223,11 +226,64 @@ class ToolInvocationPolicyTest {
     seed(registry);
 
     PermissionDecision decision =
-        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1");
+        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1", true);
 
     assertThat(decision.missingScopes()).isEmpty();
     assertThatThrownBy(() -> decision.missingScopes().add("tool:x"))
         .isInstanceOf(UnsupportedOperationException.class);
+  }
+
+  @Test
+  void an_approval_required_tool_is_denied_on_the_automatic_path_with_no_grant_attested() {
+    seed(registry);
+
+    // The three-argument decide is the automatic executor path: no human decision is attested, so
+    // an approval-gated tool is refused even when the caller holds every required scope — the
+    // taxonomy's tool_policy_denial, permanent, never retried.
+    PermissionDecision decision =
+        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1");
+
+    assertThat(decision.outcome()).isEqualTo(ToolExecutionOutcome.DENIED);
+    assertThat(decision.reason()).isEqualTo(ToolInvocationPolicy.REASON_MISSING_APPROVAL);
+    assertThat(decision.toolName()).isEqualTo(EMAIL);
+    assertThat(decision.toolVersion()).isEqualTo("1");
+    // Not a scope problem: the missing-scope set is empty.
+    assertThat(decision.missingScopes()).isEmpty();
+  }
+
+  @Test
+  void an_explicitly_absent_grant_denies_an_approval_required_tool() {
+    seed(registry);
+
+    PermissionDecision decision =
+        guard.decide(context(Set.of("tool:send-email", "mail:send")), EMAIL, "1", false);
+
+    assertThat(decision.outcome()).isEqualTo(ToolExecutionOutcome.DENIED);
+    assertThat(decision.reason()).isEqualTo(ToolInvocationPolicy.REASON_MISSING_APPROVAL);
+  }
+
+  @Test
+  void a_missing_scope_takes_precedence_over_a_missing_approval() {
+    seed(registry);
+
+    // Authorization is the outer gate: when both preconditions fail, the guard names the missing
+    // scope, not the missing approval.
+    PermissionDecision decision = guard.decide(context(Set.of()), EMAIL, "1", false);
+
+    assertThat(decision.outcome()).isEqualTo(ToolExecutionOutcome.DENIED);
+    assertThat(decision.reason()).isEqualTo(ToolInvocationPolicy.REASON_MISSING_SCOPE);
+    assertThat(decision.missingScopes()).containsExactlyInAnyOrder("tool:send-email", "mail:send");
+  }
+
+  @Test
+  void a_tool_without_the_approval_flag_is_allowed_on_the_automatic_path() {
+    seed(registry);
+
+    // The calculator does not require human approval, so the automatic path allows it (with no
+    // scope, as it needs none) — the precondition gates only approval-gated descriptors.
+    PermissionDecision decision = guard.decide(context(Set.of()), CALC, "1");
+
+    assertThat(decision.outcome()).isEqualTo(ToolExecutionOutcome.ALLOWED);
   }
 
   @Test

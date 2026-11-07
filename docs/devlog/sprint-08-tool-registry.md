@@ -3,6 +3,34 @@
 
 # Sprint 8 — Tool registry
 
+## S08-14 — The tool error matrix: every error class gives exactly one retry / state / audit result (S08-14).
+
+
+### What changed
+The plan asks to cover the tool error matrix — unknown tool, invalid input/output, timeout, transient/permanent failure, denied permission and approval-required action — with the acceptance that **each class gives the correct retry/state/audit result**. The component suites proved each piece in isolation; the new [`ToolErrorMatrixTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/toolexecution/application/ToolErrorMatrixTest.java) proves the matrix *across* the real pieces, composed in the order the future `TOOL_CALL` `StepHandler` will drive them: invocation policy guard → input schema gate → bounded executor → output schema gate. A policy refusal surfaces as a dedicated `PolicyDenial` carrying the `PermissionDecision`, so a denied call is told apart from a tool fault; the audit assertions drive the real `ToolInvocationHistoryService` against a mocked repository/audit (the established convention), so the audit column is proven through the production seam, not reimplemented in the test:
+
+- **Policy denials (unknown tool, missing scope, missing approval)** and **pre-call contract failures (invalid input)**: the call never starts — no history row, no audit record, the tool body never runs (a recording flag proves it).
+- **Invalid output**: the call concluded (history `SUCCEEDED` with the `step-run:` reference — the history answers *which tool ran and how its call concluded*), but the output gate rejects the payload, so the result is never accepted.
+- **Timeout**: `tool_timeout`, `retryable == true`, history `TIMED_OUT` with no reference, and audited for a started side-effect call — the effect may have completed (invariant 6).
+- **Overload**: `concurrency_limited`, `retryable == true`, history `THROTTLED`, never audited — the call never started.
+- **Transient flap**: recovers within the retry bound (recovery costs the extra attempt); an all-flapping call is terminal at the bound — retried up to it, never beyond.
+- **Permanent tool fault**: the tool's own exception type propagates unchanged, history `FAULTED` with the redacted stable token, audited for a started side-effect call.
+
+The matrix's **approval-required action** row closes a documented gap. The error taxonomy already classified "a `WRITE` tool runs without `HUMAN_APPROVAL`" as `tool_policy_denial` (permanent, never retried), and the response policy names "missing human approval" among the tool-layer policy decisions — but no code enforced it, and the S08-09 fixture even expected an approval-gated tool to pass the guard. `ToolInvocationPolicy` gains the `missing_approval` precondition: the three-argument `decide` is the automatic path (it attests no grant, so an approval-gated tool is always refused there), and a four-argument `decide(..., approvalGranted)` accepts an explicit attestation — the seam the human-approval lifecycle (S11) feeds once the approvals store exists. The guard still reads no approval store; the grant is an input, like the capabilities it already reads from the context. Ordering: risk class → missing scope → missing approval, so authorization remains the outer gate.
+
+### Why
+Sprint 8 built the tool stack piece by piece — descriptor, registry, schema gates, tools, context, guard, bounded executor, invocation history. Without a matrix, the *composition contract* the `TOOL_CALL` handler will rely on existed only as scattered component behaviour: nothing pinned that a denial precedes any side effect, that only a started call is audited, or that a timeout is retryable *and* ambiguous at once. The approval row matters beyond testing: until the guard refused, the `requiresHumanApproval` flag was metadata with no teeth, and the taxonomy's `tool_policy_denial` had no producer.
+
+### Verification
+DB-free, no model/Kafka/system-clock dependency. `ToolErrorMatrixTest` — 11 tests, one per matrix row, all through the real components. `ToolInvocationPolicyTest` gains 4 focused cases (automatic-path denial, explicit-absent denial, scope-over-approval precedence, non-gated tool unaffected) and its scope-axis tests now attest the grant through the four-argument overload so each precondition is isolated. No new cross-module compile edge (the policy still touches only the registry and context), no schema change.
+
+### Docs
+- `CHANGELOG.md` — added the S08-14 bullet under `Unreleased → Added` (newest-first).
+- This file.
+
+### Follow-up
+The `TOOL_CALL` `StepHandler` (the consumer every layer's javadoc names) composes this pipeline in production and maps the classes onto step states — `tool_timeout` to a retryable ambiguous `provider_timeout`, denials to the permanent `tool_policy_denial`; the worker's `StepFailureClassifier` will then see tool faults pre-classified. The four-argument `decide` finds its production caller when the approvals store lands (S11).
+
 ## S08-13 — The durable tool invocation history: which tool ran, how its call concluded, no secrets (S08-13).
 
 ### What changed
