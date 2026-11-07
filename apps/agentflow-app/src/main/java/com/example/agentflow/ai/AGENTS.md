@@ -13,6 +13,12 @@ model provider adapter, Planner, server-side validation gate, executor and final
 ## Data ownership
 
 `ai` owns no table of its own; it exposes the ChatModel / Embedding ports that other modules call.
+The ports and their neutral request/response contracts are defined in `application`
+(`ChatModelPort`, `EmbeddingPort`, `ChatMessage`, `ChatOptions`, `ChatRequest`, `ChatResponse`,
+`ChatUsage`, `EmbeddingRequest`, `EmbeddingResponse`, `EmbeddingUsage`, `MessageRole` — `S09-01`) and
+are the module's public API boundary: another module reaches them only through these types. The
+concrete provider adapter (Spring AI, `S09-02`) is the only code that imports a provider SDK, and it
+lives behind the port, never in the contract.
 
 ## Package layout (internal vs public)
 
