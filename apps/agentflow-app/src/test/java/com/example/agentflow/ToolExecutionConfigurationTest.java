@@ -50,7 +50,7 @@ class ToolExecutionConfigurationTest {
           .withPropertyValues(REQUIRED_PROPS);
 
   @Test
-  void executorBeansAreCreatedWithTheValidatedDefaults() {
+  void executor_beans_are_created_with_the_validated_defaults() {
     runner.run(
         context -> {
           assertThat(context.getStartupFailure()).isNull();
@@ -72,7 +72,7 @@ class ToolExecutionConfigurationTest {
   }
 
   @Test
-  void customCapsBindFromAgentflowToolsExecutor() {
+  void custom_caps_bind_from_agentflow_tools_executor() {
     runner
         .withPropertyValues(
             "agentflow.tools.executor.pool-size=4",
@@ -90,7 +90,7 @@ class ToolExecutionConfigurationTest {
   }
 
   @Test
-  void aNonPositiveCapFailsStartupThroughTheValidatedBinding() {
+  void a_non_positive_cap_fails_startup_through_the_validated_binding() {
     runner
         .withPropertyValues("agentflow.tools.executor.global-max-concurrency=0")
         .run(

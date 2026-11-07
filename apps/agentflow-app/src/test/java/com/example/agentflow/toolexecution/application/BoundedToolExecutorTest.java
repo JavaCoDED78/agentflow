@@ -53,7 +53,7 @@ class BoundedToolExecutorTest {
   // ---------------------------------------------------------------------------------------------
 
   @Test
-  void returnsResultWhenCallAnswersWithinTimeout() {
+  void returns_result_when_call_answers_within_timeout() {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 4, 2);
 
     String result =
@@ -69,7 +69,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void honoursTheDescriptorTimeoutALongerBoundLetsASlowCallFinish() {
+  void honours_the_descriptor_timeout_a_longer_bound_lets_a_slow_call_finish() {
     BoundedToolExecutor shortBound = new BoundedToolExecutor(pool, 2, 1);
     BoundedToolExecutor longBound = new BoundedToolExecutor(pool, 2, 1);
     ToolInvocation<String> slow = sleepThenReturn(Duration.ofMillis(300), "slow-ok");
@@ -89,7 +89,7 @@ class BoundedToolExecutorTest {
   // ---------------------------------------------------------------------------------------------
 
   @Test
-  void aTimedOutCallFreesTheWorkerAndReportsTheAmbiguousOutcome() throws Exception {
+  void a_timed_out_call_frees_the_worker_and_reports_the_ambiguous_outcome() throws Exception {
     // A single pool thread: if the timed-out call still occupied the worker, the second call could
     // not start — this is the "a tool never occupies a worker indefinitely" half of the acceptance.
     ExecutorService single = Executors.newSingleThreadExecutor();
@@ -129,7 +129,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void permitsAreReleasedAfterATimeoutSoCapacityIsNotLost() {
+  void permits_are_released_after_a_timeout_so_capacity_is_not_lost() {
     ExecutorService single = Executors.newSingleThreadExecutor();
     try {
       BoundedToolExecutor executor = new BoundedToolExecutor(single, 1, 1);
@@ -155,7 +155,7 @@ class BoundedToolExecutorTest {
   // ---------------------------------------------------------------------------------------------
 
   @Test
-  void theGlobalCapRejectsImmediatelyWithAControlledOutcome() throws Exception {
+  void the_global_cap_rejects_immediately_with_a_controlled_outcome() throws Exception {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 1, 8);
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
@@ -187,7 +187,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void thePerTenantCapIsolatesTenantsWithoutBlockingOthers() throws Exception {
+  void the_per_tenant_cap_isolates_tenants_without_blocking_others() throws Exception {
     // Global cap 2, per-tenant cap 1: tenant A holds one slot with a blocked call, so a second A
     // call is rejected while tenant B — under the same global cap — is still admitted.
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1);
@@ -220,7 +220,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void aRejectedCallConsumesNoCapacityAndLaterCallsAreAdmitted() throws Exception {
+  void a_rejected_call_consumes_no_capacity_and_later_calls_are_admitted() throws Exception {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 1, 1);
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
@@ -251,7 +251,7 @@ class BoundedToolExecutorTest {
   // ---------------------------------------------------------------------------------------------
 
   @Test
-  void aToolsUncheckedFaultIsRethrownUnchanged() {
+  void a_tools_unchecked_fault_is_rethrown_unchanged() {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1);
     IllegalStateException toolFault = new IllegalStateException("calculator blew up");
 
@@ -267,7 +267,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void aToolsCheckedFaultIsWrappedSoItCanCrossThePoolBoundary() {
+  void a_tools_checked_fault_is_wrapped_so_it_can_cross_the_pool_boundary() {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1);
     java.io.IOException checked = new java.io.IOException("remote endpoint reset");
 
@@ -285,7 +285,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void anInterruptedWaitForTheResultRestoresTheInterruptFlag() throws Exception {
+  void an_interrupted_wait_for_the_result_restores_the_interrupt_flag() throws Exception {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 1, 1);
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
@@ -325,7 +325,7 @@ class BoundedToolExecutorTest {
   // ---------------------------------------------------------------------------------------------
 
   @Test
-  void nullArgumentsAreRejected() {
+  void null_arguments_are_rejected() {
     BoundedToolExecutor executor = new BoundedToolExecutor(pool, 2, 1);
     ToolDescriptor descriptor = descriptor(GENEROUS_TIMEOUT);
     ToolExecutionContext context = context(TENANT_A);
@@ -343,7 +343,7 @@ class BoundedToolExecutorTest {
   }
 
   @Test
-  void invalidConcurrencyCapsAreRejected() {
+  void invalid_concurrency_caps_are_rejected() {
     assertThatThrownBy(() -> new BoundedToolExecutor(pool, 0, 1))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("globalMaxConcurrency");
