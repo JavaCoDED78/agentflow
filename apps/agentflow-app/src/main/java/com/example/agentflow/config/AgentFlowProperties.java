@@ -38,6 +38,7 @@ public class AgentFlowProperties {
   @Valid private final Inbox inbox = new Inbox();
   @Valid private final Kafka kafka = new Kafka();
   @Valid private final Worker worker = new Worker();
+  @Valid private final Tools tools = new Tools();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -247,6 +248,13 @@ public class AgentFlowProperties {
    */
   public Worker getWorker() {
     return worker;
+  }
+
+  /**
+   * @return the validated tool-executor (timeout/concurrency bounds) settings (S08-10)
+   */
+  public Tools getTools() {
+    return tools;
   }
 
   /**
@@ -987,6 +995,99 @@ public class AgentFlowProperties {
        */
       public void setJitter(boolean jitter) {
         this.jitter = jitter;
+      }
+    }
+  }
+
+  /**
+   * Tool-executor bounds (S08-10). Bound from {@code agentflow.tools.executor.*}. The limits live
+   * here, not in code (apps/agentflow-app AGENTS.md: budgets and limits are configuration). They
+   * back the {@link com.example.agentflow.toolexecution.application.BoundedToolExecutor} bean: the
+   * per-tool timeout itself is not configured here — it is part of every {@code ToolDescriptor}
+   * (S08-01) — these are the pool and the concurrency caps around the calls.
+   */
+  public static class Tools {
+
+    private final Executor executor = new Executor();
+
+    /**
+     * @return the validated tool-executor pool/concurrency settings
+     */
+    public Executor getExecutor() {
+      return executor;
+    }
+
+    /** Pool and concurrency caps for the bounded tool executor (S08-10). */
+    public static class Executor {
+
+      /**
+       * Size of the fixed thread pool the tool calls run on. Bounded so a burst of slow calls
+       * cannot spawn unbounded threads; the pool threads are shared by every tenant. Default 8. At
+       * least 1; a value below 1 fails startup.
+       */
+      @Min(value = 1, message = "agentflow.tools.executor.pool-size must be at least 1")
+      private int poolSize = 8;
+
+      /**
+       * Maximum number of tool calls the whole process runs at once (the global cap). Calls beyond
+       * it are rejected immediately with a {@code concurrency_limited} outcome, never queued.
+       * Default 32. At least 1; a value below 1 fails startup.
+       */
+      @Min(
+          value = 1,
+          message = "agentflow.tools.executor.global-max-concurrency must be at least 1")
+      private int globalMaxConcurrency = 32;
+
+      /**
+       * Maximum number of tool calls a single tenant may occupy at once (the per-tenant cap), so
+       * one noisy tenant cannot starve the rest. Default 8. At least 1; a value below 1 fails
+       * startup.
+       */
+      @Min(
+          value = 1,
+          message = "agentflow.tools.executor.per-tenant-max-concurrency must be at least 1")
+      private int perTenantMaxConcurrency = 8;
+
+      /**
+       * @return the tool-call pool size (default {@code 8})
+       */
+      public int getPoolSize() {
+        return poolSize;
+      }
+
+      /**
+       * @param poolSize the tool-call pool size (at least 1)
+       */
+      public void setPoolSize(int poolSize) {
+        this.poolSize = poolSize;
+      }
+
+      /**
+       * @return the global concurrency cap (default {@code 32})
+       */
+      public int getGlobalMaxConcurrency() {
+        return globalMaxConcurrency;
+      }
+
+      /**
+       * @param globalMaxConcurrency the global concurrency cap (at least 1)
+       */
+      public void setGlobalMaxConcurrency(int globalMaxConcurrency) {
+        this.globalMaxConcurrency = globalMaxConcurrency;
+      }
+
+      /**
+       * @return the per-tenant concurrency cap (default {@code 8})
+       */
+      public int getPerTenantMaxConcurrency() {
+        return perTenantMaxConcurrency;
+      }
+
+      /**
+       * @param perTenantMaxConcurrency the per-tenant concurrency cap (at least 1)
+       */
+      public void setPerTenantMaxConcurrency(int perTenantMaxConcurrency) {
+        this.perTenantMaxConcurrency = perTenantMaxConcurrency;
       }
     }
   }

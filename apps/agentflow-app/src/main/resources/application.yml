@@ -65,6 +65,15 @@ agentflow:
       # re-published. Generous on purpose so a live, slow publisher keeps its claim; re-publishing a
       # row the broker already holds is a duplicate (inbox-deduped, S06-10), never a loss.
       claim-timeout-seconds: 300
+  # Bounded tool executor (S08-10). The pool the tool calls run on plus the global / per-tenant
+  # concurrency caps; a call beyond a cap is rejected immediately with a `concurrency_limited`
+  # outcome, never queued. The per-tool timeout itself is part of every ToolDescriptor (S08-01),
+  # not of this configuration. Limits live here, not in code.
+  tools:
+    executor:
+      pool-size: 8
+      global-max-concurrency: 32
+      per-tenant-max-concurrency: 8
   # Kafka outbound producer (S06-09). Disabled by default: the skeleton boots without Kafka (S01-02),
   # and the KafkaMessageDeliverer bean only exists when agentflow.kafka.producer.enabled=true. Enable
   # it in a profile (local / kubernetes) with a reachable agentflow.kafka.producer.bootstrap-servers;
