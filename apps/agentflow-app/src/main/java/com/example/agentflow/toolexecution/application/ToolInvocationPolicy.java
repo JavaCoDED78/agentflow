@@ -30,6 +30,21 @@ import org.springframework.stereotype.Service;
  * ToolExecutionContext} with {@code null} capabilities is treated as "no capability", so a guard
  * against a tool that needs a scope denies — the guard fails safe.
  *
+ * <p><b>The human-approval precondition (S08-14).</b> The guard also re-checks the descriptor's
+ * {@link ToolDescriptor#requiresHumanApproval()} flag, immediately before the call: a tool whose
+ * action is gated on a human decision must never run on the automatic path. The error taxonomy
+ * names the result — a {@code WRITE} tool invoked without {@code HUMAN_APPROVAL} is a {@code
+ * tool_policy_denial}, permanent, never retried ({@code docs/architecture/error-taxonomy.md});
+ * retrying without a human decision cannot succeed, so the guard denies with {@link
+ * #REASON_MISSING_APPROVAL} instead. The three-argument {@link #decide(ToolExecutionContext,
+ * String, String)} is exactly that automatic path: it attests no grant, so an approval-gated tool
+ * is always denied there. The four-argument {@link #decide(ToolExecutionContext, String, String,
+ * boolean)} accepts an explicit grant attestation — the seam the human-approval lifecycle (S11)
+ * feeds once the approvals store exists: the caller (the {@code TOOL_CALL} {@code StepHandler})
+ * re-checks the stored decision and passes the outcome. The guard itself reads no approval store;
+ * the grant is an input, decided elsewhere, like the capabilities it already reads from the
+ * context.
+ *
  * <p><b>Where the current permissions come from.</b> The caller passes the {@link
  * ToolExecutionContext} the executor already built for this call (S08-08, immutable, built
  * server-side from the verified context, carrying the caller's minimal capabilities). The guard
@@ -71,6 +86,15 @@ public class ToolInvocationPolicy {
    */
   public static final String REASON_UNKNOWN_RISK_CLASS = "unknown_risk_class";
 
+  /**
+   * The tool's action is gated on a human decision ({@link ToolDescriptor#requiresHumanApproval()})
+   * and the automatic call path attests no grant. The taxonomy classifies this as {@code
+   * tool_policy_denial} — permanent, never retried: only a human approval (S11) lifts it, so the
+   * grant is passed explicitly through {@link #decide(ToolExecutionContext, String, String,
+   * boolean)}.
+   */
+  public static final String REASON_MISSING_APPROVAL = "missing_approval";
+
   private final ToolRegistry registry;
 
   /**
@@ -82,7 +106,12 @@ public class ToolInvocationPolicy {
   }
 
   /**
-   * Re-check, immediately before invoking a tool, whether the call is permitted now.
+   * Re-check, immediately before invoking a tool, whether the call is permitted on the <b>automatic
+   * path</b> — the path no human decision has attested. An approval-gated tool ({@link
+   * ToolDescriptor#requiresHumanApproval()}) is always denied here with {@link
+   * #REASON_MISSING_APPROVAL}: the automatic executor must never run an action a human has not
+   * approved (the taxonomy's {@code tool_policy_denial}). Equivalent to {@code decide(context,
+   * toolName, toolVersion, false)}.
    *
    * @param context the call context the executor built for this invocation; its {@code
    *     capabilities} are the caller's current permission set — never a value captured at workflow
@@ -96,12 +125,33 @@ public class ToolInvocationPolicy {
    */
   public PermissionDecision decide(
       ToolExecutionContext context, String toolName, String toolVersion) {
+    return decide(context, toolName, toolVersion, false);
+  }
+
+  /**
+   * Re-check, immediately before invoking a tool, whether the call is permitted now, given an
+   * explicit attestation of the call's human-approval state. This is the seam the human-approval
+   * lifecycle (S11) feeds: the {@code TOOL_CALL} {@code StepHandler} re-checks the stored approval
+   * decision for this call and passes the outcome; until the approvals store exists, no production
+   * caller attests a grant, so an approval-gated tool is denied on every path that exists today.
+   *
+   * @param context the call context the executor built for this invocation; its {@code
+   *     capabilities} are the caller's current permission set — never a value captured at workflow
+   *     activation; may be {@code null} (treated as "no capability", so a scoped tool is denied)
+   * @param toolName the callable tool name to check
+   * @param toolVersion the tool version to check
+   * @param approvalGranted {@code true} only when a human approval for this call has been granted
+   *     and re-checked against the store; {@code false} on the automatic path
+   * @return the guard's {@link PermissionDecision}
+   */
+  public PermissionDecision decide(
+      ToolExecutionContext context, String toolName, String toolVersion, boolean approvalGranted) {
     Set<String> currentScopes = currentScopes(context);
     Optional<ToolDescriptor> tool = registry.resolve(toolName, toolVersion);
     if (tool.isEmpty()) {
       return PermissionDecision.denied(REASON_UNKNOWN_TOOL, toolName, toolVersion, null);
     }
-    return decideFor(tool.get(), currentScopes);
+    return decideFor(tool.get(), currentScopes, approvalGranted);
   }
 
   /**
@@ -112,9 +162,12 @@ public class ToolInvocationPolicy {
    * @param tool the resolved descriptor; never {@code null}
    * @param currentScopes the caller's current permission scopes (an empty set grants no side
    *     effect)
+   * @param approvalGranted whether a human approval for this call has been granted and re-checked;
+   *     {@code false} on the automatic path
    * @return the guard's {@link PermissionDecision}
    */
-  PermissionDecision decideFor(ToolDescriptor tool, Set<String> currentScopes) {
+  PermissionDecision decideFor(
+      ToolDescriptor tool, Set<String> currentScopes, boolean approvalGranted) {
     if (tool.riskClass() == null) {
       return PermissionDecision.denied(
           REASON_UNKNOWN_RISK_CLASS, tool.name(), tool.version(), null);
@@ -123,6 +176,9 @@ public class ToolInvocationPolicy {
     missing.removeAll(currentScopes == null ? Set.of() : currentScopes);
     if (!missing.isEmpty()) {
       return PermissionDecision.denied(REASON_MISSING_SCOPE, tool.name(), tool.version(), missing);
+    }
+    if (tool.requiresHumanApproval() && !approvalGranted) {
+      return PermissionDecision.denied(REASON_MISSING_APPROVAL, tool.name(), tool.version(), null);
     }
     return PermissionDecision.allowed(tool.name(), tool.version(), Set.of());
   }

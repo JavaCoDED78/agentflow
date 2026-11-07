@@ -29,7 +29,7 @@ public record PermissionDecision(
    * @param outcome {@link ToolExecutionOutcome#ALLOWED} or {@link ToolExecutionOutcome#DENIED}
    * @param reason the stable code the executor classifies by; see {@link ToolInvocationPolicy} for
    *     the closed set ({@code allowed}, {@code unknown_tool}, {@code missing_scope}, {@code
-   *     unknown_risk_class})
+   *     unknown_risk_class}, {@code missing_approval})
    * @param toolName the tool the decision is about (may be {@code null} when the tool could not be
    *     resolved, e.g. an unknown tool)
    * @param toolVersion the tool version the decision is about (may be {@code null})
@@ -47,8 +47,8 @@ public record PermissionDecision(
   }
 
   /**
-   * @param reason the stable denial code ({@code unknown_tool}, {@code missing_scope} or {@code
-   *     unknown_risk_class})
+   * @param reason the stable denial code ({@code unknown_tool}, {@code missing_scope}, {@code
+   *     unknown_risk_class} or {@code missing_approval})
    * @param toolName the tool the decision is about (may be {@code null})
    * @param toolVersion the tool version the decision is about (may be {@code null})
    * @param missingScopes the scopes the caller does not currently hold; {@code null} is treated as
