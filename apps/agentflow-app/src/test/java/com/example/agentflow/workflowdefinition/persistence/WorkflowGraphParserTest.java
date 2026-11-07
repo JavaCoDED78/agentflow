@@ -7,7 +7,9 @@ import com.example.agentflow.workflowdefinition.domain.GraphValidationIssue;
 import com.example.agentflow.workflowdefinition.domain.InvalidGraphException;
 import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
+import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -383,5 +385,61 @@ class WorkflowGraphParserTest {
         """;
 
     assertThat(parser.collectIssues(json)).isEmpty();
+  }
+
+  @Test
+  void parse_preserves_input_wiring_and_output_declarations_verbatim() {
+    // S08-12: the parser carries the DSL's input/output fields into the typed model — literals
+    // and {node, output} references verbatim, output declarations as name -> description.
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [
+            {"id": "retrieve-1", "type": "RETRIEVE_CONTEXT",
+             "output": {"documents": "the retrieved documents"}},
+            {"id": "summarize-1", "type": "FINALIZE",
+             "input": {
+               "docs": {"node": "retrieve-1", "output": "documents"},
+               "tone": "terse"
+             }}
+          ],
+          "edges": [{ "from": "retrieve-1", "to": "summarize-1" }]
+        }
+        """;
+
+    WorkflowGraph graph = parser.parse(json);
+
+    WorkflowNode upstream = graph.nodes().get(0);
+    WorkflowNode downstream = graph.nodes().get(1);
+    assertThat(upstream.output())
+        .containsExactly(Map.entry("documents", "the retrieved documents"));
+    assertThat(downstream.input())
+        .containsEntry("docs", Map.of("node", "retrieve-1", "output", "documents"))
+        .containsEntry("tone", "terse");
+  }
+
+  @Test
+  void collect_issues_reports_input_wiring_field_problems_with_json_paths() {
+    // S08-12: input must be an object; output must be an object of non-blank string descriptions.
+    // (The value-shape and linkage of a well-typed input live in the domain wiring gate — see
+    // WorkflowGraphValidatorTest.)
+    String json =
+        """
+        {
+          "schemaVersion": "1.0.0",
+          "nodes": [
+            {"id": "a", "type": "FINALIZE", "input": ["not", "an", "object"]},
+            {"id": "c", "type": "FINALIZE", "output": {"x": 42}},
+            {"id": "d", "type": "FINALIZE", "output": ["not", "an", "object"]}
+          ]
+        }
+        """;
+
+    List<GraphValidationIssue> issues = parser.collectIssues(json);
+
+    assertThat(issues)
+        .extracting(GraphValidationIssue::path)
+        .containsExactlyInAnyOrder("nodes[0].input", "nodes[1].output.x", "nodes[2].output");
   }
 }

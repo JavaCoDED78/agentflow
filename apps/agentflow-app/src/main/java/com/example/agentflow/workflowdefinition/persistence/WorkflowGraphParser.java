@@ -7,6 +7,7 @@ import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraphValidator;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import tools.jackson.core.JacksonException;
@@ -30,8 +31,9 @@ import tools.jackson.databind.ObjectMapper;
  *   <li><b>Schema version.</b> {@code schemaVersion} must equal {@link #SCHEMA_VERSION}; an unknown
  *       or missing version is rejected, so an over-future graph fails closed.
  *   <li><b>Field types.</b> every {@code nodes} entry must be a JSON object with a string {@code
- *       id}, a string {@code type} and an optional object {@code config}; a wrong-typed field or a
- *       non-object node is rejected with the offending field/index in the message.
+ *       id}, a string {@code type} and optional object {@code config}, {@code input} and {@code
+ *       output} fields; a wrong-typed field or a non-object node is rejected with the offending
+ *       field/index in the message.
  *   <li><b>Edge fields.</b> every {@code edges} entry must be a JSON object with two strings,
  *       {@code from} and {@code to}; a wrong-typed field, a missing endpoint or a non-object edge
  *       is rejected with the offending edge/index in the message.
@@ -201,7 +203,9 @@ public class WorkflowGraphParser {
     String id = readStringField(index, node, "id", "node", issues);
     String type = readStringField(index, node, "type", "node", issues);
     Map<String, Object> config = readConfig(index, node, issues);
-    return new WorkflowNode(id, type, config);
+    Map<String, Object> input = readInput(index, node, issues);
+    Map<String, String> output = readOutput(index, node, issues);
+    return new WorkflowNode(id, type, config, input, output);
   }
 
   private String readStringField(
@@ -283,5 +287,66 @@ public class WorkflowGraphParser {
       return Map.of();
     }
     return mapper.convertValue(configNode, Map.class);
+  }
+
+  /**
+   * Reads the node's optional {@code input} wiring verbatim (S08-12): a map of input name to a
+   * literal or a {@code {node, output}} reference. The values are untrusted data; the {@link
+   * WorkflowGraphValidator} linkage gate checks the references, this reader only enforces the field
+   * type so a non-object wiring fails the parse with a located issue.
+   */
+  @SuppressWarnings("unchecked")
+  private Map<String, Object> readInput(
+      int index, JsonNode node, List<GraphValidationIssue> issues) {
+    JsonNode inputNode = node.path("input");
+    if (inputNode.isMissingNode() || inputNode.isNull()) {
+      return Map.of();
+    }
+    if (!inputNode.isObject()) {
+      issues.add(
+          new GraphValidationIssue(
+              "nodes[" + index + "].input",
+              "workflow graph node at index " + index + " field 'input' must be an object"));
+      return Map.of();
+    }
+    return mapper.convertValue(inputNode, Map.class);
+  }
+
+  /**
+   * Reads the node's optional {@code output} declarations (S08-12): a map of output name to a
+   * non-blank description string (the contract's {@code minLength: 1}). Enforces the field and
+   * value types here so a wrong-typed declaration fails the parse with a located issue; the {@link
+   * WorkflowGraphValidator} linkage gate checks the references that point at these names.
+   */
+  private Map<String, String> readOutput(
+      int index, JsonNode node, List<GraphValidationIssue> issues) {
+    JsonNode outputNode = node.path("output");
+    if (outputNode.isMissingNode() || outputNode.isNull()) {
+      return Map.of();
+    }
+    if (!outputNode.isObject()) {
+      issues.add(
+          new GraphValidationIssue(
+              "nodes[" + index + "].output",
+              "workflow graph node at index " + index + " field 'output' must be an object"));
+      return Map.of();
+    }
+    Map<String, String> output = new LinkedHashMap<>();
+    for (Map.Entry<String, JsonNode> entry : outputNode.properties()) {
+      JsonNode description = entry.getValue();
+      if (description == null || !description.isString() || description.stringValue().isBlank()) {
+        issues.add(
+            new GraphValidationIssue(
+                "nodes[" + index + "].output." + entry.getKey(),
+                "workflow graph node at index "
+                    + index
+                    + " output '"
+                    + entry.getKey()
+                    + "' must be a non-blank string"));
+        continue;
+      }
+      output.put(entry.getKey(), description.stringValue());
+    }
+    return output;
   }
 }

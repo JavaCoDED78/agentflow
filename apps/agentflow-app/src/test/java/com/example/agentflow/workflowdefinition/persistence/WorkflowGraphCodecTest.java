@@ -101,4 +101,40 @@ class WorkflowGraphCodecTest {
     assertThatThrownBy(() -> codec.deserialize("not a graph"))
         .isInstanceOf(InvalidGraphException.class);
   }
+
+  @Test
+  void round_trips_input_wiring_and_output_declarations() {
+    // S08-12: the persisted graph keeps the DSL's input/output fields, so an activated version
+    // round-trips the wiring the runtime mapper resolves.
+    WorkflowGraph original =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "retrieve-1",
+                    "RETRIEVE_CONTEXT",
+                    Map.of(),
+                    Map.of(),
+                    Map.of("documents", "the retrieved documents")),
+                new WorkflowNode(
+                    "finalize-1",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of(
+                        "docs",
+                        Map.of("node", "retrieve-1", "output", "documents"),
+                        "tone",
+                        "terse"),
+                    Map.of())),
+            List.of(new WorkflowEdge("retrieve-1", "finalize-1")));
+
+    WorkflowGraph restored = codec.deserialize(codec.serialize(original));
+
+    WorkflowNode upstream = restored.nodes().get(0);
+    WorkflowNode downstream = restored.nodes().get(1);
+    assertThat(upstream.output())
+        .containsExactly(Map.entry("documents", "the retrieved documents"));
+    assertThat(downstream.input())
+        .containsEntry("docs", Map.of("node", "retrieve-1", "output", "documents"))
+        .containsEntry("tone", "terse");
+  }
 }

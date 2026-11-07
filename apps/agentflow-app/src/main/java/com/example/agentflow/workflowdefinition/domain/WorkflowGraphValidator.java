@@ -30,7 +30,9 @@ import java.util.TreeSet;
  *   <li>every node id is non-blank and <em>unique</em> across the graph;
  *   <li>every node type is non-blank and one of the glossary's allowed node types;
  *   <li>every edge points at an existing node, is not a self-reference and is not duplicated;
- *   <li>the graph is acyclic (a {@link #topologicalOrder(WorkflowGraph)} exists).
+ *   <li>the graph is acyclic (a {@link #topologicalOrder(WorkflowGraph)} exists);
+ *   <li>every {@code input} wiring is a literal string or a {@code {node, output}} reference to an
+ *       existing node's declared output (S08-12 linkage gate).
  * </ul>
  *
  * <p>Each structural error names the <em>JSON path</em> it comes from ({@code nodes[i]}, {@code
@@ -113,6 +115,7 @@ public final class WorkflowGraphValidator {
     if (edgesAllResolved(graph)) {
       collectCycle(graph, issues);
     }
+    collectWiring(graph, issues);
     return issues;
   }
 
@@ -309,6 +312,155 @@ public final class WorkflowGraphValidator {
         issues.add(
             new GraphValidationIssue(
                 path, "workflow graph edge " + path + " duplicates an earlier edge (" + key + ")"));
+      }
+    }
+  }
+
+  /**
+   * Collects the data-wiring linkage problems of every node (S08-12), so a reference to a missing
+   * node or an output a node does not declare is rejected <em>before the version is persisted</em>
+   * — the "unknown path" half of the mapping acceptance, enforced at activation time rather than
+   * discovered at the first run.
+   *
+   * <p>Per the contract's {@code reference} $def, an {@code input} value is either a literal string
+   * or an object of <em>exactly</em> {@code {node, output}}; anything else (a number, a boolean, a
+   * list, {@code null}) is rejected. A reference must point at an existing node other than the
+   * referencing node itself (a self-reference can never be satisfied — the node's own output does
+   * not exist while its inputs are resolved) and at an output name that node declares in its {@code
+   * output} map. Output declarations must be non-blank names mapped to non-blank description
+   * strings. The checks run against the first occurrence of a duplicated id, so the duplicate-id
+   * issue is reported once by {@link #collectNodeIds} and not re-reported here.
+   */
+  private static void collectWiring(WorkflowGraph graph, List<GraphValidationIssue> issues) {
+    Map<String, WorkflowNode> byId = new LinkedHashMap<>();
+    for (WorkflowNode node : graph.nodes()) {
+      if (node != null && node.id() != null) {
+        byId.putIfAbsent(node.id(), node);
+      }
+    }
+    for (int i = 0; i < graph.nodes().size(); i++) {
+      WorkflowNode node = graph.nodes().get(i);
+      if (node == null) {
+        continue;
+      }
+      for (Map.Entry<String, String> declared : node.output().entrySet()) {
+        String path = "nodes[" + i + "].output." + declared.getKey();
+        if (declared.getKey() == null || declared.getKey().isBlank()) {
+          issues.add(
+              new GraphValidationIssue(
+                  "nodes[" + i + "].output", "workflow graph node output name must not be blank"));
+        }
+        if (declared.getValue() == null || declared.getValue().isBlank()) {
+          issues.add(
+              new GraphValidationIssue(
+                  path,
+                  "workflow graph node output '"
+                      + declared.getKey()
+                      + "' description must be a non-blank string"));
+        }
+      }
+      for (Map.Entry<String, Object> wired : node.input().entrySet()) {
+        String name = wired.getKey();
+        String basePath = "nodes[" + i + "].input." + name;
+        Object value = wired.getValue();
+        if (name == null || name.isBlank()) {
+          issues.add(
+              new GraphValidationIssue(
+                  "nodes[" + i + "].input", "workflow graph node input name must not be blank"));
+          continue;
+        }
+        if (value instanceof String literal) {
+          if (literal.isBlank()) {
+            // A blank literal is allowed by the schema (only the reference's output is minLength
+            // 1);
+            // it is a useless wiring, so it is accepted — the runtime mapper passes it through.
+            continue;
+          }
+          continue;
+        }
+        if (!(value instanceof Map<?, ?> reference)) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath,
+                  "workflow graph node input '"
+                      + name
+                      + "' must be a literal string or a {node, output} reference"));
+          continue;
+        }
+        Object refNode = reference.get("node");
+        Object refOutput = reference.get("output");
+        if (refNode == null || refOutput == null) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath,
+                  "workflow graph node input '"
+                      + name
+                      + "' reference must carry both 'node' and 'output'"));
+          continue;
+        }
+        if (!(refNode instanceof String refNodeId) || refNodeId.isBlank()) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath + ".node",
+                  "workflow graph node input '"
+                      + name
+                      + "' reference field 'node' must be a non-blank string"));
+          continue;
+        }
+        if (!(refOutput instanceof String refOutputName) || refOutputName.isBlank()) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath + ".output",
+                  "workflow graph node input '"
+                      + name
+                      + "' reference field 'output' must be a non-blank string"));
+          continue;
+        }
+        for (Object key : reference.keySet()) {
+          if (!"node".equals(key) && !"output".equals(key)) {
+            issues.add(
+                new GraphValidationIssue(
+                    basePath + "." + key,
+                    "workflow graph node input '"
+                        + name
+                        + "' reference has unknown field '"
+                        + key
+                        + "' (only 'node' and 'output' are allowed)"));
+          }
+        }
+        if (refNodeId.equals(node.id())) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath + ".node",
+                  "workflow graph node input '"
+                      + name
+                      + "' references the node itself; a node's own output does not exist while its inputs are resolved"));
+          continue;
+        }
+        WorkflowNode target = byId.get(refNodeId);
+        if (target == null) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath + ".node",
+                  "workflow graph node input '"
+                      + name
+                      + "' references unknown node '"
+                      + refNodeId
+                      + "'"));
+          continue;
+        }
+        if (!target.output().containsKey(refOutputName)) {
+          issues.add(
+              new GraphValidationIssue(
+                  basePath + ".output",
+                  "workflow graph node input '"
+                      + name
+                      + "' references output '"
+                      + refOutputName
+                      + "' which node '"
+                      + refNodeId
+                      + "' does not declare"));
+        }
       }
     }
   }

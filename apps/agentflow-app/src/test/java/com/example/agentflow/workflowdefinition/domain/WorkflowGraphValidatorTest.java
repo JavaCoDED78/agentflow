@@ -309,4 +309,145 @@ class WorkflowGraphValidatorTest {
         .extracting(GraphValidationIssue::message)
         .anyMatch(m -> m.contains("does-not-exist"));
   }
+
+  @Test
+  void accepts_input_wiring_that_references_declared_outputs() {
+    // S08-12: a {node, output} reference to an existing node's declared output is valid wiring.
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "retrieve-1",
+                    "RETRIEVE_CONTEXT",
+                    Map.of(),
+                    Map.of(),
+                    Map.of("documents", "the retrieved documents")),
+                new WorkflowNode(
+                    "finalize-1",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of(
+                        "docs",
+                        Map.of("node", "retrieve-1", "output", "documents"),
+                        "tone",
+                        "terse"),
+                    Map.of())),
+            List.of(new WorkflowEdge("retrieve-1", "finalize-1")));
+
+    WorkflowGraphValidator.validate(graph);
+  }
+
+  @Test
+  void rejects_a_reference_to_an_unknown_node() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "finalize-1",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of("docs", Map.of("node", "ghost", "output", "documents")),
+                    Map.of())),
+            List.of());
+
+    assertThatThrownBy(() -> WorkflowGraphValidator.validate(graph))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("ghost");
+  }
+
+  @Test
+  void rejects_a_self_reference() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "a",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of("docs", Map.of("node", "a", "output", "documents")),
+                    Map.of("documents", "desc"))),
+            List.of());
+
+    assertThatThrownBy(() -> WorkflowGraphValidator.validate(graph))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("itself");
+  }
+
+  @Test
+  void rejects_a_reference_to_an_output_the_node_does_not_declare() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "retrieve-1",
+                    "RETRIEVE_CONTEXT",
+                    Map.of(),
+                    Map.of(),
+                    Map.of("documents", "the retrieved documents")),
+                new WorkflowNode(
+                    "finalize-1",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of("docs", Map.of("node", "retrieve-1", "output", "secret")),
+                    Map.of())),
+            List.of(new WorkflowEdge("retrieve-1", "finalize-1")));
+
+    assertThatThrownBy(() -> WorkflowGraphValidator.validate(graph))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("secret");
+  }
+
+  @Test
+  void rejects_a_reference_to_a_node_without_declared_outputs() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode("retrieve-1", "RETRIEVE_CONTEXT", Map.of()),
+                new WorkflowNode(
+                    "finalize-1",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of("docs", Map.of("node", "retrieve-1", "output", "documents")),
+                    Map.of())),
+            List.of(new WorkflowEdge("retrieve-1", "finalize-1")));
+
+    assertThatThrownBy(() -> WorkflowGraphValidator.validate(graph))
+        .isInstanceOf(InvalidGraphException.class)
+        .hasMessageContaining("retrieve-1");
+  }
+
+  @Test
+  void accepts_literal_only_inputs_without_output_declarations() {
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "finalize-1", "FINALIZE", Map.of(), Map.of("tone", "terse"), Map.of())),
+            List.of());
+
+    WorkflowGraphValidator.validate(graph);
+  }
+
+  @Test
+  void collect_issues_reports_wiring_shape_problems_with_json_paths() {
+    // S08-12: a wiring value that is neither a literal string nor a well-formed {node, output}
+    // reference is a shape problem reported with its path (the value-shape gate runs on a
+    // well-typed graph, before the linkage checks).
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "b",
+                    "FINALIZE",
+                    Map.of(),
+                    Map.of("count", 42, "ref", Map.of("node", "a")),
+                    Map.of())),
+            List.of());
+
+    List<GraphValidationIssue> issues = WorkflowGraphValidator.collectIssues(graph);
+
+    assertThat(issues)
+        .extracting(GraphValidationIssue::path)
+        .containsExactlyInAnyOrder("nodes[0].input.count", "nodes[0].input.ref");
+  }
 }
