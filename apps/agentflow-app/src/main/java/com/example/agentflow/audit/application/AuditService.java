@@ -59,10 +59,38 @@ public class AuditService {
       AuditAction action,
       AuditResourceType resourceType,
       UUID resourceId) {
+    record(tenantId, actorSubject, action, resourceType, resourceId, null);
+  }
+
+  /**
+   * Append one audit record carrying redacted free-text metadata (S08-13: a side-effect tool
+   * invocation names the tool and version it ran through {@code metadataRedacted}). The {@code id},
+   * {@link AuditOutcome#SUCCEEDED} outcome and {@code createdAt} instant are assigned inside {@link
+   * AuditEvent#created}, so the caller only names the actor, the action and the resource.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param actorSubject the actor that performed the action (never a token)
+   * @param action the audited verb ({@link AuditAction})
+   * @param resourceType the entity the action refers to ({@link AuditResourceType})
+   * @param resourceId the affected resource id (null when the action has no single resource)
+   * @param metadataRedacted redacted free-text metadata (never raw arguments, payload or secrets);
+   *     {@code null} when the action carries none
+   * @throws IllegalStateException if no database is configured (the caller reports {@code 503}
+   *     first)
+   */
+  public void record(
+      UUID tenantId,
+      String actorSubject,
+      AuditAction action,
+      AuditResourceType resourceType,
+      UUID resourceId,
+      String metadataRedacted) {
     if (repository == null) {
       throw new IllegalStateException(
           "audit events unavailable: no database connection is configured");
     }
-    repository.insert(AuditEvent.created(tenantId, actorSubject, action, resourceType, resourceId));
+    repository.insert(
+        AuditEvent.created(
+            tenantId, actorSubject, action, resourceType, resourceId, metadataRedacted));
   }
 }

@@ -1,8 +1,10 @@
 package com.example.agentflow.config;
 
 import com.example.agentflow.toolexecution.application.BoundedToolExecutor;
+import com.example.agentflow.toolexecution.application.ToolInvocationListener;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -39,18 +41,28 @@ public class ToolExecutionConfiguration {
    * The bounded tool executor (S08-10): per-tool timeout plus the global / per-tenant concurrency
    * caps, built from {@code agentflow.tools.executor.*} so the limits are configuration, never
    * magic numbers. A misconfigured cap fails boot at the {@link BoundedToolExecutor} constructor,
-   * before any tool runs.
+   * before any tool runs. Since S08-13 every concluded call is reported to the invocation history
+   * ({@code ToolInvocationHistoryService}) when that bean is registered; a sliced context without
+   * it still boots, with the executor reporting to {@link ToolInvocationListener#NONE}. A metadata
+   * write failure is logged and never changes the call's outcome.
    *
    * @param pool the shared tool-call pool (see {@link #toolCallExecutor})
    * @param properties the validated tool-executor configuration
+   * @param history the invocation-history seam (S08-13); absent in sliced contexts, where the
+   *     executor reports to {@link ToolInvocationListener#NONE}
    * @return the bounded executor the {@code TOOL_CALL} {@code StepHandler} drives calls through
    *     (wired in S08-12)
    */
   @Bean
   public BoundedToolExecutor boundedToolExecutor(
-      ExecutorService pool, AgentFlowProperties properties) {
+      ExecutorService pool,
+      AgentFlowProperties properties,
+      ObjectProvider<ToolInvocationListener> history) {
     AgentFlowProperties.Tools.Executor executor = properties.getTools().getExecutor();
     return new BoundedToolExecutor(
-        pool, executor.getGlobalMaxConcurrency(), executor.getPerTenantMaxConcurrency());
+        pool,
+        executor.getGlobalMaxConcurrency(),
+        executor.getPerTenantMaxConcurrency(),
+        history.getIfAvailable(() -> ToolInvocationListener.NONE));
   }
 }

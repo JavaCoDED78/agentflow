@@ -6,11 +6,16 @@ import com.example.agentflow.agentcatalog.domain.ToolRiskClass;
 import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.config.ToolExecutionConfiguration;
 import com.example.agentflow.toolexecution.application.BoundedToolExecutor;
+import com.example.agentflow.toolexecution.application.ToolInvocationListener;
 import com.example.agentflow.toolexecution.domain.JsonSchema;
 import com.example.agentflow.toolexecution.domain.RetryPolicy;
 import com.example.agentflow.toolexecution.domain.ToolDescriptor;
 import com.example.agentflow.toolexecution.domain.ToolExecutionContext;
+import com.example.agentflow.toolexecution.domain.ToolInvocationOutcome;
+import com.example.agentflow.toolexecution.domain.ToolInvocationRecord;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -86,6 +91,28 @@ class ToolExecutionConfigurationTest {
               assertThat(executor.getPoolSize()).isEqualTo(4);
               assertThat(executor.getGlobalMaxConcurrency()).isEqualTo(16);
               assertThat(executor.getPerTenantMaxConcurrency()).isEqualTo(2);
+            });
+  }
+
+  @Test
+  void a_registered_invocation_listener_is_wired_into_the_executor_and_receives_the_call() {
+    // S08-13: the production context registers the ToolInvocationHistoryService as the listener;
+    // here a sliced context proves the wiring picks up any registered listener (and falls back to
+    // NONE, as the tests above show, when none is).
+    List<ToolInvocationRecord> records = new ArrayList<>();
+    runner
+        .withBean(ToolInvocationListener.class, () -> (ToolInvocationListener) records::add)
+        .run(
+            context -> {
+              assertThat(context.getStartupFailure()).isNull();
+              assertThat(
+                      context
+                          .getBean(BoundedToolExecutor.class)
+                          .execute(context(), descriptor(), () -> "wired-ok"))
+                  .isEqualTo("wired-ok");
+              assertThat(records).hasSize(1);
+              assertThat(records.get(0).outcome()).isEqualTo(ToolInvocationOutcome.SUCCEEDED);
+              assertThat(records.get(0).toolName()).isEqualTo("wired-tool");
             });
   }
 

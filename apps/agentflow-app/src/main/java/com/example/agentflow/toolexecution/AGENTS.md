@@ -12,7 +12,7 @@ typed tool registry, permission/budget check, timeout and JSON Schema-validated 
 
 ## Data ownership
 
-`toolexecution` owns exactly one table and no other module may change its migration or schema: `tool_definitions`.
+`toolexecution` owns exactly two tables and no other module may change their migrations or schemas: `tool_definitions` and `tool_invocations` (S08-13, the append-only tool invocation history — metadata only, never arguments or payload).
 
 ## Package layout (internal vs public)
 
