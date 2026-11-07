@@ -3,6 +3,26 @@
 
 # Sprint 8 — Tool registry
 
+## S08-15 — The tool authoring guide: a developer can add a new safe tool by following docs/tools/README.md (S08-15).
+
+### What changed
+The plan asks for a guide covering ToolDescriptor registration, input/output schemas, permission checks, tenant context, timeout/concurrency cap, audit, idempotency and error-handling rules, with the calculator and report formatter as the exemplary tools. The new [`docs/tools/README.md`](../../docs/tools/README.md) is that guide. It documents: the full call pipeline every tool call passes through (registry resolve → [`ToolInvocationPolicy`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/application/ToolInvocationPolicy.java) permission re-check against the caller's *current* scopes → input-schema gate → [`BoundedToolExecutor`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/application/BoundedToolExecutor.java) with its per-tool timeout and global / per-tenant concurrency caps → output-schema gate → invocation history + audit), as a Mermaid diagram plus a per-stage failure table; the [`ToolDescriptor`](../../apps/agentflow-app/src/main/java/com/example/agentflow/toolexecution/domain/ToolDescriptor.java) registration contract field by field (including the rule that the description is metadata, never authorization, and an empty scope set means "no side effect permitted"); an 8-step authoring checklist from pure `domain` implementation (injected time/randomness, `IllegalArgumentException` guards, stable reason codes) through strict `additionalProperties: false` schemas to startup-only registration, honest risk classification, configuration-backed bounds and snake_case DB-free tests; the calculator and report formatter as the reference read-only tools with their registered descriptor values and example payloads; and a "never break" section (no arbitrary code execution, no dynamic registration, tenant only from the verified context, idempotency for side effects under at-least-once, redacted stable failure tokens, no surprise egress).
+
+### Why
+Sprint 8 built the tool stack component by component; the knowledge of how those components compose into a safe call lived only in the javadoc and the error-matrix test. The acceptance criterion is behavioural — "a developer can add a new safe tool by following the guide" — so a prose guide alone is not evidence: its examples must match the real schemas and pass the real tool tests, or the guide rots on first contact.
+
+### Verification
+New DB-free `ToolAuthoringGuideExamplesTest` (`toolexecution.application`, 5 tests) pins the guide to the code: the calculator example `{"expression":"2 + 3 * 4"}` validates against the registered input schema through the real `SchemaValidator` and evaluates to `14` through the real `Calculator`; the report example validates against its schema and formats a Markdown report through the real `ReportFormatter`; every descriptor value tabulated in the guide (id, name, version, risk class, scopes, timeout, approval flag) is asserted against the registered descriptors; the strict `ticket` contract the guide points authors at accepts its example and rejects an unknown property with `unknown-property`; and every shipped built-in is asserted read-only with no side-effect scope. `./gradlew :apps:agentflow-app:test --tests '*ToolAuthoringGuideExamplesTest'` green (5 tests, 0 failures — JUnit XML checked). No production code, contract or schema change; the guide never proposes arbitrary code execution.
+
+### Docs
+- `docs/tools/README.md` — the guide (new).
+- `docs/README.md` — removed `tools/` from the ⚠ planned rows; indexed the new document.
+- `CHANGELOG.md` — added the S08-15 bullet under `Unreleased → Added` (newest-first).
+- This file.
+
+### Follow-up
+The `TOOL_CALL` `StepHandler` that composes the documented pipeline in production remains the Sprint 8/9 seam named throughout the code; §7 of the guide references `ToolErrorMatrixTest#invokeAutomatic` as the canonical composition until it lands.
+
 ## S08-14 — The tool error matrix: every error class gives exactly one retry / state / audit result (S08-14).
 
 
