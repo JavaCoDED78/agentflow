@@ -65,6 +65,7 @@ definition.
 | **Tool registry** | in-memory, deterministic | Registers adapters at startup, rejects duplicate `id`/`version`, and forbids dynamic registration by the LLM or user. |
 | **Tool risk class** | `READ_ONLY`, `WRITE`, `EXTERNAL_SIDE_EFFECT` | The blast radius of a tool. An unknown risk class is denied by default (`S11-01`). |
 | **Tool execution context** | `ToolExecutionContext` (tenant, actor, run, step, correlation ID, minimal capabilities) | The minimal, tenant-scoped context passed to a tool; secrets are not handed to every adapter. |
+|| **Invocation policy guard** | `ToolInvocationPolicy` (`@Service`), `PermissionDecision` | The re-check immediately <em>before</em> the call (S08-09): resolves the tool through the registry (risk class + required scopes) and the caller's <em>current</em> permission set, and denies a scoped tool whose current set no longer holds a required scope — so a permission revoked after activation blocks the call; unknown tools and absent scopes are denied, a read-only tool needs no scope. Returns an immutable `PermissionDecision` with a stable `reason()` (`allowed`/`missing_scope`/`unknown_tool`) and `missingScopes()`. |
 
 MVP built-in tools: `document.search`, `calculator.evaluate` (a restricted
 arithmetic parser — **not** `eval`), `report.format`. Demo MCP tool:
