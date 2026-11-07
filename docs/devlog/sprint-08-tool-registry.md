@@ -3,6 +3,39 @@
 
 # Sprint 8 — Tool registry
 
+## S08-12 — The step input mapping: a downstream step reads exactly what its upstream produced (S08-12).
+
+### What changed
+The workflow graph contract (`contracts/workflow-graph/workflow-graph.json`) always described a node-level `input` map and `output` declarations, but the code dropped both on the floor — the parser read only `id`/`type`/`config`. They are now carried end to end:
+
+- **`WorkflowNode`** (`workflowdefinition.domain`) gains `input` (`Map<String, Object>` — literal strings or `{node, output}` reference objects, verbatim) and `output` (`Map<String, String>` — declared output name to non-blank description), with javadoc anchored to the contract's `reference` `$def`.
+- **`WorkflowGraphParser`** reads both fields with located type issues (`nodes[i].input`, `nodes[i].output.<name>`); wrong-typed values fail the parse gate before any domain object is produced.
+- **`WorkflowGraphCodec`** round-trips both through the persisted JSONB, so an activated version keeps its wiring.
+- **`WorkflowGraphValidator`** gains a **linkage gate** (`collectWiring`, after the cycle gate): it rejects a reference to an unknown node, a self-reference, a reference to an output the target node does not declare (including a target with no declared outputs at all), and a wiring value that is neither a literal string nor a well-formed `{node, output}` reference. Broken wiring can never reach a run — it is rejected before the version is persisted.
+
+At execution time the worker resolves the wiring on the S08-11 seam, *before* the handler (and any tool) is invoked:
+
+- **`StepInputMapper`** (`workflowexecution.domain`) — the pure engine. Literals pass through unchanged; a `{node, output}` reference resolves to the declared output's value in the referenced step's persisted output document. The lookup is exactly the declared output name — deliberately **no path navigation**, so the wiring can never reach into arbitrary fields of an upstream result (the "no access to arbitrary entity fields" rule). It re-validates the runtime facts the activation gate cannot see: the referenced document must exist and carry the declared name with a non-null value. Every rejection throws `InputMappingException` with a stable machine-readable `reason()` (`unknown-node`, `unknown-output`, `missing-output`, `null-output`, `invalid-literal`, `invalid-reference`); an `IllegalArgumentException`, so the S07-11 classifier maps it to `validation` — a permanent, classified contract failure recorded **before any call**, never retried.
+- **`StepInputResolver`** (`workflowexecution.application`) — the application-edge seam that owns the text-to-tree JSON parsing: it parses **only** the upstream documents the wiring actually references (a node without wiring, or a wiring touching one output, never pays to parse the whole run's outputs), and a referenced document that is not well-formed JSON surfaces as `invalid-upstream-output`.
+- **`StepExecutionContext`** gains `inputs()` (the resolved map, unmodifiable); `upstreamOutputs` stays for backward-compatible raw access. The pre-S08-12 constructor delegates with empty inputs, so existing handlers compile unchanged.
+
+[`WorkflowWorker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/application/WorkflowWorker.java) resolves the wiring in `stepContext` — after the step enters `RUNNING`, before `StepHandler#handle` — so an unresolvable wiring is contained to the step exactly like a handler fault: classified, persisted on the fault transition, the run reconciled. The S08-11 readiness gate already guarantees the referenced predecessor completed (and in topological order the output is there); the mapper does not trust that, it re-checks (defense in depth).
+
+No new cross-module compile edge: the mapper reads only the immutable `workflowdefinition` graph value objects the module's public API already hands across the `workflowexecution` boundary.
+
+### Why
+Until now a step's only inputs were its own `config` and the raw `upstreamOutputs` blob — every handler would have had to parse JSON and navigate maps by hand, with no contract about which names exist. The contract described the wiring; the platform now enforces it at two depths (activation + execution) and hands the handler a typed, resolved map. This is also the seam the `TOOL_CALL` handler consumes: its tool arguments can be wired from upstream outputs without the tool layer knowing about persistence.
+
+### Verification
+Unit, DB-free, no model/Kafka/system-clock dependency. `StepInputMapperTest` (13 tests): a node without wiring resolves empty; literals pass through; a reference resolves the declared output's value; a structured JSON value (a list of maps) is handed over whole — no navigation; every rejection carries its stable reason (`unknown-node`, `unknown-output`, `missing-output` for an absent document and for an absent name, `null-output`, `invalid-literal`, `invalid-reference` for a missing field and for an extra field); the resolved map is unmodifiable; null arguments throw. `StepInputResolverTest` (6 tests): the referenced document is parsed and resolved; a node without wiring parses nothing; an unreferenced (possibly legacy non-JSON) document is never parsed; a referenced document that is not well-formed JSON is rejected as `invalid-upstream-output`; a missing referenced document delegates to the mapper's `missing-output`; null arguments throw. `WorkflowGraphParserTest` gains a verbatim parse test and located issue paths for wrong-typed `input`/`output` fields; `WorkflowGraphValidatorTest` gains the linkage gate (accepts valid wiring and literals-only; rejects unknown node, self-reference, undeclared output, a target without declared outputs, and shape violations with their paths); `WorkflowGraphCodecTest` gains an input/output round-trip. `WorkflowWorkerTest` gains two recording-handler tests: resolved inputs (reference value + literal) reach the handler's `context.inputs()`; an unknown output path fails the step **before** the handler is invoked (recorded list empty), classified `validation` on the fault transition, the run reconciled to `FAILED`. `:apps:agentflow-app:check` green — compilation, all unit tests, spotless formatting, the OpenAPI contract gate and the architecture gates.
+
+### Docs
+- `CHANGELOG.md` — added the S08-12 bullet under `Unreleased → Added` (newest-first).
+- This file.
+
+### Follow-up
+The `TOOL_CALL` `StepHandler` (S08-13) consumes `context.inputs()` to build its tool arguments; the plan's S08-14 wires the bounded executor (S08-10) and the permission guard (S08-09) into that handler.
+
 ## S08-11 — The DAG readiness resolver: dependency resolution, failure/skip/cancel propagation and a deterministic execution order (S08-11).
 
 ### What changed

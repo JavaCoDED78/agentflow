@@ -77,6 +77,15 @@ public class WorkflowWorker implements DisposableBean {
   private final DagReadinessResolver readinessResolver = new DagReadinessResolver();
 
   /**
+   * The step input mapping seam (S08-12): resolves the node's {@code input} wiring against the
+   * completed predecessors' persisted outputs <em>before</em> the handler (and any tool) is
+   * invoked, so an unknown path, a type violation or a null value fails the step as a classified
+   * contract failure instead of reaching a call. Stateless, so a single instance serves the
+   * worker's whole lifetime.
+   */
+  private final StepInputResolver stepInputResolver = new StepInputResolver();
+
+  /**
    * The heartbeat scheduler: a single daemon thread that extends the run's lease while a step is
    * executing (S07-04, the gap-b fix). {@code null} when no {@link RunHeartbeatService} is wired —
    * a DB-less skeleton has no lease to extend — so the loop never starts a thread that writes
@@ -350,7 +359,7 @@ public class WorkflowWorker implements DisposableBean {
     // Ready steps run sequentially, in the resolver's deterministic topological order (S08-11) —
     // a parallel executor is a later, measured change.
     for (String stepKey : resolution.ready()) {
-      executeStep(tenantId, runId, stepKey, nodes.get(stepKey), outputs, owner, leaseEpoch);
+      executeStep(tenantId, runId, stepKey, nodes, outputs, owner, leaseEpoch);
       progressed = true;
     }
     return progressed;
@@ -373,7 +382,7 @@ public class WorkflowWorker implements DisposableBean {
       UUID tenantId,
       UUID runId,
       String stepKey,
-      WorkflowNode node,
+      Map<String, WorkflowNode> nodes,
       Map<String, String> outputs,
       UUID owner,
       int leaseEpoch) {
@@ -387,8 +396,14 @@ public class WorkflowWorker implements DisposableBean {
     // worker's {@code lease_epoch}. The task is cancelled the instant the step concludes.
     ScheduledFuture<?> leaseHeartbeat = startHeartbeat(tenantId, runId, owner, leaseEpoch);
     try {
+      WorkflowNode node = nodes.get(stepKey);
+      // S08-12: resolve the node's input wiring against the completed predecessors' persisted
+      // outputs BEFORE the handler (and any tool) is invoked. An unresolvable wiring — an unknown
+      // output path, a type violation, a null value — throws InputMappingException (an
+      // IllegalArgumentException, classified `validation`: permanent, never retried), so a broken
+      // wiring is rejected before any call, not mid-call.
       StepResult result =
-          resolve(node.type()).handle(stepContext(tenantId, runId, stepKey, node, outputs));
+          resolve(node.type()).handle(stepContext(tenantId, runId, stepKey, node, nodes, outputs));
       if (WorkflowStepState.SUCCEEDED.equals(result.outcome())) {
         transitionStep(tenantId, runId, stepKey, WorkflowStepState.SUCCEEDED, "step.succeeded");
         checkpointAdapter.saveCheckpoint(
@@ -451,7 +466,9 @@ public class WorkflowWorker implements DisposableBean {
   }
 
   /**
-   * Build the step execution context for one executed node (tenant-scoped; config is data).
+   * Build the step execution context for one executed node (tenant-scoped; config is data). The
+   * node's {@code input} wiring is resolved against the completed predecessors' persisted outputs
+   * here, before the handler sees the context (S08-12).
    *
    * @return the immutable {@link StepExecutionContext} the {@link StepHandler} receives
    */
@@ -460,9 +477,16 @@ public class WorkflowWorker implements DisposableBean {
       UUID runId,
       String stepKey,
       WorkflowNode node,
+      Map<String, WorkflowNode> nodes,
       Map<String, String> upstreamOutputs) {
     return new StepExecutionContext(
-        tenantId, runId, stepKey, node.type(), node.config(), upstreamOutputs);
+        tenantId,
+        runId,
+        stepKey,
+        node.type(),
+        node.config(),
+        stepInputResolver.resolve(node, nodes, upstreamOutputs),
+        upstreamOutputs);
   }
 
   /**

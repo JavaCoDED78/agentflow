@@ -591,6 +591,180 @@ class WorkflowWorkerTest {
     assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.CANCELLED);
   }
 
+  @Test
+  void resolves_step_inputs_from_predecessor_outputs_before_the_handler_runs() {
+    // S08-12: the downstream node's {node, output} wiring resolves against the upstream step's
+    // persisted output document, and the handler receives the resolved values in its context.
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("a", WorkflowStepState.PENDING);
+    stepState.put("b", WorkflowStepState.PENDING);
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "a",
+                    "NOOP",
+                    new LinkedHashMap<>(),
+                    Map.of(),
+                    Map.of("summary", "the produced summary")),
+                new WorkflowNode(
+                    "b",
+                    "RECORD",
+                    new LinkedHashMap<>(),
+                    Map.of("doc", Map.of("node", "a", "output", "summary"), "tone", "terse"),
+                    Map.of())),
+            List.of(edge("a", "b")));
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(tenant, runId))
+        .thenReturn(Map.of("a", "{\"summary\":\"the produced summary\"}"));
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    List<Map<String, Object>> recorded = new ArrayList<>();
+    StepHandler recording =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "RECORD".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            recorded.add(context.inputs());
+            return StepResult.succeeded("b-done");
+          }
+        };
+    WorkflowWorker worker = buildWorker(List.of(new DeterministicStepHandler(), recording));
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    assertThat(stepState.get("a")).isEqualTo(WorkflowStepState.SUCCEEDED);
+    assertThat(stepState.get("b")).isEqualTo(WorkflowStepState.SUCCEEDED);
+    // the handler saw the resolved wiring: the reference replaced with the upstream value, the
+    // literal passed through
+    assertThat(recorded).hasSize(1);
+    assertThat(recorded.get(0))
+        .containsEntry("doc", "the produced summary")
+        .containsEntry("tone", "terse");
+  }
+
+  @Test
+  void an_unknown_output_path_fails_the_step_before_the_handler_and_any_tool() {
+    // S08-12: a wiring that points at an output the upstream node does not declare is rejected
+    // with a classified contract failure (validation, permanent — never retried) before the
+    // handler is invoked.
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("a", WorkflowStepState.PENDING);
+    stepState.put("b", WorkflowStepState.PENDING);
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode(
+                    "a",
+                    "NOOP",
+                    new LinkedHashMap<>(),
+                    Map.of(),
+                    Map.of("summary", "the produced summary")),
+                new WorkflowNode(
+                    "b",
+                    "RECORD",
+                    new LinkedHashMap<>(),
+                    Map.of("doc", Map.of("node", "a", "output", "secret")),
+                    Map.of())),
+            List.of(edge("a", "b")));
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(tenant, runId))
+        .thenReturn(Map.of("a", "{\"summary\":\"the produced summary\"}"));
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    List<Map<String, Object>> recorded = new ArrayList<>();
+    StepHandler recording =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "RECORD".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            recorded.add(context.inputs());
+            return StepResult.succeeded("b-done");
+          }
+        };
+    WorkflowWorker worker = buildWorker(List.of(new DeterministicStepHandler(), recording));
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    // the upstream step completed; the downstream step failed as a contract violation
+    assertThat(stepState.get("a")).isEqualTo(WorkflowStepState.SUCCEEDED);
+    assertThat(stepState.get("b")).isEqualTo(WorkflowStepState.FAILED);
+    // the handler was never invoked: the wiring was rejected before any call
+    assertThat(recorded).isEmpty();
+    // the classifier produced the permanent `validation` class and the worker recorded it
+    ArgumentCaptor<String> errorClass = ArgumentCaptor.forClass(String.class);
+    verify(transitionService)
+        .transitionStep(
+            any(), any(), anyString(), any(), eq("step.failed"), errorClass.capture(), any());
+    assertThat(errorClass.getValue()).isEqualTo("validation");
+    // the run is reconciled to FAILED because a step permanently failed
+    ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
+    verify(transitionService, times(2))
+        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+    assertThat(runState.getAllValues().get(runState.getAllValues().size() - 1))
+        .isEqualTo(WorkflowRunState.FAILED);
+  }
+
   private static WorkflowNode node(String id, String type) {
     return new WorkflowNode(id, type, new LinkedHashMap<>());
   }
