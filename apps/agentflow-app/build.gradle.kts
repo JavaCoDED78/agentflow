@@ -8,7 +8,7 @@
 //
 // On purpose this task stays minimal: only the Boot plugin and starter-web are
 // wired so the artifact boots and stops on a clean machine. No Kafka consumers
-// and no AI calls yet (see DEVELOPMENT_PLAN.md, Sprint 1). Versions live in the
+// and no AI calls yet (see AGENTFLOW_ARCHITECTURE_AND_PLAN.md, Sprint 1). Versions live in the
 // version catalog (gradle/libs.versions.toml, S01-06); the Spring Boot BOM is
 // imported so its managed transitive versions win and nothing is re-pinned.
 

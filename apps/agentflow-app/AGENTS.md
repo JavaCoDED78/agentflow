@@ -7,7 +7,7 @@ The single Spring Boot artifact of the platform. One image, several runtime role
 - `api` — REST, authentication, validation, agent/workflow/document catalogue, run status. **Does not start Kafka consumers.**
 - `workflow-worker` — consumer of workflow events, step execution, retries, checkpoints, lease recovery. **Does not expose controllers as a public entry point.**
 - `ingestion-worker` — extract / chunk / embed / index. In the first release it may run as a worker profile of the same image.
-- Profile names and the mechanism that enables components per role are ⚠ decided during implementation (S07, S10, S15-06) and recorded here and in Helm values. A role enables/disables listeners and schedulers (outbox publisher, recovery) explicitly, not "everywhere by default".
+- Profile names and the per-role enabling mechanism are now implemented and recorded in Helm values: the `api` role does not start consumers, the `workflow-worker` role runs the step loop with lease recovery (`agentflow.worker.loop-enabled` / `agentflow.worker.recovery-enabled=true`), and `ingestion-worker` runs the extract / chunk / embed / index pipeline. Listeners and schedulers (outbox publisher, recovery) are enabled per role via `@ConditionalOnProperty` — `agentflow.worker.loop-enabled`, `agentflow.worker.recovery-enabled`, `agentflow.kafka.producer.enabled` — explicitly, not "everywhere by default" (outbox/inbox S06, worker S07).
 - Environments: `local`, `test`, `kubernetes`. `test`-only profiles (mock auth, fake AI provider) never reach `kubernetes`/production.
 
 ## Configuration
@@ -27,7 +27,19 @@ The single Spring Boot artifact of the platform. One image, several runtime role
 
 ## Tests and build
 
-- `./gradlew clean check` — unit + architecture (Modulith/ArchUnit) + formatting; fast tests without Docker.
-- `./gradlew integrationTest` — Testcontainers (PostgreSQL+pgvector, Kafka, Redis, Keycloak); the PostgreSQL image is the same as in Compose.
-- One formatter; wrong formatting breaks `check`. Java 25 toolchain is explicit, no implicit system JDK.
-- New module/package → add an `AGENTS.md` and update `docs/architecture/module-map.md`.
+Source sets (`apps:agentflow-app/build.gradle.kts`): `test` (unit, classes named `*Test`, DB-free, fast) and `integrationTest` (classes named `*IT`, Testcontainers on the real PostgreSQL/pgvector, Kafka, Redis and Keycloak images — the same images Compose pins). The `integrationTest` task does **not** run under `check`.
+
+- `./gradlew check` — unit + architecture (Modulith/ArchUnit boundary + no-cycles) + formatting (`spotlessCheck`) + OpenAPI contract gate; fast, no Docker.
+- `./gradlew integrationTest` — the full `*IT` Testcontainers suite.
+- One module at a time: `./gradlew :apps:agentflow-app:test --tests '*workflowexecution*'` and `./gradlew :apps:agentflow-app:integrationTest --tests '*workflowexecution*'`.
+- Architecture tests live in `src/test/java`; a boundary or cycle change breaks `check`, so fix the dependency, never exclude the test.
+- One formatter (Google Java Format via Spotless); wrong formatting breaks `check`. Run `./gradlew spotlessApply` after editing Java. Java 25 toolchain is explicit, no implicit system JDK.
+
+## New module checklist
+
+Adding a module `<module>` under `com.example.agentflow.<module>`:
+
+- Create the package (`domain` / `application` / `persistence` / `worker`, and `web` if it exposes REST) with its own `AGENTS.md`.
+- Own exactly one set of tables/repositories — one migration under `classpath:migrations`, named and commented with the owner — and expose a root-package public API; never import another module's repositories, entities or internal packages.
+- Update `docs/architecture/module-map.md` (ownership + allowed dependencies). Add an architecture test if a new boundary or dependency edge appears; an ADR if a rule above changes.
+- Log the change in `docs/devlog/sprint-XX-*.md` and add a `CHANGELOG.md` entry; update this `AGENTS.md` when the module adds commands, permissions or events.
