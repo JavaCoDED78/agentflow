@@ -4,6 +4,107 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-04 — The versioned prompt catalogue: prompt templates are bundled as fixed, hashed policy files, separated from untrusted user content, and every model attempt records the prompt version/hash it planned against.
+
+
+### What changed
+Sprint 9 builds the AI layer on top of the durable workflow engine. Before `S09-04` the domain could
+call the model (through the ports, `S09-01`) and the concrete adapter existed (`S09-02`), but there was
+no controlled way to ship the model's *policy*: prompts were ad-hoc strings with no version identity and
+no enforced split between the policy the backend controls and the untrusted content it forwards. `S09-04`
+introduces the **prompt catalogue** as the smallest complete change that closes that gap and satisfies
+the acceptance — *every model attempt indicates the prompt version/hash it planned against*.
+
+Three pieces make it up:
+
+- **Bundled, hashed templates.** The policy ships as a plain text resource at
+  [`resources/ai/planner.txt`](apps/agentflow-app/src/main/resources/ai/planner.txt). It is a *fixed
+  SYSTEM message*: the file content is the source of truth for the prompt hash, and the task plus any
+  retrieved document fragments are appended by the backend as a separate, untrusted USER message
+  (the prompt-injection surface).
+- **`PromptCatalogue`** (`com.example.agentflow.ai.prompt`, DB-free): loads every declared prompt from
+  {@code resources/ai/<name>.txt}, derives each {@code hash} as the SHA-256 of the file bytes, and
+  renders a prompt with {@code build(name, userContent)} into exactly
+  {@code [SYSTEM(policy), USER(userContent)]}. Policy and user content never share one message, so the
+  model can never read its own policy as user content. The catalogue never logs, hashes or otherwise
+  exposes the injected content, so the untrusted document content stays out of observability (invariant
+  8). A missing template throws at construction, so an incomplete {@code ai.prompt} declaration stops
+  the app booting (fail fast, like every other required configuration).
+- **`PromptVersion`** (`com.example.agentflow.ai.application`, the provider-agnostic port from `S09-01`):
+  the immutable contract record carrying {@code name / version / hash} — the observable surface of a
+  prompt. It deliberately holds *no* prompt text and *no* user/document content. A model attempt carries
+  one of these, so the prompt it planned against is recorded and traceable. The {@code version} is
+  assigned in configuration (bump whenever the template changes); the {@code hash} is derived from the
+  content, so a content change is always detectable even before the version is bumped.
+
+The catalogue is wired from the {@code ai.prompt} configuration through {@link
+com.example.agentflow.ai.prompt.AiPromptProperties AiPromptProperties}
+({@code @ConfigurationProperties} + {@code @Validated} + {@code @Valid}) and
+[{@link com.example.agentflow.ai.prompt.PromptConfiguration PromptConfiguration}]. Each entry declares a
+{@code name} and a human-assigned {@code version}; {@code PromptRef} validates both with {@code @NotBlank},
+so a blank {@code version} fails context startup as a {@code ConfigurationPropertiesBindException} — the
+project's typed-configuration idiom, the same path every other required property uses (`S01-17`). The
+template and declaration are pinned in
+[{@code application.yml}](apps/agentflow-app/src/main/resources/application.yml):
+{@code ai.prompt.prompts[0]: planner / version "1"}.
+
+
+### Why
+The model is an untrusted planner (`ADR-006`) and the injected task / retrieved-document fragments are
+prompt-injection content: the security-critical boundary is that the *policy* the model must obey ships
+from a controlled, versioned resource, never merged into — or indistinguishable from — the user input.
+Without a catalogue there was no way to (a) record *which* policy a given attempt planned against, which
+an audit / regression on a prompt change requires, or (b) make a prompt change detectable: a bare string
+edited in code is an unreviewed, unversioned, unhashed drift. Bumping a declared {@code version} on a
+content change, and deriving a {@code hash} over the file, turns a prompt edit into a diffable,
+traceable, fail-fast-configured change — and the SYSTEM/USER split keeps the policy from being smuggled
+back to the model as user content. The {@code PromptVersion} record lives in the `ai.application` port
+(S09-01) rather than a provider adapter, so the attempt's prompt identity is recorded without coupling
+the domain to a specific provider, and it carries no prompt or content so the per-attempt trace never
+leaks them (invariant 8).
+
+
+### Verification
+Unit and architectural, DB-free, no model / API key / Kafka / system-clock dependency:
+
+- **`PromptCatalogueTest`** (`ai.prompt`, 6 tests): loads the bundled `planner` template, asserts the
+  derived {@code hash} equals the real SHA-256 of the template file bytes (not fabricated), that
+  {@code build} produces exactly two messages with the SYSTEM content equal to the loaded template and the
+  USER content equal to the injected string, that blank user content and an unknown prompt are rejected,
+  and that an empty catalogue has no content.
+- **`AiPromptConfigurationTest`** (`ai.prompt`, 3 tests, {@code ApplicationContextRunner}): the
+  {@code ai.prompt.prompts[0]} binding produces a {@code PromptCatalogue} with the declared prompt and a
+  64-char hash; a blank {@code version} fails startup through the real {@code @Validated} binding path
+  ({@code ConfigurationPropertiesBindException}); an unknown prompt name fails startup with
+  "prompt template not found on classpath".
+- **`PromptVersionTest`** (`ai.application`, 7 tests): the record exposes exactly
+  {@code name / version / hash}, and rejects a null/blank name, a blank version, and a non-hex / wrong-
+  length hash.
+
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.prompt.PromptCatalogueTest'
+--tests 'com.example.agentflow.ai.prompt.AiPromptConfigurationTest'
+--tests 'com.example.agentflow.ai.application.PromptVersionTest'` green — **16 tests, 0 failures (JUnit
+XML checked)**; `:apps:agentflow-app:check` green (compilation, unit, architecture gates, spotless
+formatting, OpenAPI contract).
+
+
+### Docs
+- [`apps/agentflow-app/src/main/resources/application.yml`](apps/agentflow-app/src/main/resources/application.yml)
+  — the {@code ai.prompt.prompts} declaration (the pinned template + version).
+- [`apps/agentflow-app/src/main/resources/ai/planner.txt`](apps/agentflow-app/src/main/resources/ai/planner.txt)
+  — the bundled, versioned planner policy (the header documents the "bump version on change" rule).
+- [`apps/agentflow-app/AGENTS.md`](apps/agentflow-app/AGENTS.md)
+  — noted the bundled prompt templates with a version/hash under `ai.prompt`.
+- [`docs/security/secrets.md`](docs/security/secrets.md) — the S09-04 prompt-versioning hygiene rule
+  (versioned / hashable templates) recorded alongside the provider-secrets handling.
+- `CHANGELOG.md` — added the S09-04 bullet under `Unreleased → Added` (newest-first).
+- This file.
+
+
+### Follow-up
+Define the Planner's response schema (`S09-05`); add the `PlannerService` (`S09-06`), which consumes
+`ChatModelPort` and records the `PromptVersion` on the attempt; apply the validation gate after the
+Planner (`S09-07`) and the bounded repair policy (`S09-08`).
 ## S09-01 — The AI provider port: the `ai` domain calls a neutral contract, never a provider DTO (S09-01).
 
 

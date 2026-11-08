@@ -135,4 +135,33 @@ class AiProviderPortContractTest {
     assertThatThrownBy(() -> new EmbeddingResponse("", List.of(new float[] {1f}), null))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void chat_request_carries_its_prompt_version() {
+    PromptVersion version = new PromptVersion("planner", "1", "a".repeat(64));
+    ChatRequest request =
+        new ChatRequest("openai", List.of(new ChatMessage(MessageRole.USER, "hi")), null, version);
+
+    assertThat(request.promptVersion()).isSameAs(version);
+  }
+
+  @Test
+  void chat_request_allows_a_null_prompt_version_for_embedding_calls() {
+    ChatRequest request =
+        new ChatRequest("openai", List.of(new ChatMessage(MessageRole.USER, "hi")));
+
+    assertThat(request.promptVersion()).isNull();
+  }
+
+  @Test
+  void chat_request_rejects_a_blank_prompt_version_name() {
+    assertThatThrownBy(
+            () ->
+                new ChatRequest(
+                    "openai",
+                    List.of(new ChatMessage(MessageRole.USER, "hi")),
+                    null,
+                    new PromptVersion("   ", "1", "a".repeat(64))))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
 }

@@ -1,5 +1,6 @@
 package com.example.agentflow;
 
+import com.example.agentflow.ai.prompt.AiPromptProperties;
 import com.example.agentflow.config.AgentFlowProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -14,7 +15,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * DEVELOPMENT_PLAN.md, Sprint 1). Typed configuration is registered in S01-17.
  */
 @SpringBootApplication
-@EnableConfigurationProperties(AgentFlowProperties.class)
+@EnableConfigurationProperties({AgentFlowProperties.class, AiPromptProperties.class})
 @EnableScheduling
 public class AgentflowApplication {
 

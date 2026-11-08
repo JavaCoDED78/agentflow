@@ -84,6 +84,17 @@ agentflow:
   #   producer:
   #     enabled: false
 
+# Bundled prompt templates and their versions (S09-04). Each prompt is rendered by the
+# ai.prompt PromptCatalogue into a fixed SYSTEM policy message plus a single USER message
+# carrying the untrusted injected content. The template file lives at resources/ai/<name>.txt;
+# its hash is derived from the file content, so editing the template is always detectable.
+# Bump the version whenever the template content changes.
+ai:
+  prompt:
+    prompts:
+      - name: planner
+        version: "1"
+
 # Health endpoints (S01-18).
 #
 # Boot 4.x exposes web endpoints through an allow-list
