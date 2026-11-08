@@ -16,6 +16,7 @@ Documentation as code: current, verifiable, one owner per topic. General rules a
 | `observability/` | standards, metric catalogue, SLOs |
 | `runbooks/` | operator actions for alerts and failures |
 | `load-tests/` | k6 scenarios, reports and environment description |
+| `devlog/` | per-sprint engineering logs (`sprint-XX-*.md`) — what changed, why, and how it was verified |
 | `usage-and-costs.md` | tokens, prices, budgets, audit event catalogue |
 
 ## Rules
@@ -66,12 +67,11 @@ The rules above are the *what*. This section is the *how*.
 
 ### Documentation currency in PR
 
-- **Documentation as code:** code, docs and contracts change in one PR. A new
+- **Documentation as code** (see the Rules above): code, docs and contracts change in one PR. A new
   module/package/table/metric/permission/event/tool updates its owning doc, the
   matching `contracts/`, and the relevant `AGENTS.md`.
 - **One source of truth:** link to a document instead of copying it.
-- **No false markers:** remove the ⚠ `planned` marker once a document is
-  created, and never mark as done what is not in the code.
+- **No false markers:** ⚠ marks a `planned` item that is not yet backed by code — remove it (or confirm it against the code) in the same change that implements the doc, and never mark as done what is not in the code. This matches the ⚠ convention in the root `AGENTS.md`.
 - The PR template requires a `Documentation` section (README / CHANGELOG /
   docs / contracts updated or `N/A`) and a `Verification` section with the
   real PASS / FAIL / not-run outcome — never a build reported as passing

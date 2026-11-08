@@ -1,7 +1,7 @@
 // Root settings for the AgentFlow modular monolith (S01-04).
 //
 // Modules are added to the `include(...)` list incrementally as they are
-// created (see DEVELOPMENT_PLAN.md, Sprint 1).
+// created (see AGENTFLOW_ARCHITECTURE_AND_PLAN.md, Sprint 1).
 //
 // Plugin versions, dependency versions and repositories are centralized in the
 // version catalog gradle/libs.versions.toml (S01-06). Modules reference them via

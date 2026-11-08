@@ -2,11 +2,15 @@
 
 AgentFlow is a platform for building and reliably running AI workflows. Its main deliverable is a small in-house durable workflow engine: it survives worker restarts, tolerates duplicate message delivery, enforces tenant isolation, caps the cost of AI calls, and explains execution through traces, metrics and an audit trail. It is **not** a chat wrapper around an LLM.
 
-The source of truth for architecture and backlog is `DEVELOPMENT_PLAN.md` (tasks `S01-01 … S16-19`, ADR-001…007). This file is a digest of rules for the agent. Nested `AGENTS.md` files (app → module → package) refine it: on conflict the file closest to the code being changed wins, but the "Invariants" section is never weakened anywhere.
+The source of truth for architecture and backlog is `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` (tasks `S01-01 … S16-19`, ADR-001…ADR-014). This file is a digest of rules for the agent. Nested `AGENTS.md` files (app → module → package) refine it: on conflict the file closest to the code being changed wins, but the "Invariants" section is never weakened anywhere.
+
+## Notation
+
+⚠ marks an **unconfirmed** item — a `planned` entry, an assumption, or a marker not yet backed by code in the repo. One meaning across every `AGENTS.md`: anything carrying ⚠ is not verified; resolve it (code / ADR / README) or remove it before merging. `S##-##` is a plan task id from `AGENTFLOW_ARCHITECTURE_AND_PLAN.md`.
 
 ## Required skill: `agentflow-sprint-execution`
 
-When implementing any task from the plan (`S##-##` in `DEVELOPMENT_PLAN.md`), Hermes **must** apply the skill `agentflow-sprint-execution` (`agentflow-sprint-execution/SKILL.md`): read its `SKILL.md` before starting work and follow it throughout the implementation of the task. This applies to every plan task, including P1/P2 and small ones. If the skill is unavailable or fails to load, stop and report that instead of implementing the task without it.
+When implementing any task from the plan (`S##-##` in `AGENTFLOW_ARCHITECTURE_AND_PLAN.md`), Hermes **must** apply the skill `agentflow-sprint-execution` (`C:/Users/andro/AppData/Local/hermes/skills/software-development/agentflow-sprint-execution/SKILL.md`): read its `SKILL.md` before starting work and follow it throughout the implementation of the task. This applies to every plan task, including P1/P2 and small ones. If the skill is unavailable or its body is lost to context compression (`[SKILL_PRUNED]`), stop and report it — do not implement the task without the skill. The fallback that reads the plan files directly is `agentflow-skill-pruned-fallback` (`C:/Users/andro/AppData/Local/hermes/skills/software-development/agentflow-skill-pruned-fallback/SKILL.md`).
 
 ## Stack (fixed by the plan)
 
@@ -15,17 +19,17 @@ When implementing any task from the plan (`S##-##` in `DEVELOPMENT_PLAN.md`), He
 - PostgreSQL 18 (+ pgvector, FTS), Kafka 4.x (KRaft), Redis 8 (cache/rate-limit only), Garage (S3), Keycloak 26.x, Tika + PDFBox.
 - Micrometer + OpenTelemetry (OTLP) → Collector → Prometheus / Loki / Tempo → Grafana.
 - JUnit 6 (BOM-managed by Spring Boot 4.1.1; the Sprint 1 plan's "JUnit 5" is superseded — see `CHANGELOG.md`), AssertJ, Mockito, Testcontainers 2.x, k6.
-- Spring MVC + **one** persistence approach (S03-08) + **one** migration tool (Flyway by default). Do not introduce WebFlux, R2DBC, JPA and jOOQ side by side; virtual threads only after measurements.
+- Spring MVC + **one** persistence approach (S03-08) + **one** migration tool (Flyway — `ADR-009`). Do not introduce WebFlux, R2DBC, JPA and jOOQ side by side; virtual threads only after measurements.
 - Do not override Spring Framework / Security / Kafka client / Jackson versions on top of the BOM without an ADR. Stable releases only. No `latest` in Compose or Kubernetes manifests.
 
 ## Repository layout
 
 ```text
 apps/agentflow-app/        one Spring Boot artifact, several runtime roles (api / workflow-worker / ingestion-worker)
-apps/agentflow-mcp-lab/    optional isolated MCP demo server (P1)
+apps/agentflow-mcp-lab/    PLANNED (P1) — isolated MCP demo server; not created yet (apps/ currently holds agentflow-app only). Remove or confirm when implemented.
 infra/                     compose, docker, helm, argocd, observability/* (everything as code)
 contracts/                 openapi/, events/json-schema/, asyncapi/
-docs/                      adr/, runbooks/, threat-model/, load-tests/, architecture/, security/ …
+docs/                      adr/, architecture/, runbooks/, devlog/, threat-model/, load-tests/, security/ …
 scripts/                   smoke-local.sh and other scripts
 ```
 
@@ -33,17 +37,18 @@ Do not multiply Gradle subprojects: modules are packages inside `agentflow-app`.
 
 ## Commands
 
-Names come from the plan (§19) — verify against the actual `build.gradle.kts` and README; commands in the README must be exercised by CI or a smoke script.
+Command names come from `README.md` and `build.gradle.kts` — verify against them before using; any command documented in the README must actually be exercised by CI or a smoke script. The app is one Gradle subproject (`apps:agentflow-app`); run the tasks below from the repo root.
 
 ```bash
-./gradlew clean check          # compile, unit, architecture, formatting — mandatory before a PR
-./gradlew integrationTest      # Testcontainers (real PostgreSQL/Kafka/Redis/Keycloak)
-./gradlew bootRun              # run the API locally
-./gradlew flywayMigrate        # migrations (if Flyway is chosen)
-./gradlew composeUpCore | composeUpObservability | composeUpFull | composeDown
+./gradlew check                      # compile + unit + architecture (Modulith/ArchUnit) + formatting (spotless) + OpenAPI gate — mandatory before a PR
+./gradlew integrationTest            # Testcontainers (real PostgreSQL/pgvector, Kafka, Redis, Keycloak)
+./gradlew :apps:agentflow-app:bootRun --args='--spring.profiles.active=local'   # run the API locally
+./gradlew :apps:agentflow-app:test --tests '*workflowexecution*'   # one module's unit tests
+./gradlew flywayMigrate              # apply classpath:migrations to the configured DB
+docker compose --file infra/compose/docker-compose.yml --profile core up -d   # base stack (PostgreSQL+pgvector, Redis, Garage)
 ```
 
-Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, `full`.
+Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, `full`. Run `docker compose --file infra/compose/docker-compose.yml --profile <profile> up -d`; tear down with `down` (add `-v` to drop volumes). `messaging`/`full` need a one-time `KAFKA_CLUSTER_ID`, provided by the local `infra/compose/.env`.
 
 ## Application modules (`com.example.agentflow.<module>`)
 
@@ -71,9 +76,10 @@ Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, 
 - Enforced by Spring Modulith / ArchUnit inside `./gradlew check`. Do not "fix" a failing test with exclusions — fix the dependency.
 - Every table and business rule has exactly one owning module; other modules reach its data only through its public API.
 
-## Package layout inside a module ⚠ (derived from the plan, see "Open decisions")
+## Package layout inside a module
 
-- The module's root package is its public API. Sub-packages are internal.
+Established in code — the module's root package is its public API; sub-packages are internal:
+
 - `domain` — pure model and invariants, no Spring/JDBC/Kafka. `application` — use cases, transactions, outbound ports. `web` — controllers and API DTOs. `persistence` — repositories, mappers, SQL. `worker` — Kafka listeners. Anything else — by feature.
 - Controllers and listeners call only application services; they never change status directly. API DTO ≠ persistence object.
 
@@ -104,7 +110,7 @@ Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, 
 
 - A task is `S##-##` with priority P0/P1/P2. Do not start P2 while P0 is unstable; never trade away tenant isolation, recovery or security tests. Do not widen scope (§1.3: no billing, arbitrary code, multi-region, UI panel).
 - A PR solves one problem and lists verification commands; the application stays runnable.
-- Definition of Done: compiles on Java 25 + formatter; unit + negative test; integration test for DB/Kafka/Redis/security; contracts (OpenAPI / JSON Schema / AsyncAPI) updated; errors classified; metrics/logs free of secrets and high cardinality; no new tenant/security bypass; ADR when a trade-off changes; relevant docs + `README.md` + `CHANGELOG.md` (`Unreleased`, or `N/A` with a reason); `./gradlew clean check` green; infra change verified from a clean environment.
+- Definition of Done: compiles on Java 25 + formatter; unit + negative test; integration test for DB/Kafka/Redis/security; contracts (OpenAPI / JSON Schema / AsyncAPI) updated; errors classified; metrics/logs free of secrets and high cardinality; no new tenant/security bypass; ADR when a trade-off changes; relevant docs + `README.md` + `CHANGELOG.md` (`Unreleased`, or `N/A` with a reason); `./gradlew check` green; infra change verified from a clean environment.
 - Documentation as Code: code, docs and contracts change in one PR. A new module/package/table/metric/permission/event/tool → update its owner (`docs/`, `contracts/`, this set of `AGENTS.md`).
 - An ADR is needed for: a new dependency between modules, bypassing the BOM, changing the persistence/migration approach, abandoning an invariant, a new node type or risk class.
 
@@ -112,12 +118,17 @@ Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, 
 
 Business logic in `common`; auth bypass and mock principals outside a test-only config; the fake AI provider in production/kubernetes profiles; arbitrary code in a workflow/tool; dynamic tool registration by the LLM or a user; `tenantId` from external input as an authorization source; metric labels carrying IDs; secrets in examples and logs; manual DB edits instead of a runbook; manual dashboard edits in the Grafana UI (provisioning from Git only); `latest` tags.
 
-## Open decisions ⚠
+## Open decisions
 
-The plan fixes the modules but not everything below. These spots in `AGENTS.md` are assumptions; confirm via ADR and remove the ⚠ marker.
+Most items that were open when this file was drafted are now settled; those ⚠ markers are removed. The genuinely open items stay here and are closed with an ADR, code, or a README/module-map entry.
 
-1. Sub-package layout inside modules, and the base package `com.example.agentflow` (an example in the plan).
-2. Owners of data/logic not named in §4.2: approvals and idempotency keys → `workflowexecution`; DLQ → `messaging.dlq`; `tool_definitions` → `toolexecution`; redaction → `common.redaction`; global Problem Details handler → `common.error`.
-3. How `workflowexecution` calls toolexecution / ai / knowledgebase without creating cycles: proposed an SPI `StepHandler` in `workflowexecution.executor`, with implementations in the respective modules.
-4. Permission catalogue: the list from S04-04 is used; the example scopes in §11.1 (`knowledge:read`, `tenant:admin`) are illustrative.
-5. Choice of persistence approach (S03-08), migration tool (S03-01).
+### Settled (⚠ removed)
+
+- **Sub-package layout and base package** `com.example.agentflow` — established in code: `domain` (pure model), `application` (use cases, ports), `web` (controllers + DTOs), `persistence` (repositories, SQL), `worker` (Kafka listeners).
+- **Persistence approach and migration tool** — Spring Data JDBC with explicit, tenant-filtered SQL (`ADR-009`); forward-only Flyway under `classpath:migrations`.
+- **Cross-module calls without cycles** — the `StepHandler` SPI (`workflowexecution.domain.StepHandler`), each handler implemented in its owning module (e.g. `workflowexecution.application.DeterministicStepHandler`, plus the tool/ai/knowledgebase handlers).
+
+### Still open (confirm via ADR / README / module-map)
+
+- **Owners of data/logic not named in §4.2:** approvals and idempotency keys → `workflowexecution`; DLQ → `messaging`; `tool_definitions` → `toolexecution`; redaction → `common`; global Problem Details handler → `common.error`. Assignments follow the plan and `docs/architecture/module-map.md`.
+- **Permission catalogue:** the list from S04-04 is used; the example scopes in §11.1 (`knowledge:read`, `tenant:admin`) are illustrative, not exhaustive.

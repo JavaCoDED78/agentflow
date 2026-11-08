@@ -6,7 +6,7 @@
 //  - the Spring Boot application artifact is wired up in S01-07.
 //
 // Common per-module configuration (repositories, shared plugin options) is
-// added here as modules are introduced. See DEVELOPMENT_PLAN.md, Sprint 1.
+// added here as modules are introduced. See AGENTFLOW_ARCHITECTURE_AND_PLAN.md, Sprint 1.
 
 import java.security.MessageDigest
 
