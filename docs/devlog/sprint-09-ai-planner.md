@@ -4,6 +4,68 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-05 — The structured plan schema: the Planner's response is a typed, schema-constrained plan, not a free-text blob.
+
+### What changed
+Before `S09-05` the domain could call the model (ports `S09-01`, adapter `S09-02`) but there was no
+typed shape for the model's *response*: the next task (`S09-06`) will ask the model for a structured
+plan through `ChatOptions.outputSchemaJson`, and an untyped blob is exactly where an untrusted planner
+can smuggle a capability or a command (invariant 7 / `ADR-006`). `S09-05` defines that schema as three
+pure, immutable domain value types in the new package `com.example.agentflow.ai.domain.plan`:
+
+- **`PlanStep`** — one step of a plan. Its component set is exactly `id / type / toolId / dependsOn /
+  arguments`. There is nowhere else for anything to live, so there is nowhere for a chain-of-thought,
+  reasoning, free-text instructions or an executable payload to hide. `type` and `toolId` are plain
+  `String`s, never the `workflowdefinition` node type or a `toolexecution` descriptor reference — the
+  registries live in modules the `ai` module is *forbidden* to compile-depend on (the boundary gate),
+  so the value type cannot reach them and the membership check is the validation gate's (`S09-07`)
+  job, never a model assertion. `dependsOn` and `arguments` are optional: a `null` defaults to an
+  empty, *unmodifiable* container (defensively copied, so the caller's mutable input never leaks in),
+  while `id` and `type` are mandatory (blank fails read-fast). `arguments` is `Map<String, Object>` —
+  structured *data*, never code.
+- **`PlannerPlan`** — `List<PlanStep> steps`; its component set is exactly `steps`. The canonical
+  constructor enforces structural well-formedness the validation gate need not re-check: unique step
+  ids, no dangling `dependsOn`, no self-dependency. Acyclicity, node/tool membership, the `PlanLimits`
+  bounds, the budget and the tenant scope are the gate's further, context-dependent checks (it owns the
+  cross-module registry and permissions the value type lacks).
+- **`PlanLimits`** — the step bound (`maxSteps`) and serialized-output bound (`maxOutputSize`). Both
+  are *system-defined*, never model-set, and a non-positive component normalizes back to the
+  conservative `DEFAULT` fallback (`agentflow.planner.*` is meant to override in a later task).
+
+All three are pure (no Spring / I/O, read neither time nor randomness, invariant 10) and compile
+against `ai` alone, so the module boundary is unchanged.
+
+### Why
+The value type is deliberately *not* a full validator: it checks only what is true of the type
+regardless of the running system (shape, uniqueness, well-formed wiring, non-positive bounds). Everything
+that needs the closed node vocabulary, the registered tools, the configured budget, or the caller's
+tenant — the real security checks — is left to the `ValidationGate` (`S09-07`), which is the only place
+with the cross-module registry and the verified security context. Splitting it this way keeps the value
+type testable without a registry or a security context, and keeps every authorization decision on the
+backend (invariant 7: the model is never an authorization authority).
+
+### Verification
+Three DB-free unit suites (17 tests): `PlanStepTest` (6), `PlannerPlanTest` (8), `PlanLimitsTest` (3)
+— run with
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.domain.plan.*'`, all green:
+shape + component-set invariants, `null`/blank rejection, unmodifiable containers, defensive copy,
+duplicate/dangling/self-dependency rejection, forward-reference acceptance, and bound normalization;
+`spotlessJavaCheck` green (google-java-format); the module-boundary gate `ArchitectureBoundaryTest`
+(really `com.example.agentflow.ArchitectureBoundaryTest`, `@AnalyzeClasses`) green against the new code —
+`ai` compiles only against `ai`, `toolexecution`, `workflowexecution`, and the new classes introduce no
+cross-module edge. The full fast gate `./gradlew :apps:agentflow-app:check` is green (845 tests, 0
+failures).
+
+### Docs
+`CHANGELOG.md` (`Unreleased → Added`) records the schema; the task type vocabulary is the closed set the
+gate enforces (S09-07).
+
+### Follow-up
+`S09-06`: add `PlannerService`, which consumes `ChatModelPort` for structured output and maps the model
+response into `PlannerPlan` (the model-to-DTO boundary type `PlannerPlanDto` in `module-api.md` lives
+here); `S09-07`: the `ValidationGate` (node/tool membership, DAG acyclicity, `PlanLimits`, budget,
+tenant); `S09-08`: bounded repair of a malformed plan.
+
 ## S09-04 — The versioned prompt catalogue: prompt templates are bundled as fixed, hashed policy files, separated from untrusted user content, and every model attempt records the prompt version/hash it planned against.
 
 
