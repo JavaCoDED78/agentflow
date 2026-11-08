@@ -90,6 +90,63 @@ prompts (`S09-04`) and define the Planner's response schema (`S09-05`); add the 
 (`S09-06`), which consumes `ChatModelPort`; cap the Planner's step/time/cost budget.
 
 
+## S09-03 — Close the provider secrets: the OpenAI API key is injected, opt-in, masked, and guarded by a canary so it never reaches Git, logs, diagnostics, or the image build.
+
+
+### What changed
+`S09-03` closes the three ways the OpenAI provider API key could leak: into Git / build, into the
+logs / stack traces / diagnostic endpoints, and into the image build. The key is read from
+`agentflow.ai.provider.openai.api-key` (falling back to `OPENAI_API_KEY`) by the opt-in
+[`OpenAiChatModelConfiguration`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/OpenAiChatModelConfiguration.java)
+(`@ConditionalOnProperty agentflow.ai.provider=openai`) — with no provider profile there is no
+`ChatModel` bean and no key on the classpath, so the core app boots exactly as before. It is masked
+by [`SecretRedactingValueMasker`](apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
+(registered as the `<valueMasker>` in [`logback-spring.xml`](apps/agentflow-app/src/main/resources/logback-spring.xml))
+so a key embedded in a message is masked before stdout; only `health` and `info` are exposed over the
+Actuator ([`application.yml`](apps/agentflow-app/src/main/resources/application.yml)), so `env` /
+`configprops` cannot be read back; and unhandled errors go through the `internal`/500 path
+(`GlobalExceptionHandler`) without the raw exception message. The image is not built yet (no
+Dockerfile in the repository); the Compose / Helm manifests inject secrets through runtime environment
+placeholders, never build args.
+
+The acceptance — *a canary API key is not found in Git, logs, or diagnostic endpoints* — is pinned by
+a planted canary in exactly one place,
+[`src/test/resources/secrets/canary-openai-key.txt`], read at test time (never in a source file):
+
+- `CanaryLeakScanTest` (`ai.security`, DB-free): `git ls-files` over the whole tree, every path except
+  the fixture scanned and asserted canary-free; plus the canary is masked by the real
+  `SecretRedactingValueMasker` (whole-value and embedded in a larger message).
+- `ProviderSecretsActuatorTest` (`ai.security`, `@SpringBootTest`, no provider configured): the canary
+  is not echoed by `/health` or `/info`, and `/env` / `/configprops` are closed.
+
+
+### Why
+`S09-02` wired the key through the opt-in provider config, but the security-critical question — *where
+does the key actually stop leaking?* — was still open. The model is an untrusted planner (`ADR-006`)
+and invariant 8 says a secret never lands in a row, log, metric, trace, Kafka payload or prompt: the
+key had to be proven, not just configured. The cheapest durable proof is a canary: plant a unique fake
+key; if it ever appears in Git, logs, or the diagnostic surface, the regression fails — which is
+exactly what happens when a real key is committed by mistake.
+
+
+### Verification
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.security.CanaryLeakScanTest' --tests 'com.example.agentflow.ai.security.ProviderSecretsActuatorTest'`
+— green (6 tests: 4 + 2). The scan boots the app on the `test` profile with no provider, so it needs
+no model, API key or network. `:apps:agentflow-app:check` green (compilation, unit, architecture
+gates, spotless formatting, OpenAPI contract).
+
+
+### Docs
+- `docs/security/secrets.md` — the secrets handling note: where the key lives, local storage, the logs
+  / stack-trace / Actuator hygiene, the build-arg rule, the canary guard, and the acceptance.
+- `CHANGELOG.md` — added the S09-03 bullet under `Unreleased → Security` (newest-first).
+- This file.
+
+
+### Follow-up
+Version the prompts (`S09-04`); define the Planner's response schema (`S09-05`); add the
+`PlannerService` (`S09-06`); cap the Planner's step/time/cost budget.
+
 ## S09-02 — The concrete AI provider adapter behind the port: a Spring AI (OpenAI) implementation of `ChatModelPort`.
 
 
