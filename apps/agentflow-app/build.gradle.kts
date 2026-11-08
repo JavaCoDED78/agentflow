@@ -26,6 +26,14 @@ dependencies {
     // Boot 4.1.1 + Spring AI 2.0.1 verified together in S01-08 (uniform
     // Spring Framework 7.0.9, Jackson 3.1.5) — see dependency-management.md.
     implementation(platform(libs.spring.ai.bom))
+    // Concrete AI provider adapter (S09-02): the ONLY code that imports a provider SDK. It lives
+    // behind the neutral ChatModelPort (S09-01), so the domain never depends on a provider DTO.
+    // The OpenAI starter is BOM-managed (version from spring-ai-bom) and opt-in: the Spring AI
+    // beans are created only by a @ConditionalOnProperty config (agentflow.ai.provider=openai),
+    // so the core app boots without a provider profile and without any AI key. The API key and
+    // base URL come from the environment / secrets (application.yml, docs/ai/provider.md), never
+    // hardcoded. See ADR-014.
+    implementation(libs.spring.ai.openai)
     implementation("org.springframework.boot:spring-boot-starter-web")
     // Bean Validation (hibernate-validator) so @Validated on @ConfigurationProperties
     // actually fails startup on a missing required value (S01-17). Without it the
