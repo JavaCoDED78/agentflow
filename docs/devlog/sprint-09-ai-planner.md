@@ -4,6 +4,67 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-10
+
+### What changed
+- Pre-call model-budget guard. [`ModelBudget`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ModelBudget.java)
+  (`ai.application`) is a pure, in-memory value that **reserves before the call**: `reserve()`
+  charges the conservative (upper-bound) per-call estimate against the committed `reserved` headroom
+  and throws [`InsufficientBudgetException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/InsufficientBudgetException.java)
+  when the reservation would exceed the `limit`, so the caller never sends a model request against
+  an exhausted budget. `settle(...)` on the [`ModelBudgetReservation`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ModelBudgetReservation.java)
+  handle reconciles the reservation *without ever accumulating* (`reserved = reserved − estimated
+  + actual`, floored at 0): a reservation is committed at most once, and `settle(null)` (the price
+  catalogue is not yet metered, `S11`) leaves it unchanged — idempotent, never a leak. The
+  exception carries `available` / `limit` / `currency` and is thrown *before* the request is sent.
+- [`PlannerService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java)
+  now depends on `@Autowired(required = false) ModelBudget budget` instead of the S09-08
+  `Supplier<Boolean> budgetAvailable` predicate: `propose` reserves before each attempt and settles
+  after the model reports back. The guard is opt-in — a missing bean is "no budget guard" and the
+  Planner still runs standalone; a shared production bean makes the reservation the running
+  commitment. The S09-08 repair budget check is now this same reserve seam evaluated *before every
+  retry*, so a budget spent by the initial call blocks the repair too.
+
+### Why
+- The S09-08 repair gate re-checked the budget *before every retry* as a `Supplier<Boolean>`
+  predicate; S09-10 makes that a real reserve-with-the-funds guard, so an over-budget plan fails
+  loud at call time and never burns the model on a call that is doomed to fail. The refusal is
+  permanent and never retried (invariant 12), and no budget figure or id lands in a metric label or
+  a log (invariant 9) — monetary amounts travel only in the exception.
+
+### Verification
+- Two DB-free suites (23 tests, JUnit XML checked, all green):
+  `ModelBudgetTest` (10 — reserve uses the conservative estimate when the price is unknown, a
+  reserve that fits within the limit succeeds, a conservative estimate that overdraws a small limit
+  blocks and commits nothing before the refusal, a follow-up reserve blocks once the budget is
+  fully committed, `settle(null)` leaves the reservation committed, `settle(actual)` reconciles the
+  reserved amount, `settle(null)` is idempotent, the constructor rejects a non-positive limit and a
+  null currency, a negative conservative estimate, a negative reserve estimate);
+  `PlannerServiceTest` (13 — the budget seam is now a `ModelBudget`, the initial call is blocked
+  when the budget is exhausted (`calls == 0`), a retry is blocked when the budget was spent by the
+  initial call (`calls == 1`), a healthy budget does not interfere with the S09-08 bounded retry
+  (`calls == 2`); the obsolete S09-08 budget test is replaced by these three).
+- `./gradlew :apps:agentflow-app:check` green — 946 tests, 0 failures, 0 errors; the architecture
+  boundary / no-cycles gates ran (`tests>0, skipped=0` in the JUnit XML) and stay green. The
+  `ai → usage` compile edge is still forbidden (PackageDependencyGraphTest green), which is why the
+  durable reservation / metering / at-least-once settlement lives in `usage` (`S12`) and this task
+  owns only the pre-call guard.
+
+### Docs
+- `CHANGELOG.md`: S09-10 entry under `Unreleased / Added` (newest-first).
+- `docs/domain-glossary.md`: "Model budget guard" row under the AI orchestration section; "Cost
+  budget" row updated for the two-layer ownership (pre-call `ai` guard vs durable `usage`
+  reservation / settlement).
+
+### Follow-up
+- Cost-accurate settlement (the metered `actual` from the price catalogue, `S11`) and the durable,
+  at-least-once, deduplicated-by-record-id reservation / reconciliation are `S12` in `usage`; this
+  in-memory guard is its pre-call mirror. The exception's `ErrorClass` mapping is added when the
+  planner is integrated into the step / HTTP path — `workflowexecution` reaches `ai` only through
+  the runtime `StepHandler` SPI (never a compile edge), so the owning `ai` module maps its own
+  domain exception.
+
+
 ## S09-09
 
 ### What changed

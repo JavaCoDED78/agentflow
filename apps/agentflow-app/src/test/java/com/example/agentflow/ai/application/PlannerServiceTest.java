@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Currency;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.Test;
 class PlannerServiceTest {
 
   private static final String PLANNER_TEMPLATE = "PLANNER_POLICY_v1";
+  private static final Currency CURRENCY = Currency.getInstance("USD");
 
   @Test
   void propose_maps_a_successful_response_into_a_plan_with_metadata() {
@@ -40,7 +43,7 @@ class PlannerServiceTest {
                 "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}",
                 "stop",
                 new ChatUsage(10, 5, 15));
-    PlannerService planner = new PlannerService(catalogue(), "gpt-plan-1", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt-plan-1", port, null);
 
     PlannerPlanResult result = planner.propose("book a table", List.of("calc"));
 
@@ -60,7 +63,7 @@ class PlannerServiceTest {
           return new ChatResponse(
               "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", null, null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", recording, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", recording, null);
 
     planner.propose("compute 2 + 2", List.of("calc", "report"));
 
@@ -81,7 +84,7 @@ class PlannerServiceTest {
 
   @Test
   void propose_fails_loud_when_no_provider_is_configured() {
-    PlannerService planner = new PlannerService(catalogue(), "gpt", null, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", null, null);
 
     assertThatThrownBy(() -> planner.propose("task", List.of()))
         .isInstanceOf(IllegalStateException.class)
@@ -91,7 +94,7 @@ class PlannerServiceTest {
   @Test
   void propose_refusal_with_null_content_is_a_parse_signal_not_a_plan() {
     ChatModelPort port = request -> new ChatResponse("gpt", null, "stop", null);
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     PlannerPlanParseException failure = null;
     try {
@@ -108,7 +111,7 @@ class PlannerServiceTest {
   @Test
   void propose_blank_task_is_a_contract_error() {
     ChatModelPort port = request -> new ChatResponse("gpt", "{\"steps\":[]}", null, null);
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     assertThatThrownBy(() -> planner.propose("   ", List.of()))
         .isInstanceOf(IllegalArgumentException.class);
@@ -125,7 +128,7 @@ class PlannerServiceTest {
               : new ChatResponse(
                   "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", "stop", null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     PlannerPlanResult result = planner.propose("task", List.of("calc"));
 
@@ -145,7 +148,7 @@ class PlannerServiceTest {
           }
           return new ChatResponse("gpt", "{\"steps\":[]}", "stop", null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     PlannerPlanResult result = planner.propose("task", List.of());
 
@@ -168,7 +171,7 @@ class PlannerServiceTest {
               : new ChatResponse(
                   "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", "stop", null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     PlannerPlanResult result = planner.propose("task", List.of("calc"));
 
@@ -186,7 +189,7 @@ class PlannerServiceTest {
           calls.incrementAndGet();
           return new ChatResponse("gpt", "{ not valid json", null, null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     PlannerPlanParseException failure = null;
     try {
@@ -209,7 +212,7 @@ class PlannerServiceTest {
           calls.incrementAndGet();
           return new ChatResponse("gpt", null, "stop", null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, null);
 
     PlannerPlanParseException failure = null;
     try {
@@ -225,27 +228,78 @@ class PlannerServiceTest {
   }
 
   @Test
-  void propose_does_not_retry_when_budget_is_unavailable() {
+  void propose_blocks_the_initial_call_when_the_budget_is_exhausted() {
+    // The S09-10 acceptance: an exhausted model budget stops the call before the request is
+    // sent, so the model is never asked (the S09-08 calls==1 budget gate is now the S09-10
+    // reserve-before-every-call gate).
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return new ChatResponse(
+              "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", "stop", null);
+        };
+    // conservativePerCallCost (10) > limit (1): the pre-call reserve overdraws and blocks.
+    PlannerService planner =
+        new PlannerService(
+            catalogue(),
+            "gpt",
+            port,
+            new ModelBudget(new BigDecimal("1"), CURRENCY, new BigDecimal("10")));
+
+    assertThatThrownBy(() -> planner.propose("task", List.of("calc")))
+        .isInstanceOf(InsufficientBudgetException.class);
+    assertThat(calls.get()).isZero();
+  }
+
+  @Test
+  void propose_blocks_the_retry_after_the_initial_call_spent_the_budget() {
+    // A budget spent by the initial (failed) attempt blocks the retry: the retry's reserve
+    // overdraws and the failure propagates as a budget refusal (calls==1, not 2).
     AtomicInteger calls = new AtomicInteger();
     ChatModelPort port =
         request -> {
           calls.incrementAndGet();
           return new ChatResponse("gpt", "{ not valid json", null, null);
         };
-    // Budget unavailable: even a repairable failure is not retried.
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> false);
+    // limit (1.5) covers one reserve (1.0) but not two: the retry overdraws and is blocked.
+    PlannerService planner =
+        new PlannerService(
+            catalogue(),
+            "gpt",
+            port,
+            new ModelBudget(new BigDecimal("1.5"), CURRENCY, new BigDecimal("1")));
 
-    PlannerPlanParseException failure = null;
-    try {
-      planner.propose("task", List.of("calc"));
-      fail("expected a PlannerPlanParseException");
-    } catch (PlannerPlanParseException e) {
-      failure = e;
-    }
-    assertThat(failure).isNotNull();
-    assertThat(failure.classification()).isEqualTo(PlannerFailure.MALFORMED_JSON);
-
+    assertThatThrownBy(() -> planner.propose("task", List.of("calc")))
+        .isInstanceOf(InsufficientBudgetException.class);
     assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
+  void propose_retries_when_the_budget_allows_each_call() {
+    // A healthy budget does not interfere with the S09-08 bounded retry: each attempt reserves
+    // its conservative estimate, both fit under the limit, and a valid plan is returned after
+    // one retry.
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return calls.get() == 1
+              ? new ChatResponse("gpt", "{ not valid json", null, null)
+              : new ChatResponse(
+                  "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", "stop", null);
+        };
+    PlannerService planner =
+        new PlannerService(
+            catalogue(),
+            "gpt",
+            port,
+            new ModelBudget(new BigDecimal("100"), CURRENCY, new BigDecimal("1")));
+
+    PlannerPlanResult result = planner.propose("task", List.of("calc"));
+
+    assertThat(result.plan().steps()).hasSize(1);
+    assertThat(calls.get()).isEqualTo(2);
   }
 
   /**
