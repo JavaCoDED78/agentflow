@@ -66,6 +66,69 @@ response into `PlannerPlan` (the model-to-DTO boundary type `PlannerPlanDto` in 
 here); `S09-07`: the `ValidationGate` (node/tool membership, DAG acyclicity, `PlanLimits`, budget,
 tenant); `S09-08`: bounded repair of a malformed plan.
 
+## S09-06 — The Planner service: the model proposes a typed plan; the Planner asks for it through the port and returns it without ever executing it.
+
+### What changed
+
+`S09-05` defined the schema; `S09-06` adds the code that *asks the model* for a plan and hands it to
+the backend. [`PlannerService`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java)
+(`com.example.agentflow.ai.application`) renders the fixed policy from the bundled
+`resources/ai/planner.txt` and appends the caller's task plus the allowed-tool list as a single,
+untrusted `USER` turn, then performs **one** structured-output call through the neutral
+[`ChatModelPort`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ChatModelPort.java)
+and maps the response into a [`PlannerPlan`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/domain/plan/PlannerPlan.java)
+— never a step it runs. The plan crosses the module boundary as
+[`PlannerPlanDto`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanDto.java)
+(typed, allowed node types only, no provider SDK type); the attempt metadata (model id, the
+`PromptVersion` used, the token `ChatUsage`) rides in
+[`PlannerPlanResult`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanResult.java),
+so the attempt is traceable without the plan ever being executed. The model returning no content, or
+content that is not a valid plan (bad JSON, a structurally invalid graph, an unknown node), is one
+clear signal — [`PlannerPlanParseException`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParseException.java)
+— never a silent `null` plan or a guessed one.
+
+The Planner depends on the prompt catalogue through a narrow
+[`PromptCataloguePort`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PromptCataloguePort.java)
+defined in `ai.application` and implemented by `ai.prompt.PromptCatalogue` — so it never imports
+`ai.prompt`, and the `S02-09` acyclicity gate (enforced by the architecture tests) stays green:
+`ai.prompt` still depends only on `ai.application`, never the reverse. It depends on the model
+through `ChatModelPort`, which is opt-in (`ADR-014`); a missing provider is a loud, call-time
+failure, not a boot failure.
+
+### Why
+
+`ADR-006`: the model is an untrusted planner, never an authorization authority. The Planner only ever
+*proposes*; the `ValidationGate` (`S09-07`) re-validates every node/tool/argument/budget/step-limit
+and re-authorization server-side before any step runs. Keeping the plan as a proposal — with a
+single, loud failure signal for anything the model cannot express as a valid plan — means a hostile
+or prompt-injected model response can never smuggle an executable payload or a guessed step past the
+gate (invariant 7).
+
+### Verification
+
+Two DB-free unit suites (10 tests): [`PlannerPlanParserTest`](apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/PlannerPlanParserTest.java)
+(structured-output parse: success, structural violation, malformed JSON, duplicate id) and
+[`PlannerServiceTest`](apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/PlannerServiceTest.java)
+(policy+USER split, metadata mapping, missing-provider failure, refusal-as-parse-signal, blank-task
+guard). The architecture and acyclicity suites (`AiProviderPortArchitecturalTest`,
+`NoCyclicModuleDependenciesTest`, `PackageDependencyGraphTest`, `AiProviderPortContractTest`) stay
+green.
+
+### Docs
+
+- `docs/devlog/sprint-09-ai-planner.md` — this record.
+- `docs/architecture/module-api.md` — `ai` section gains `PlannerService` (service) and
+  `PlannerPlanResult` / `PlannerPlanParseException` (permitted public types).
+- `docs/domain-glossary.md` — `PlannerService`, `PlannerPlanDto`/`PlannerPlanResult`,
+  `PromptCataloguePort`.
+- `CHANGELOG.md` — added the S09-06 bullet under `Unreleased → Added` (newest-first).
+
+### Follow-up
+
+`S09-07`: the `ValidationGate` (node/tool membership, DAG acyclicity, `PlanLimits`, budget, tenant).
+`S09-08`: bounded repair of a malformed plan. `S10`: embeddings / `EmbeddingPort` (ingestion and
+`LLM_EVALUATE`) and the second provider (`ADR-014`).
+
 ## S09-04 — The versioned prompt catalogue: prompt templates are bundled as fixed, hashed policy files, separated from untrusted user content, and every model attempt records the prompt version/hash it planned against.
 
 
