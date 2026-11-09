@@ -2,6 +2,8 @@ package com.example.agentflow.ai.application;
 
 import com.example.agentflow.ai.domain.plan.PlannerPlan;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,12 @@ import tools.jackson.databind.ObjectMapper;
  * agentflow.ai.provider.openai.model}); it is the only provider-specific value this contract layer
  * carries, and only because the port is model-agnostic and the caller has to say which model to
  * call. A second provider ({@code S09-02} follow-up) would move the model id behind the port.
+ *
+ * <p><b>Bounded repair.</b> A plan the model returns is untrusted content: if it is not well-formed
+ * JSON, not a valid plan, or is refused, that is a clear fault, never a silent {@code null} plan.
+ * {@code S09-08} classifies it ({@link PlannerFailure#isRepairable()}) and repairs a repairable
+ * failure with at most one corrective retry, only when budget is available — so a malformed plan
+ * never drives an infinite loop of model calls.
  */
 @Service
 public class PlannerService {
@@ -69,22 +77,94 @@ public class PlannerService {
   private final PromptCataloguePort promptCatalogue;
   private final String modelId;
 
+  /** The provider port; optional, so the app boots without a configured provider. */
   @Autowired(required = false)
   private final ChatModelPort chatModelPort;
+
+  /**
+   * The bounded repair policy (S09-08): how many corrective retries a malformed-plan attempt may
+   * take. It defaults to one — a single second chance, never an infinite loop of model calls — and
+   * is configurable through {@code agentflow.ai.planner.retry.max-retries}.
+   */
+  private final PlannerRepairPolicy repairPolicy;
+
+  /**
+   * Optional budget-available check. The corrective retry runs only when budget permits; it is
+   * injected {@code @Autowired(required = false)} following the module's existing opt-in,
+   * loud-at-call-time pattern (the same one the {@link #chatModelPort} uses). A missing bean means
+   * "budget available", so the repair policy works standalone before {@code S09-10}, and the
+   * pre-call budget reservation wires against this seam. It is evaluated before every retry, so a
+   * budget consumed by the initial call blocks the retry.
+   */
+  @Autowired(required = false)
+  private final Supplier<Boolean> budgetAvailable;
+
+  /**
+   * @param promptCatalogue the prompt catalogue (always available); loads the planner policy
+   * @param modelId the model the adapter targets by default (see the class comment)
+   * @param maxRetries the maximum number of corrective retries a malformed-plan attempt may take
+   *     (S09-08); a value of {@code 0} means "never retry"
+   * @param chatModelPort the provider port; optional, so the app boots without a configured
+   *     provider
+   * @param budgetAvailable the optional budget-available check; {@code null} means "budget
+   *     available"
+   */
+  @Autowired
+  public PlannerService(
+      PromptCataloguePort promptCatalogue,
+      @Value("${agentflow.ai.provider.openai.model:gpt-4o-mini}") String modelId,
+      @Value("${agentflow.ai.planner.retry.max-retries:1}") int maxRetries,
+      @Autowired(required = false) ChatModelPort chatModelPort,
+      @Autowired(required = false) Supplier<Boolean> budgetAvailable) {
+    this(
+        promptCatalogue,
+        modelId,
+        chatModelPort,
+        PlannerRepairPolicy.of(maxRetries),
+        budgetAvailable);
+  }
 
   /**
    * @param promptCatalogue the prompt catalogue (always available); loads the planner policy
    * @param modelId the model the adapter targets by default (see the class comment)
    * @param chatModelPort the provider port; optional, so the app boots without a configured
    *     provider
+   * @param repairPolicy the bounded repair policy (S09-08); never {@code null}
+   * @param budgetAvailable the optional budget-available check; {@code null} means "budget
+   *     available"
    */
   public PlannerService(
       PromptCataloguePort promptCatalogue,
-      @Value("${agentflow.ai.provider.openai.model:gpt-4o-mini}") String modelId,
-      @Autowired(required = false) ChatModelPort chatModelPort) {
+      String modelId,
+      ChatModelPort chatModelPort,
+      PlannerRepairPolicy repairPolicy,
+      Supplier<Boolean> budgetAvailable) {
     this.promptCatalogue = promptCatalogue;
     this.modelId = modelId;
     this.chatModelPort = chatModelPort;
+    this.repairPolicy = Objects.requireNonNull(repairPolicy, "repairPolicy must not be null");
+    this.budgetAvailable = budgetAvailable;
+  }
+
+  /**
+   * Convenience constructor: the bounded repair policy is the default ({@link
+   * PlannerRepairPolicy#ofDefaults()}), so callers vary only the provider and the optional budget
+   * check (used by the unit tests).
+   *
+   * @param promptCatalogue the prompt catalogue (always available); loads the planner policy
+   * @param modelId the model the adapter targets by default (see the class comment)
+   * @param chatModelPort the provider port; optional, so the app boots without a configured
+   *     provider
+   * @param budgetAvailable the optional budget-available check; {@code null} means "budget
+   *     available"
+   */
+  public PlannerService(
+      PromptCataloguePort promptCatalogue,
+      String modelId,
+      ChatModelPort chatModelPort,
+      Supplier<Boolean> budgetAvailable) {
+    this(
+        promptCatalogue, modelId, chatModelPort, PlannerRepairPolicy.ofDefaults(), budgetAvailable);
   }
 
   /**
@@ -99,8 +179,9 @@ public class PlannerService {
    *     it); {@code null} / empty means no tool references
    * @return the plan and its metadata (model id, prompt version, token usage)
    * @throws IllegalStateException if no {@link ChatModelPort} is configured (no provider selected)
-   * @throws PlannerPlanParseException if the model returned no content, or content that is not a
-   *     valid plan
+   * @throws PlannerPlanParseException if the model returned no content, returned content that is
+   *     not a valid plan, or the provider call itself failed; its {@link
+   *     PlannerPlanParseException#classification()} (S09-08) explains why
    */
   public PlannerPlanResult propose(String task, List<String> allowedTools) {
     ChatModelPort port = this.chatModelPort;
@@ -113,20 +194,94 @@ public class PlannerService {
       throw new IllegalArgumentException("task must not be null or blank");
     }
 
+    // A malformed or refused plan is repaired with a bounded corrective retry (S09-08): the model
+    // is called at least once, and — only for a repairable failure, only when budget is available,
+    // and at most repairPolicy.maxRetries() times — called again. The last allowed retry's
+    // failure is terminal, so a malformed plan never drives an infinite loop of model calls (the
+    // S09-08 acceptance).
+    for (int attempt = 0; ; attempt++) {
+      try {
+        return proposeAttempt(port, task, allowedTools);
+      } catch (PlannerPlanParseException e) {
+        if (!retryIfPossible(e, attempt)) {
+          throw e;
+        }
+      }
+    }
+  }
+
+  /**
+   * One attempt to propose a plan: build the request, call the port, then turn the response into a
+   * plan. Fails loud and clear on a malformed or refused plan — never returns a silent {@code null}
+   * plan — carrying a {@link PlannerFailure} classification the bounded-repair policy (S09-08)
+   * uses.
+   *
+   * @param port the provider port (already checked non-null in the caller)
+   * @param task the caller's task text (the untrusted user content the Planner proposes for)
+   * @param allowedTools the tool names the Planner may reference (the allowlist the backend gave
+   *     it); {@code null} / empty means no tool references
+   * @return the structured-plan result
+   * @throws PlannerPlanParseException the attempt produced no usable plan; its {@link
+   *     PlannerPlanParseException#classification()} classifies the failure
+   */
+  private PlannerPlanResult proposeAttempt(
+      ChatModelPort port, String task, List<String> allowedTools) {
     PromptVersion version = promptCatalogue.versionOf("planner");
     List<ChatMessage> messages =
         promptCatalogue.build("planner", renderUserContent(task, allowedTools));
     ChatOptions options = new ChatOptions(null, null, OUTPUT_SCHEMA);
     ChatRequest request = new ChatRequest(modelId, messages, options, version);
 
-    ChatResponse response = port.chat(request);
+    ChatResponse response;
+    try {
+      response = port.chat(request);
+    } catch (PlannerPlanParseException e) {
+      // A malformed / schema-mismatch plan from a prior repair attempt — it already carries its
+      // classification, so reclassify nothing and let the bounded-repair policy decide.
+      throw e;
+    } catch (RuntimeException e) {
+      // The provider call itself failed (network / timeout / server error) before a response was
+      // produced; a transport failure the bounded-repair policy may retry (S09-08).
+      throw new PlannerPlanParseException(
+          "planner call failed: " + e.getMessage(), PlannerFailure.TRANSPORT_FAILURE, e);
+    }
     if (response.content() == null || response.content().isBlank()) {
       throw new PlannerPlanParseException(
-          "planner returned no content (a refusal or an empty completion)", null);
+          "planner returned no content (a refusal or an empty completion)",
+          PlannerFailure.PROVIDER_REFUSAL,
+          null);
     }
     PlannerPlan plan = parser.parse(response.content());
     PlannerPlanDto dto = PlannerPlanDto.from(plan);
     return new PlannerPlanResult(dto, response.model(), version, response.usage());
+  }
+
+  /**
+   * Decide whether a failed attempt may be corrected with another model call. A retry is allowed
+   * only when all hold: the failure is {@link PlannerFailure#isRepairable() repairable}, the policy
+   * still allows it (fewer than {@code maxRetries} retries have run), and — if a budget check is
+   * configured — budget permits it. Evaluated before every retry (see {@code propose}), so a budget
+   * exhausted by the initial call blocks the retry.
+   *
+   * @param failure the failed attempt's failure (never {@code null}); its classification is the
+   *     repair gate
+   * @param attempt the zero-based attempt that just failed ({@code 0} is the initial call)
+   * @return {@code true} if a corrective retry is allowed (so {@code propose} loops); {@code false}
+   *     if the failure is terminal (so {@code propose} rethrows it)
+   */
+  private boolean retryIfPossible(PlannerPlanParseException failure, int attempt) {
+    if (!failure.classification().isRepairable()) {
+      return false;
+    }
+    // attempt 0 is the initial call; a retry is allowed for attempts 0..maxRetries()-1, so a policy
+    // of 1 allows exactly one retry after the initial call.
+    if (attempt >= repairPolicy.maxRetries()) {
+      return false;
+    }
+    if (budgetAvailable != null && !budgetAvailable.get()) {
+      return false;
+    }
+    return true;
   }
 
   /**
