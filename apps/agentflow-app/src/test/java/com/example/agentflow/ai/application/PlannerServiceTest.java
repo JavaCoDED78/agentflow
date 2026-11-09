@@ -2,18 +2,25 @@ package com.example.agentflow.ai.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
- * DB-free unit tests for {@link PlannerService} (S09-06): it asks the model through the neutral
- * {@link ChatModelPort}, renders the policy + task/user-content split via a fake {@link
+ * DB-free unit tests for {@link PlannerService} (S09-06 / S09-08): it asks the model through the
+ * neutral {@link ChatModelPort}, renders the policy + task/user-content split via a fake {@link
  * PromptCataloguePort}, maps a successful response into a plan with its metadata, and fails loud
  * and clear (never a silent {@code null} plan) when the provider is missing or the model returns
  * nothing.
+ *
+ * <p>The S09-08 bounded-repair behaviour is pinned here too: a malformed / schema-mismatch /
+ * transport failure is classified ({@link PlannerFailure}) and, when budget is available, repaired
+ * with at most one corrective retry ({@link PlannerRepairPolicy}) — never an infinite loop of model
+ * calls — while a provider refusal is never retried and a retry never runs without budget.
  *
  * <p>The catalogue is faked with an in-package {@link PromptCataloguePort} implementation so the
  * test never imports {@code ai.prompt} -- importing it here would reintroduce the {@code
@@ -33,7 +40,7 @@ class PlannerServiceTest {
                 "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}",
                 "stop",
                 new ChatUsage(10, 5, 15));
-    PlannerService planner = new PlannerService(catalogue(), "gpt-plan-1", port);
+    PlannerService planner = new PlannerService(catalogue(), "gpt-plan-1", port, () -> true);
 
     PlannerPlanResult result = planner.propose("book a table", List.of("calc"));
 
@@ -53,7 +60,7 @@ class PlannerServiceTest {
           return new ChatResponse(
               "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", null, null);
         };
-    PlannerService planner = new PlannerService(catalogue(), "gpt", recording);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", recording, () -> true);
 
     planner.propose("compute 2 + 2", List.of("calc", "report"));
 
@@ -74,7 +81,7 @@ class PlannerServiceTest {
 
   @Test
   void propose_fails_loud_when_no_provider_is_configured() {
-    PlannerService planner = new PlannerService(catalogue(), "gpt", null);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", null, () -> true);
 
     assertThatThrownBy(() -> planner.propose("task", List.of()))
         .isInstanceOf(IllegalStateException.class)
@@ -84,20 +91,161 @@ class PlannerServiceTest {
   @Test
   void propose_refusal_with_null_content_is_a_parse_signal_not_a_plan() {
     ChatModelPort port = request -> new ChatResponse("gpt", null, "stop", null);
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
 
-    assertThatThrownBy(() -> planner.propose("task", List.of()))
-        .isInstanceOf(PlannerPlanParseException.class)
-        .hasMessageContaining("no content");
+    PlannerPlanParseException failure = null;
+    try {
+      planner.propose("task", List.of());
+      fail("expected a PlannerPlanParseException (the model refused)");
+    } catch (PlannerPlanParseException e) {
+      failure = e;
+    }
+    assertThat(failure).isNotNull();
+    assertThat(failure.classification()).isEqualTo(PlannerFailure.PROVIDER_REFUSAL);
+    assertThat(failure).hasMessageContaining("no content");
   }
 
   @Test
   void propose_blank_task_is_a_contract_error() {
     ChatModelPort port = request -> new ChatResponse("gpt", "{\"steps\":[]}", null, null);
-    PlannerService planner = new PlannerService(catalogue(), "gpt", port);
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
 
     assertThatThrownBy(() -> planner.propose("   ", List.of()))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void propose_retries_once_and_returns_a_valid_plan_after_a_malformed_attempt() {
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return calls.get() == 1
+              ? new ChatResponse("gpt", "{ not valid json", null, null)
+              : new ChatResponse(
+                  "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", "stop", null);
+        };
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+
+    PlannerPlanResult result = planner.propose("task", List.of("calc"));
+
+    assertThat(result.plan().steps()).hasSize(1);
+    // One malformed attempt plus exactly one corrective retry.
+    assertThat(calls.get()).isEqualTo(2);
+  }
+
+  @Test
+  void propose_retries_a_transport_failure_and_returns() {
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          if (calls.get() == 1) {
+            throw new RuntimeException("provider socket closed");
+          }
+          return new ChatResponse("gpt", "{\"steps\":[]}", "stop", null);
+        };
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+
+    PlannerPlanResult result = planner.propose("task", List.of());
+
+    assertThat(result.plan().steps()).isEmpty();
+    assertThat(calls.get()).isEqualTo(2);
+  }
+
+  @Test
+  void propose_retries_a_schema_mismatch_and_returns() {
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return calls.get() == 1
+              ? new ChatResponse(
+                  "gpt",
+                  "{\"steps\":[{\"id\":\"dup\",\"type\":\"TOOL_CALL\"},{\"id\":\"dup\",\"type\":\"FINALIZE\"}]}",
+                  null,
+                  null)
+              : new ChatResponse(
+                  "gpt", "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\"}]}", "stop", null);
+        };
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+
+    PlannerPlanResult result = planner.propose("task", List.of("calc"));
+
+    assertThat(result.plan().steps()).hasSize(1);
+    assertThat(calls.get()).isEqualTo(2);
+  }
+
+  @Test
+  void propose_gives_up_after_one_retry_on_persistent_malformed_output() {
+    // The S09-08 acceptance: a malformed plan is repaired with a bounded retry, never an infinite
+    // loop of model calls.
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return new ChatResponse("gpt", "{ not valid json", null, null);
+        };
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+
+    PlannerPlanParseException failure = null;
+    try {
+      planner.propose("task", List.of("calc"));
+      fail("expected a PlannerPlanParseException");
+    } catch (PlannerPlanParseException e) {
+      failure = e;
+    }
+    assertThat(failure).isNotNull();
+    assertThat(failure.classification()).isEqualTo(PlannerFailure.MALFORMED_JSON);
+
+    assertThat(calls.get()).isEqualTo(2);
+  }
+
+  @Test
+  void propose_does_not_retry_a_provider_refusal() {
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return new ChatResponse("gpt", null, "stop", null);
+        };
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> true);
+
+    PlannerPlanParseException failure = null;
+    try {
+      planner.propose("task", List.of("calc"));
+      fail("expected a PlannerPlanParseException (the model refused)");
+    } catch (PlannerPlanParseException e) {
+      failure = e;
+    }
+    assertThat(failure).isNotNull();
+    assertThat(failure.classification()).isEqualTo(PlannerFailure.PROVIDER_REFUSAL);
+
+    assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
+  void propose_does_not_retry_when_budget_is_unavailable() {
+    AtomicInteger calls = new AtomicInteger();
+    ChatModelPort port =
+        request -> {
+          calls.incrementAndGet();
+          return new ChatResponse("gpt", "{ not valid json", null, null);
+        };
+    // Budget unavailable: even a repairable failure is not retried.
+    PlannerService planner = new PlannerService(catalogue(), "gpt", port, () -> false);
+
+    PlannerPlanParseException failure = null;
+    try {
+      planner.propose("task", List.of("calc"));
+      fail("expected a PlannerPlanParseException");
+    } catch (PlannerPlanParseException e) {
+      failure = e;
+    }
+    assertThat(failure).isNotNull();
+    assertThat(failure.classification()).isEqualTo(PlannerFailure.MALFORMED_JSON);
+
+    assertThat(calls.get()).isEqualTo(1);
   }
 
   /**

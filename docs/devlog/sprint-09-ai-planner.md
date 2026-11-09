@@ -4,6 +4,29 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-08
+
+### What changed
+- Bounded repair of the S09-06 malformed-plan signal. The four ways a model attempt can fail are distinguished by [`PlannerFailure`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerFailure.java) — `MALFORMED_JSON`, `SCHEMA_MISMATCH`, `PROVIDER_REFUSAL`, `TRANSPORT_FAILURE` — with `isRepairable()` marking the three a retry can fix (`MALFORMED_JSON` / `SCHEMA_MISMATCH` / `TRANSPORT_FAILURE`) and never the refusal.
+- [`PlannerRepairPolicy`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerRepairPolicy.java) is the bounded descriptor (`of(int)` with canonical-constructor validation rejecting `maxRetries < 0`; `ofDefaults() == 1` — the production single-second-chance). Pure value object with value equality, no Spring.
+- The S09-06 signal [`PlannerPlanParseException`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParseException.java) now carries the classification (`PlannerFailure classification()`, new three-argument constructor `(message, classification, cause)`), so the caller can tell a provider formatting fault apart from a structural violation or a refusal.
+- [`PlannerPlanParser`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParser.java): a `JacksonException` (unparseable body) becomes `MALFORMED_JSON`; an `IllegalArgumentException` from the structural mapper becomes `SCHEMA_MISMATCH`; both carry the classification.
+- [`PlannerService.propose`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java): runs the model at least once, and — only for a repairable failure, only while the budget `Supplier<Boolean>` permits, and at most `repairPolicy.maxRetries()` times — calls it again, then lets the last allowed retry's failure be terminal (never a silent `null` plan, never an infinite model-call loop). The budget is evaluated *before every retry* (a budget spent by the initial call blocks it). The `ai` module boundary is unchanged — `ai` still compiles only against `ai`.
+
+### Why
+- Invariant 7 (the model is an untrusted planner) forbids letting a model's own output drive control flow: a malformed or refused plan must not spin forever, and a refusal must not be "repaired" by burning the budget on another attempt that will refuse again.
+- `PROVIDER_REFUSAL` is deliberately non-repairable: a model that has decided not to produce a plan is not fixed by another call — retrying only consumes tokens — so the repair loop short-circuits on it and surfaces the refusal clearly.
+
+### Verification
+- Three DB-free unit suites (17 tests, JUnit XML checked, all green): `PlannerFailureTest` (the four classifications and their repair decisions), `PlannerRepairPolicyTest` (the policy contract and its validation), and `PlannerServiceTest` (11 — repair once after a malformed / schema-mismatch / transport failure, give up after one retry on persistent malformed output, never retry a refusal, never retry without budget).
+- `:apps:agentflow-app:check` green — 898 tests across 119 suites, 0 failures, 0 errors. The S09-06 constructor (`@Autowired(required = false) ChatModelPort`) plus the new `@Autowired` at the constructor level of `PlannerService` is what lets the Spring context (`OpenApiContractCheckTest`, which loads the full context) instantiate the bean with the optional budget `Supplier<Boolean>` missing.
+
+### Docs
+- `CHANGELOG.md`: S09-08 entry under `Unreleased / Added`.
+
+### Follow-up
+- S09-07 (validation gate) authorizes a plan before any step runs; S09-08 only *re-asks the model for a plan* — it does not execute anything, so it stays within invariant 7's "propose" side.
+
 ## S09-05 — The structured plan schema: the Planner's response is a typed, schema-constrained plan, not a free-text blob.
 
 ### What changed

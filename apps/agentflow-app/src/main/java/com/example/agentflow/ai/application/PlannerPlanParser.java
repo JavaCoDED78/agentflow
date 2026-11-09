@@ -43,10 +43,14 @@ public final class PlannerPlanParser {
       return mapper.readValue(json, PlannerPlan.class);
     } catch (JacksonException e) {
       throw new PlannerPlanParseException(
-          "planner response is not valid plan JSON: " + e.getMessage(), e);
+          "planner response is not valid plan JSON: " + e.getMessage(),
+          PlannerFailure.MALFORMED_JSON,
+          e);
     } catch (IllegalArgumentException e) {
       throw new PlannerPlanParseException(
-          "planner response is not a valid plan: " + e.getMessage(), e);
+          "planner response is not a valid plan: " + e.getMessage(),
+          PlannerFailure.SCHEMA_MISMATCH,
+          e);
     }
   }
 }
