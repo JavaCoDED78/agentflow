@@ -3,7 +3,6 @@ package com.example.agentflow.ai.application;
 import com.example.agentflow.ai.domain.plan.PlannerPlan;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -89,15 +88,15 @@ public class PlannerService {
   private final PlannerRepairPolicy repairPolicy;
 
   /**
-   * Optional budget-available check. The corrective retry runs only when budget permits; it is
-   * injected {@code @Autowired(required = false)} following the module's existing opt-in,
-   * loud-at-call-time pattern (the same one the {@link #chatModelPort} uses). A missing bean means
-   * "budget available", so the repair policy works standalone before {@code S09-10}, and the
-   * pre-call budget reservation wires against this seam. It is evaluated before every retry, so a
-   * budget consumed by the initial call blocks the retry.
+   * The pre-call model budget guard (S09-10): it reserves cost before a call and settles it after.
+   * It is injected {@code @Autowired(required = false)} following the module's existing opt-in,
+   * loud-at-call-time pattern (the same one the {@link #chatModelPort} uses): a missing bean means
+   * "no budget guard", so the Planner works standalone and a real budget from {@code usage} is
+   * wired in later (S12). It is evaluated before every model call, so an exhausted budget stops the
+   * call before the request is sent (S09-10 acceptance).
    */
   @Autowired(required = false)
-  private final Supplier<Boolean> budgetAvailable;
+  private final ModelBudget budget;
 
   /**
    * @param promptCatalogue the prompt catalogue (always available); loads the planner policy
@@ -106,8 +105,7 @@ public class PlannerService {
    *     (S09-08); a value of {@code 0} means "never retry"
    * @param chatModelPort the provider port; optional, so the app boots without a configured
    *     provider
-   * @param budgetAvailable the optional budget-available check; {@code null} means "budget
-   *     available"
+   * @param budget the optional model budget guard; {@code null} means "no budget guard"
    */
   @Autowired
   public PlannerService(
@@ -115,13 +113,8 @@ public class PlannerService {
       @Value("${agentflow.ai.provider.openai.model:gpt-4o-mini}") String modelId,
       @Value("${agentflow.ai.planner.retry.max-retries:1}") int maxRetries,
       @Autowired(required = false) ChatModelPort chatModelPort,
-      @Autowired(required = false) Supplier<Boolean> budgetAvailable) {
-    this(
-        promptCatalogue,
-        modelId,
-        chatModelPort,
-        PlannerRepairPolicy.of(maxRetries),
-        budgetAvailable);
+      @Autowired(required = false) ModelBudget budget) {
+    this(promptCatalogue, modelId, chatModelPort, PlannerRepairPolicy.of(maxRetries), budget);
   }
 
   /**
@@ -130,20 +123,19 @@ public class PlannerService {
    * @param chatModelPort the provider port; optional, so the app boots without a configured
    *     provider
    * @param repairPolicy the bounded repair policy (S09-08); never {@code null}
-   * @param budgetAvailable the optional budget-available check; {@code null} means "budget
-   *     available"
+   * @param budget the optional model budget guard; {@code null} means "no budget guard"
    */
   public PlannerService(
       PromptCataloguePort promptCatalogue,
       String modelId,
       ChatModelPort chatModelPort,
       PlannerRepairPolicy repairPolicy,
-      Supplier<Boolean> budgetAvailable) {
+      ModelBudget budget) {
     this.promptCatalogue = promptCatalogue;
     this.modelId = modelId;
     this.chatModelPort = chatModelPort;
     this.repairPolicy = Objects.requireNonNull(repairPolicy, "repairPolicy must not be null");
-    this.budgetAvailable = budgetAvailable;
+    this.budget = budget;
   }
 
   /**
@@ -155,16 +147,14 @@ public class PlannerService {
    * @param modelId the model the adapter targets by default (see the class comment)
    * @param chatModelPort the provider port; optional, so the app boots without a configured
    *     provider
-   * @param budgetAvailable the optional budget-available check; {@code null} means "budget
-   *     available"
+   * @param budget the optional model budget guard; {@code null} means "no budget guard"
    */
   public PlannerService(
       PromptCataloguePort promptCatalogue,
       String modelId,
       ChatModelPort chatModelPort,
-      Supplier<Boolean> budgetAvailable) {
-    this(
-        promptCatalogue, modelId, chatModelPort, PlannerRepairPolicy.ofDefaults(), budgetAvailable);
+      ModelBudget budget) {
+    this(promptCatalogue, modelId, chatModelPort, PlannerRepairPolicy.ofDefaults(), budget);
   }
 
   /**
@@ -195,14 +185,28 @@ public class PlannerService {
     }
 
     // A malformed or refused plan is repaired with a bounded corrective retry (S09-08): the model
-    // is called at least once, and — only for a repairable failure, only when budget is available,
-    // and at most repairPolicy.maxRetries() times — called again. The last allowed retry's
-    // failure is terminal, so a malformed plan never drives an infinite loop of model calls (the
-    // S09-08 acceptance).
+    // is called at least once, and — only for a repairable failure, and at most
+    // repairPolicy.maxRetries() times — called again. The last allowed retry's failure is
+    // terminal, so a malformed plan never drives an infinite loop of model calls. The pre-call
+    // model budget guard (S09-10) is evaluated before EVERY attempt (initial call included): the
+    // budget is reserved before the request is sent and throws InsufficientBudgetException when
+    // exhausted, so an already-committed budget stops the next attempt too — a budget spent by the
+    // initial call blocks the retry.
     for (int attempt = 0; ; attempt++) {
+      ModelBudgetReservation reservation = budget == null ? null : budget.reserve();
       try {
-        return proposeAttempt(port, task, allowedTools);
+        PlannerPlanResult result = proposeAttempt(port, task, allowedTools);
+        if (reservation != null) {
+          // Post-call settlement (S09-10): the real cost is not metered yet (price catalogue is
+          // S11), so settle(null) leaves the reservation committed unchanged — a no-op this sprint.
+          // The reserve-before-the-call (above) is what blocks an exhausted budget.
+          reservation.settle(null);
+        }
+        return result;
       } catch (PlannerPlanParseException e) {
+        // A failed attempt keeps its reservation, so a budget spent by it blocks the next
+        // attempt (S09-10) — the guard is what makes the S09-08 "budget consumed by the initial
+        // call blocks the retry" hold.
         if (!retryIfPossible(e, attempt)) {
           throw e;
         }
@@ -258,10 +262,10 @@ public class PlannerService {
 
   /**
    * Decide whether a failed attempt may be corrected with another model call. A retry is allowed
-   * only when all hold: the failure is {@link PlannerFailure#isRepairable() repairable}, the policy
-   * still allows it (fewer than {@code maxRetries} retries have run), and — if a budget check is
-   * configured — budget permits it. Evaluated before every retry (see {@code propose}), so a budget
-   * exhausted by the initial call blocks the retry.
+   * only when all hold: the failure is {@link PlannerFailure#isRepairable() repairable}, and the
+   * policy still allows it (fewer than {@code maxRetries} retries have run). The pre-call budget
+   * guard (S09-10) is evaluated before EVERY attempt in {@code propose} — a budget exhausted by the
+   * initial call blocks the retry there, not here.
    *
    * @param failure the failed attempt's failure (never {@code null}); its classification is the
    *     repair gate
@@ -276,9 +280,6 @@ public class PlannerService {
     // attempt 0 is the initial call; a retry is allowed for attempts 0..maxRetries()-1, so a policy
     // of 1 allows exactly one retry after the initial call.
     if (attempt >= repairPolicy.maxRetries()) {
-      return false;
-    }
-    if (budgetAvailable != null && !budgetAvailable.get()) {
       return false;
     }
     return true;
