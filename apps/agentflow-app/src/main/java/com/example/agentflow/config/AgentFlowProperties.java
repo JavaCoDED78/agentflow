@@ -39,6 +39,7 @@ public class AgentFlowProperties {
   @Valid private final Kafka kafka = new Kafka();
   @Valid private final Worker worker = new Worker();
   @Valid private final Tools tools = new Tools();
+  @Valid private final Ai ai = new Ai();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -255,6 +256,14 @@ public class AgentFlowProperties {
    */
   public Tools getTools() {
     return tools;
+  }
+
+  /**
+   * @return the validated AI provider resilience settings (S09-09: connect/read/overall timeout,
+   *     bounded retry with jitter, parallel-call cap)
+   */
+  public Ai getAi() {
+    return ai;
   }
 
   /**
@@ -1088,6 +1097,227 @@ public class AgentFlowProperties {
        */
       public void setPerTenantMaxConcurrency(int perTenantMaxConcurrency) {
         this.perTenantMaxConcurrency = perTenantMaxConcurrency;
+      }
+    }
+  }
+
+  /**
+   * AI provider resilience settings (S09-09). Bound from {@code agentflow.ai.*}; these keep the
+   * provider timeouts, bounded retry-backoff and the parallel-call cap in configuration rather than
+   * hard-coded in the adapter. The connect/read timeouts are applied to the underlying HTTP client;
+   * the overall timeout, the bounded retry with jitter and the concurrency cap are enforced by the
+   * resilient wrapper ({@code ai.provider.ResilientChatModel}).
+   */
+  public static class Ai {
+
+    @Valid private final Timeout timeout = new Timeout();
+    @Valid private final Retry retry = new Retry();
+
+    /** Maximum number of concurrent chat calls to the provider (default 4, at least 1). */
+    @Min(value = 1, message = "agentflow.ai.max-parallel-calls must be at least 1")
+    private int maxParallelCalls = 4;
+
+    /**
+     * @return the maximum number of concurrent chat calls (default {@code 4})
+     */
+    public int getMaxParallelCalls() {
+      return maxParallelCalls;
+    }
+
+    /**
+     * @param maxParallelCalls the maximum number of concurrent chat calls (at least 1)
+     */
+    public void setMaxParallelCalls(int maxParallelCalls) {
+      this.maxParallelCalls = maxParallelCalls;
+    }
+
+    /**
+     * @return the validated timeout settings (connect/read/overall)
+     */
+    public Timeout getTimeout() {
+      return timeout;
+    }
+
+    /**
+     * @return the validated retry settings (bounded backoff with jitter)
+     */
+    public Retry getRetry() {
+      return retry;
+    }
+
+    /** Connect/read/overall timeouts (seconds). */
+    public static class Timeout {
+
+      /** Connect timeout, in seconds, before a connection is established (default 10). */
+      @Min(value = 1, message = "agentflow.ai.timeout.connect-seconds must be at least 1")
+      private long connectSeconds = 10;
+
+      /** Read timeout, in seconds, for the server to produce a response (default 120). */
+      @Min(value = 1, message = "agentflow.ai.timeout.read-seconds must be at least 1")
+      private long readSeconds = 120;
+
+      /**
+       * Overall timeout, in seconds, for the whole chat call measured from the wall clock; the
+       * resilient wrapper aborts the call and fails it once it is exceeded (default 150).
+       */
+      @Min(value = 1, message = "agentflow.ai.timeout.overall-seconds must be at least 1")
+      private long overallSeconds = 150;
+
+      /**
+       * @return the connect timeout in seconds (default {@code 10})
+       */
+      public long getConnectSeconds() {
+        return connectSeconds;
+      }
+
+      /**
+       * @param connectSeconds the connect timeout in seconds (at least 1)
+       */
+      public void setConnectSeconds(long connectSeconds) {
+        this.connectSeconds = connectSeconds;
+      }
+
+      /**
+       * @return the read timeout in seconds (default {@code 120})
+       */
+      public long getReadSeconds() {
+        return readSeconds;
+      }
+
+      /**
+       * @param readSeconds the read timeout in seconds (at least 1)
+       */
+      public void setReadSeconds(long readSeconds) {
+        this.readSeconds = readSeconds;
+      }
+
+      /**
+       * @return the overall timeout in seconds (default {@code 150})
+       */
+      public long getOverallSeconds() {
+        return overallSeconds;
+      }
+
+      /**
+       * @param overallSeconds the overall timeout in seconds (at least 1)
+       */
+      public void setOverallSeconds(long overallSeconds) {
+        this.overallSeconds = overallSeconds;
+      }
+    }
+
+    /**
+     * Bounded retry with full jitter (S09-09). Mirrors the {@code workflowexecution}/{@code
+     * toolexecution} retry policy shape (same parameters, different module) but is the {@code ai}
+     * module's own copy: the architecture gate forbids importing the other modules' {@code
+     * domain.RetryPolicy}, so each module owns its retry descriptor.
+     */
+    public static class Retry {
+
+      /**
+       * Maximum number of attempts (the initial attempt plus retries) before the call fails
+       * permanently. Default 3.
+       */
+      @Min(value = 1, message = "agentflow.ai.retry.max-attempts must be at least 1")
+      private int maxAttempts = 3;
+
+      /**
+       * Base delay, in seconds, before the first retry ({@code multiplier^0}). Grows exponentially
+       * from it. Default 1; 0 is allowed (no delay on the first retry).
+       */
+      @Min(value = 0, message = "agentflow.ai.retry.base-delay-seconds must be non-negative")
+      private long baseDelaySeconds = 1;
+
+      /**
+       * Exponential growth factor applied per attempt. {@code 1.0} keeps the delay constant; a
+       * value above 1 grows it. Must be at least 1.0 (validated in the {@code
+       * ai.application.ProviderResiliencePolicy} value object). Default 2.0.
+       */
+      private double multiplier = 2.0;
+
+      /**
+       * Maximum delay, in seconds, every backoff is capped to. Must be at least {@code
+       * baseDelay-seconds} (validated in {@code ProviderResiliencePolicy}). Default 60.
+       */
+      @Min(value = 1, message = "agentflow.ai.retry.max-delay-seconds must be at least 1")
+      private long maxDelaySeconds = 60;
+
+      /**
+       * Whether full jitter is applied to the computed backoff (reduces a thundering herd while
+       * keeping the maximum wait bounded by {@code max-delay-seconds}). Default true.
+       */
+      private boolean jitter = true;
+
+      /**
+       * @return the maximum number of attempts before the call fails permanently (default {@code
+       *     3})
+       */
+      public int getMaxAttempts() {
+        return maxAttempts;
+      }
+
+      /**
+       * @param maxAttempts the maximum number of attempts before the call fails permanently (at
+       *     least 1)
+       */
+      public void setMaxAttempts(int maxAttempts) {
+        this.maxAttempts = maxAttempts;
+      }
+
+      /**
+       * @return the base retry delay in seconds (default {@code 1})
+       */
+      public long getBaseDelaySeconds() {
+        return baseDelaySeconds;
+      }
+
+      /**
+       * @param baseDelaySeconds the base retry delay in seconds (non-negative)
+       */
+      public void setBaseDelaySeconds(long baseDelaySeconds) {
+        this.baseDelaySeconds = baseDelaySeconds;
+      }
+
+      /**
+       * @return the exponential growth factor (at least 1.0)
+       */
+      public double getMultiplier() {
+        return multiplier;
+      }
+
+      /**
+       * @param multiplier the exponential growth factor (at least 1.0)
+       */
+      public void setMultiplier(double multiplier) {
+        this.multiplier = multiplier;
+      }
+
+      /**
+       * @return the capped maximum retry delay in seconds (default {@code 60})
+       */
+      public long getMaxDelaySeconds() {
+        return maxDelaySeconds;
+      }
+
+      /**
+       * @param maxDelaySeconds the capped maximum retry delay in seconds (at least 1)
+       */
+      public void setMaxDelaySeconds(long maxDelaySeconds) {
+        this.maxDelaySeconds = maxDelaySeconds;
+      }
+
+      /**
+       * @return whether full jitter is applied (default {@code true})
+       */
+      public boolean isJitter() {
+        return jitter;
+      }
+
+      /**
+       * @param jitter whether full jitter is applied
+       */
+      public void setJitter(boolean jitter) {
+        this.jitter = jitter;
       }
     }
   }

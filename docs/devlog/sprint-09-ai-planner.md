@@ -4,6 +4,81 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-09
+
+### What changed
+- Provider resilience config: timeout, rate limit (concurrency cap) and bounded retries for every
+  model call. [`ProviderResiliencePolicy`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ProviderResiliencePolicy.java)
+  (`ai.application`) is the `ai` module's own bounded-retry descriptor — `maxAttempts`,
+  `baseDelay`, `multiplier`, `maxDelay`, full jitter — a pure value object with
+  canonical-constructor validation (`maxAttempts >= 1`, non-negative delays, `multiplier >= 1.0`,
+  `maxDelay >= baseDelay`), value equality, and injected time/randomness seams
+  (`delayMillisForAttempt(int, Supplier)`, `nextAttemptTime(Instant, int, Supplier)`,
+  invariant 10). It mirrors the `workflowexecution` / `toolexecution` `RetryPolicy` shape, but the
+  architecture gate forbids importing those modules' copies, so `ai` owns its own.
+- [`ProviderFailureReason`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ProviderFailureReason.java)
+  is the neutral, SDK-free failure classification: `RATE_LIMIT` / `SERVER_ERROR` / `TIMEOUT` /
+  `CONNECTION` are retryable; `CLIENT_ERROR` / `UNKNOWN` are permanent (an unknown fault fails
+  loudly instead of retrying blindly). The SDK-specific mapping lives only in
+  [`ProviderExceptionClassifier`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/ProviderExceptionClassifier.java)
+  (`ai.provider`, a stateless `@Component`): it walks the whole cause chain and matches the
+  specific `RateLimitException` / `InternalServerException` before the generic
+  `OpenAIServiceException` status-code branch (429 → `RATE_LIMIT`, 5xx → `SERVER_ERROR`, other 4xx
+  → `CLIENT_ERROR`), maps `OpenAIIoException` → `CONNECTION`, `TimeoutException` /
+  `SocketTimeoutException` and the wrapper's own `ProviderTimeoutException` → `TIMEOUT`.
+- [`ResilientChatModel`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/ResilientChatModel.java)
+  wraps any `ChatModelPort` with three independent bounds: (1) bounded exponential backoff + full
+  jitter, only while the policy allows another attempt *and* the classified fault is retryable;
+  (2) a per-attempt overall timeout enforced on a daemon executor
+  (`future.get(timeout)` + `cancel(true)`), where an abort becomes `ProviderTimeoutException`
+  (classified `TIMEOUT`, so it is retried within the same finite bound); (3) a `Semaphore`
+  concurrency cap that rejects overload immediately with a retryable
+  `ProviderConcurrencyLimitedException` backpressure signal. Jitter, sleeper and call executor are
+  constructor-injected, so every outcome is deterministic in tests; the production factory
+  (`of(...)`) supplies the shared `SplittableRandom` jitter source, `Thread::sleep` and a cached
+  daemon pool shut down by `@PreDestroy`.
+- [`OpenAiChatModelConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/OpenAiChatModelConfiguration.java)
+  wires it all: the connect/read timeouts (`agentflow.ai.timeout.connect-seconds` / `read-seconds`,
+  defaults 10 / 120) are applied to the underlying OpenAI SDK client (the single place the SDK
+  client is constructed), and the `@Primary` `ChatModelPort` bean is now the resilient wrapper
+  around the `OpenAiChatModelAdapter` — the domain sees only the port, never a timeout, an SDK
+  type or the raw adapter. All bounds live in `AgentFlowProperties.Ai`
+  (`agentflow.ai.retry.max-attempts / base-delay-seconds / multiplier / max-delay-seconds /
+  jitter`, `agentflow.ai.timeout.overall-seconds`, `agentflow.ai.max-parallel-calls`), Jakarta-
+  validated, never hard-coded.
+
+### Why
+- The S09-09 acceptance: a model call must make a *finite* number of attempts and finish within a
+  *bounded* duration. An unbounded retry on a provider failure (or a hung call holding a worker)
+  breaks that, and an infinite model-call loop is exactly what invariant 7 (untrusted planner)
+  forbids. Only transient faults deserve a retry — a 4xx client error is a permanent contract
+  failure, and retrying an unknown fault hides real bugs behind a retry storm.
+
+### Verification
+- Four DB-free suites (39 tests, JUnit XML checked, all green):
+  `ProviderResiliencePolicyTest` (12 — exponential growth, the cap and its saturation, constant
+  multiplier, reproducible jitter, `null` jitter = full delay, the `[0, 1)` jitter range, the
+  retry-allowed bound, the next-attempt instant, `maxTotalBackoffMillis`, constructor validation,
+  value equality); `ProviderExceptionClassifierTest` (16 — every SDK fault class → reason,
+  specific-before-generic matching, cause-chain walk into wrappers); `ResilientChatModelTest`
+  (8 — the acceptance: a call fails after exactly `maxAttempts` never infinite, the recorded
+  inter-attempt waits stay within `maxTotalBackoffMillis()`, a hanging attempt is aborted by the
+  overall timeout across finite retries, the concurrency cap throttles immediately, a permanent
+  fault is not retried, constructor validation); `OpenAiChatModelConfigurationTest` (3 — the port
+  bean is the resilient wrapper delegating to the OpenAI adapter, opt-in gate unchanged).
+- `./gradlew :apps:agentflow-app:check` green — 934 tests across the suites, 0 failures, 0 errors;
+  the architecture boundary / no-cycles / provider-port gates ran (`tests>0, skipped=0` in the
+  JUnit XML) and stay green.
+
+### Docs
+- `CHANGELOG.md`: S09-09 entry under `Unreleased / Added` (newest-first).
+- `docs/architecture/module-api.md`: the `ai` module's public surface now lists
+  `ProviderResiliencePolicy` / `ProviderFailureReason`.
+
+### Follow-up
+- S09-10 (pre-call budget reservation) builds on this seam: the resilience layer bounds *time*,
+  the budget guard will bound *cost* — a call is blocked before it is sent, not after.
+
 ## S09-08
 
 ### What changed
