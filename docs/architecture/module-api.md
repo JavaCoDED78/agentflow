@@ -135,9 +135,9 @@ Each table lists:
 
 | Section | Contents |
 |---|---|
-| Public application services / ports | `ChatModelPort` / `EmbeddingPort` — single provider adapter behind a port (a second provider is an isolated later change). `Planner` — schema-constrained structured output; a **planner**, never an authorization authority (`ADR-006`). `ValidationGate` — server-side DAG / permission / tool / budget / step-limit check before execution; cyclic / over-limit / unknown plans never reach the executor. `Executor` — runs only validated steps through the tool registry. `Finalizer` — writes the result with citations and cost metrics; terminal state. |
+| Public application services / ports | `ChatModelPort` / `EmbeddingPort` — single provider adapter behind a port (a second provider is an isolated later change). `Planner` — schema-constrained structured output; a **planner**, never an authorization authority (`ADR-006`). `PlannerService` (S09-06) is the entry point: renders the fixed policy and appends the task + allowlist as one untrusted USER turn, asks the model through `ChatModelPort`, and maps the response into a `PlannerPlan` without executing it; it reads the catalogue through the `ai.application` `PromptCataloguePort` (never `ai.prompt`). `ValidationGate` — server-side DAG / permission / tool / budget / step-limit check before execution; cyclic / over-limit / unknown plans never reach the executor. `Executor` — runs only validated steps through the tool registry. `Finalizer` — writes the result with citations and cost metrics; terminal state. |
 | Published event types | none (the run terminal state publishes through `workflowexecution` / outbox). |
-| Permitted public types | `PlannerPlanDto` (typed JSON plan from allowed node types only), `PlanValidationResult` (`valid`, `violations[]`), `ModelProviderRef` (`modelProvider`, `modelName`). |
+| Permitted public types | `PlannerPlanDto` (typed JSON plan from allowed node types only), `PlannerPlanResult` (the plan + attempt metadata: model id, `PromptVersion`, `ChatUsage`), `PlannerPlanParseException` (the single malformed / invalid-plan signal), `PlanValidationResult` (`valid`, `violations[]`), `ModelProviderRef` (`modelProvider`, `modelName`). |
 | Internal packages | provider-specific adapters, prompt templates (`resources/ai.*`). |
 
 ### `usage` — token/cost metering, budgets, quotas

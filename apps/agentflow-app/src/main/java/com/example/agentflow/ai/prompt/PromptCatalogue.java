@@ -2,6 +2,7 @@ package com.example.agentflow.ai.prompt;
 
 import com.example.agentflow.ai.application.ChatMessage;
 import com.example.agentflow.ai.application.MessageRole;
+import com.example.agentflow.ai.application.PromptCataloguePort;
 import com.example.agentflow.ai.application.PromptVersion;
 import java.io.IOException;
 import java.io.InputStream;
@@ -29,7 +30,7 @@ import java.util.Map;
  * the rendered messages; the catalogue never logs, hashes or otherwise exposes the injected
  * content, so the (untrusted) document content stays out of observability (invariant 8).
  */
-public final class PromptCatalogue {
+public final class PromptCatalogue implements PromptCataloguePort {
 
   private static final String RESOURCE_PREFIX = "ai/";
   private static final String RESOURCE_SUFFIX = ".txt";

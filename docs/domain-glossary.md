@@ -215,6 +215,9 @@ API: `POST /api/v1/knowledge-bases`, `POST /api/v1/knowledge-bases/{id}/document
 |---|---|---|
 | **Model provider / port** | application port + one adapter | The single ChatModel adapter behind a port; a second provider is a later, isolated change. |
 | **Planner** | structured, schema-constrained output | Proposes a typed JSON plan from allowed node types only; it is an untrusted planner, never an authorization authority (`ADR-006`). |
+| **Planner service** | proposes, never executes | [`PlannerService`] (`ai.application`, S09-06): one structured-output call through `ChatModelPort`; maps the response into a `PlannerPlan`, never runs it. Policy is a fixed SYSTEM message; the task + allowlist ride as one untrusted USER turn; anything the model cannot express as a valid plan is one loud `PlannerPlanParseException`. |
+| **PlannerPlanDto / Result** | plan + attempt metadata | `PlannerPlanDto` is the allowed-node-types-only plan crossing the `ai` module boundary; `PlannerPlanResult` adds the attempt metadata (model id, `PromptVersion`, `ChatUsage`). |
+| **PromptCataloguePort** | `ai.application` port | The narrow `ai.application` surface the Planner uses to render a prompt (SYSTEM policy + one USER turn) and to learn its `PromptVersion`; implemented by `ai.prompt.PromptCatalogue` so the `ai` acyclicity gate stays one-directional. |
 | **Validation gate** | server-side DAG/permission/tool/budget check | Validates the Planner's plan (DAG, allowed tools, arguments, tenant scope, step limit, budget) before execution; unknown/cyclic/over-limit plans never reach the executor. |
 | **Executor** | runs validated steps via the tool registry | Executes only validated steps; tool arguments pass JSON Schema validation. |
 | **Finalizer** | result with citations + cost metrics | Writes the result with citations and the terminal state; records cost metrics. |
