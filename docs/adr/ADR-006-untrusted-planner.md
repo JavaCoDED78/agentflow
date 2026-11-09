@@ -66,13 +66,18 @@ occupies only the first.
   - The model can be swapped or retried behind the `ChatModelPort` without touching the security
     model.
 - **Negative / operational:**
-  - The validation gate must actually reject an over-reaching plan, or the gate is on paper. The
-    `ai` module is currently a skeleton (`Planner` and `ValidationGate` are documented in
-    `docs/architecture/module-api.md` but not yet implemented), so this is the follow-up that must
-    land for `ADR-006` to be in force by code, not just by doc.
+  - The validation gate must actually reject an over-reaching plan, or the gate is on paper.
+    `S09-07` made it live: `AiPlanExecutionService` runs a pure, DB-free `ValidationGate` before
+    any step reaches the executor, and a rejected plan is one loud `PlanValidationException` that
+    is never partially executed — so `ADR-006` is in force by code, not just by doc. The gate
+    validates the plan the model proposes (DAG, closed node vocabulary, tool allowlist, field
+    contract, `PlanLimits`) against facts the plan cannot carry by itself (tenant, allowed node
+    types, allowed tool names, limits) supplied through `ValidationContext`; it never lets the
+    model authorize itself.
   - Bounding steps, elapsed time and cost keeps a runaway plan cheap (invariant 7).
 - **Follow-ups:**
-  - `S09` builds the `Planner` and the `ValidationGate` in the `ai` module (documented in
-    `module-api.md`), the typed tool registry in `toolexecution`, and the failure tests (prompt
-    injection in a document, a tool reaching a private IP, the model asking for a forbidden tool).
+  - `S09` builds the `Planner` (`S09-06`) and the `ValidationGate` (`S09-07`) in the `ai` module
+    (documented in `module-api.md`, now implemented by code), the typed tool registry in
+    `toolexecution`, and the failure tests (prompt injection in a document, a tool reaching a
+    private IP, the model asking for a forbidden tool).
   - The `ai` module owns no table (`ADR-002`); it exposes the `ChatModel`/`Embedding` ports.

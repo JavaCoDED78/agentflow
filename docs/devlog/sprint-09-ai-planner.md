@@ -66,6 +66,97 @@ response into `PlannerPlan` (the model-to-DTO boundary type `PlannerPlanDto` in 
 here); `S09-07`: the `ValidationGate` (node/tool membership, DAG acyclicity, `PlanLimits`, budget,
 tenant); `S09-08`: bounded repair of a malformed plan.
 
+## S09-07 — The validation gate: the model *proposes*, the backend *authorizes before executing* — an unknown tool, a cycle and an over-limit plan never reach the executor.
+
+### What changed
+
+`S09-06` asked the model for a typed plan and returned it *without executing* it. `S09-07` is the
+server-side half of `ADR-006` made live: [`AiPlanExecutionService`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/AiPlanExecutionService.java)
+(`ai.application`) runs a [`ValidationGate`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ValidationGate.java)
+*before* a single step is allowed to reach the executor, and only a plan the gate passes is handed to
+the optional [`PlanExecutor`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanExecutor.java)
+port.
+
+The gate re-checks, purely and DB-free, the boundary plan (`PlannerPlanDto`) the Planner produced:
+
+- **shape** — the plan is non-null and declares at least one step;
+- **field contract** — every step carries a non-null, non-blank `id` and `type`;
+- **node membership** — each step's `type` is one of the closed node vocabulary (carried in `ValidationContext`);
+- **tool membership** — a `TOOL_CALL` step references a tool in the allowlist and carries a `toolId`; a non-tool step carries no `toolId` (a non-tool step naming a tool would smuggle a capability);
+- **DAG** — the `dependsOn` graph is acyclic, with no self-loop and no dangling reference;
+- **limits** — the step count is within `PlanLimits.maxSteps()` and the serialized output within `PlanLimits.maxOutputSize()`.
+
+The gate is a plain, deterministic value (`new ValidationGate()`), exactly as `PlannerService`
+constructs its `PlannerPlanParser`. It reads the external facts it cannot derive from the plan alone —
+the tenant, the allowed node types, the allowed tool names and the `PlanLimits` — through
+[`ValidationContext`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ValidationContext.java),
+a value the caller (the layer with the verified security context and the cross-module registry reach)
+assembles and passes in. Keeping the gate free of those edges leaves the `ai` module boundary
+unchanged (`S02-08`): the gate validates, it does not compile-depend on the registries it validates
+against. A rejected plan is one loud [`PlanValidationException`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanValidationException.java)
+carrying every failing check (`PlanValidationException#violations()`); the fail-safe
+[`PlanValidationResult`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanValidationResult.java)
+carries `valid` (true only when `violations` is empty) plus the ordered violations.
+
+`AiPlanExecutionService` is opt-in around the executor too: the `PlanExecutor` port is injected with
+`@Autowired(required = false)` (the same pattern `PlannerService` uses for its provider port), so a
+missing executor is a clear, call-time `IllegalStateException`, not a boot failure, and the gate
+guarantee holds regardless of who implements the port. Any module (e.g. `toolexecution`) implements
+`PlanExecutor`, reaching `ai` through its public `application` API, so the validate-before-execute
+seam introduces no cross-module compile edge.
+
+### Why
+
+`ADR-006`: the model is an untrusted planner, never an authorization authority. `S09-06` only
+*proposed*; `S09-07` *authorizes* the proposal server-side before any step runs. The Planner only
+ever sees the allowlist it was given; the gate re-checks that the plan references nothing outside it,
+so a hostile or prompt-injected response can never smuggle a tool, a node type or a capability the
+backend never approved (invariant 7). The check is split so the value type stays testable without a
+registry or a security context (`S09-05`), and every authorization decision stays on the backend.
+
+### Verification
+
+Four DB-free unit suites (31 tests, JUnit XML checked, all green — `tests=N skipped=0 failures=0 errors=0`):
+
+- **`ValidationGateTest`** (`ai.application`, 18 tests) pins the acceptance —
+  `unknown_tool_call_step_is_rejected`, `cycle_in_the_dependency_graph_is_rejected`,
+  `plan_over_the_step_limit_is_rejected`, `plan_over_the_output_size_is_rejected`, plus the field
+  contract (null id, blank type, unknown node, tool-less tool call, non-tool step with a toolId,
+  dangling dependency), the tenant-scoped allowlist (a registered-but-disallowed tool fails), the
+  empty/null-plan rejection and the passing paths.
+- **`AiPlanExecutionServiceTest`** (`ai.application`, 5 tests) proves the seam: a validated plan
+  reaches the executor exactly once; an unknown tool, a dependency cycle and an over-limit plan are
+  rejected *before* the (spy) executor sees them; a missing executor is a loud failure even for a
+  valid plan.
+- **`ValidationContextTest`** (`ai.application`, 5 tests) pins the context contract (null tenant /
+  null limits rejected, allowlists snapshotted unmodifiable, unset allowlist defaults to empty).
+- **`PlanValidationResultTest`** (`ai.application`, 3 tests) pins the fail-safe result shape
+  (valid ⇒ empty violations; invalid ⇒ unmodifiable snapshot).
+
+Run with
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.application.AiPlanExecutionServiceTest' --tests 'com.example.agentflow.ai.application.ValidationGateTest' --tests 'com.example.agentflow.ai.application.ValidationContextTest' --tests 'com.example.agentflow.ai.application.PlanValidationResultTest'`
+(all 31 pass, 0 failures); `:apps:agentflow-app:check` green (compilation, unit, the `ai`-only
+architecture boundary, spotless formatting, OpenAPI contract).
+
+### Docs
+
+- `docs/devlog/sprint-09-ai-planner.md` — this record.
+- `docs/architecture/module-api.md` — the `ai` section names `AiPlanExecutionService` (service),
+  `ValidationGate` (gate), `PlanExecutor` (port) and the `PlanValidationResult` /
+  `PlanValidationException` / `ValidationContext` permitted types.
+- `docs/domain-glossary.md` — `Validation gate`, `PlanExecutor`, `ValidationContext`.
+- `docs/adr/ADR-006` — the "skeleton, not yet implemented" consequence is replaced by the gate being
+  in force by code.
+- `CHANGELOG.md` — added the S09-07 bullet under `Unreleased → Added` (newest-first).
+- This file.
+
+### Follow-up
+
+`S09-08`: bounded repair of a malformed plan. `S09-09`: provider timeout / rate-limit / retries.
+`S09-10`: pre-call budget reservation (the gate validates the step/limits the planner carries; the
+budget reservation is a separate, pre-call guard). `S10`: embeddings / `EmbeddingPort` and the
+second provider (`ADR-014`).
+
 ## S09-06 — The Planner service: the model proposes a typed plan; the Planner asks for it through the port and returns it without ever executing it.
 
 ### What changed
