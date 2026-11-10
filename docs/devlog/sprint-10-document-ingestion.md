@@ -25,3 +25,26 @@ The `S10-01` acceptance: every transition is explicitly described and the retry/
 
 ### Not changed
 The code, the `documents` schema (S10-05), the upload/delete API, the ingestion worker and the events are untouched — this is documentation only; the enum + transition service they will implement are not on disk yet.
+
+## S10-02 — Storage config and object-key convention.
+
+
+### What changed
+Two additions in the `knowledgebase` module (object storage is a `knowledgebase` concern per `docs/architecture/module-map.md`), both DB-free, both part of the S10-02 deliverable: a typed, validated `agentflow.storage.*` configuration group, [`AgentFlowProperties.Storage`](../../apps/agentflow-app/src/main/java/com/example/agentflow/AgentFlowProperties.java), and the server-generated, tenant-scoped object-key convention [`DocumentObjectKey`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/DocumentObjectKey.java) in `knowledgebase.domain`.
+
+- **The config group** describes the S3-compatible bucket the objects live in — which bucket (`bucket`, default `agentflow`, matching the Garage bucket in `infra/compose` + `ADR-013`), where (`region`, default `garage`), the policy (`public-access`, `disabled` by default — the bucket is private, an object is never addressable through a public or anonymous URL) and the endpoint (`endpoint`, environment-specific, supplied per profile by the S3 client built in `S10-03`; a `null` endpoint fails clearly when that client is built, never silently). It binds the whole `agentflow.storage.*` tree, mirrors `AgentFlowProperties` with the same `@Validated` + `@ConfigurationProperties` binding, `@Valid` on the nested group and `@Autowired(required = false)`-style defensiveness. The S3 credentials (`AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` / `AGENTFLOW_OBJECT_STORAGE_SECRET_KEY`) come from the environment only, never from configuration or source (invariant 8).
+- **The object-key convention** is `documents/<tenantId>/<documentId>[.<ext>]` — generated **server-side** from the server-issued identifiers, never from the client `filename` and never a path the filename controls (invariant 1 / the S10-04 key-generation acceptance). The only separators are the fixed `documents/` prefix plus the two server UUIDs, and an extension (when present) is a content-type hint only, validated against a closed whitelist and never a path segment — so a hostile or prompt-injected `filename` can never become an object path or leak across tenants.
+
+
+### Why
+`S10-02` provides the storage configuration and the object-key convention the future ingestion / upload path (`S10-03` … `S10-13`) builds on: without a typed, validated group the endpoint / bucket / region would be magic numbers, and without a server-generated key there is no guarantee that an object's path is tenant-scoped or that a hostile `filename` cannot become a path. The private-by-bucket policy, the env-only credentials, and the server-generated key are the S10-02 acceptance — the parts that must be right before any payload is written. They are captured now as a DB-free value type and a validated config group (no `DataSource` / S3 dependency), so no Testcontainers integration test is needed at this stage; the real S3 client and ingestion round-trip are `S10-03`.
+
+
+### Verification
+- **The key is generated server-side from the ids, never from the filename** — [`DocumentObjectKeyTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/domain/DocumentObjectKeyTest.java) (9 tests, JUnit XML checked: `tests="4"` + `tests="2"` + `tests="3"`): server-side generation, tenant-scoping, the exact canonical shape (3 segments, no `..`, exact UUIDs) and rejection of a hostile `filename`;
+- **The config binds the safe defaults** — [`StoragePropertiesTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/StoragePropertiesTest.java) (5 tests): private-by-default, no public URL, custom `endpoint` / `bucket` / `region` bind and an invalid value fails startup through the validated binding;
+- `:apps:agentflow-app:check` green (unit + architecture + no-cycles + formatting + OpenAPI gates); `git diff --check` clean; the `knowledgebase` module boundary is unchanged (it still compiles only against `ai` / `workflowexecution`).
+
+
+### Not changed
+The S3 client, the credentials binding and the ingestion / upload wiring are `S10-03`; they are not on disk yet. Related changelog entry: **The storage config and object-key convention (S10-02)** in [`CHANGELOG.md`](../../CHANGELOG.md) (Unreleased → Added).

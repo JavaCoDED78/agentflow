@@ -40,6 +40,7 @@ public class AgentFlowProperties {
   @Valid private final Worker worker = new Worker();
   @Valid private final Tools tools = new Tools();
   @Valid private final Ai ai = new Ai();
+  private final Storage storage = new Storage();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -264,6 +265,13 @@ public class AgentFlowProperties {
    */
   public Ai getAi() {
     return ai;
+  }
+
+  /**
+   * @return the validated object-storage (Garage) settings (S10-02)
+   */
+  public Storage getStorage() {
+    return storage;
   }
 
   /**
@@ -1319,6 +1327,118 @@ public class AgentFlowProperties {
       public void setJitter(boolean jitter) {
         this.jitter = jitter;
       }
+    }
+  }
+
+  /**
+   * Object-storage (Garage) connection and access settings (S10-02). Bound from {@code
+   * agentflow.storage.*}. This group describes <b>which</b> bucket the document payloads live in,
+   * <b>where</b> the S3-compatible API is, and the <b>access policy</b>; the S3 client that
+   * consumes it (built in {@code S10-03}) reads and writes payloads through the app only, never
+   * through a public or anonymous URL (see the {@code S10-02} acceptance). The credentials
+   * themselves come from the environment ({@code AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY} / {@code
+   * AGENTFLOW_OBJECT_STORAGE_SECRET_KEY}), never from configuration or source (invariant 8).
+   *
+   * <p>The bucket is <b>private</b>: {@link #getPublicAccess()} defaults to {@link
+   * PublicAccess#DISABLED}, so no object is ever addressable through a public URL without
+   * authorization. Objects are read and written only through the app, which owns the credentials
+   * and re-checks the tenant (invariant 1) on every access; the object-key convention that
+   * namespaces every key by {@code tenantId} ({@link
+   * com.example.agentflow.knowledgebase.domain.DocumentObjectKey}) is a defence-in-depth on top of
+   * that app-layer decision.
+   */
+  public static class Storage {
+
+    /**
+     * The S3 endpoint (Garage, path-style SigV4). No default in the base profile: the endpoint is
+     * environment-specific and is supplied by the local / kubernetes profiles (and the local {@code
+     * .env}, via {@code AGENTFLOW_OBJECT_STORAGE_ENDPOINT}). The S3 client (S10-03) requires it; a
+     * {@code null} endpoint fails clearly when the client is built, never silently.
+     */
+    private String endpoint = null;
+
+    /** The bucket object payloads live in. Default {@code agentflow} (S01-15 / ADR-013). */
+    private String bucket = "agentflow";
+
+    /**
+     * The S3 region. Garage serves on region {@code garage}; kept configurable for the S3 contract.
+     */
+    private String region = "garage";
+
+    /**
+     * Whether anonymous / public access to objects is permitted. {@link PublicAccess#DISABLED} by
+     * default: objects are addressed only through the app and never through a public or anonymous
+     * URL (the {@code S10-02} acceptance). {@link PublicAccess#PUBLIC} exists only so an operator
+     * can explicitly opt in; the platform never enables it by default (invariant 8).
+     */
+    private PublicAccess publicAccess = PublicAccess.DISABLED;
+
+    /**
+     * @return the S3 endpoint (nullable; supplied by a profile, required by the S3 client)
+     */
+    public String getEndpoint() {
+      return endpoint;
+    }
+
+    /**
+     * @param endpoint the S3 endpoint
+     */
+    public void setEndpoint(String endpoint) {
+      this.endpoint = endpoint;
+    }
+
+    /**
+     * @return the bucket name (default {@code agentflow})
+     */
+    public String getBucket() {
+      return bucket;
+    }
+
+    /**
+     * @param bucket the bucket name
+     */
+    public void setBucket(String bucket) {
+      this.bucket = bucket;
+    }
+
+    /**
+     * @return the S3 region (default {@code garage})
+     */
+    public String getRegion() {
+      return region;
+    }
+
+    /**
+     * @param region the S3 region
+     */
+    public void setRegion(String region) {
+      this.region = region;
+    }
+
+    /**
+     * @return whether anonymous / public access is permitted (default {@link
+     *     PublicAccess#DISABLED})
+     */
+    public PublicAccess getPublicAccess() {
+      return publicAccess;
+    }
+
+    /**
+     * @param publicAccess the access policy
+     */
+    public void setPublicAccess(PublicAccess publicAccess) {
+      this.publicAccess = publicAccess;
+    }
+
+    /**
+     * Object-access policy. {@link #DISABLED} (the default) means the bucket is private and objects
+     * are read only through the app; {@link #PUBLIC} opts an operator in to anonymous / public
+     * addressing, which the platform never enables by default (invariant 8 / the {@code S10-02}
+     * acceptance).
+     */
+    public enum PublicAccess {
+      DISABLED,
+      PUBLIC
     }
   }
 }

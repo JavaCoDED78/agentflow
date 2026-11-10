@@ -74,6 +74,16 @@ agentflow:
       pool-size: 8
       global-max-concurrency: 32
       per-tenant-max-concurrency: 8
+  # Object storage (Garage, S3-compatible) settings (S10-02). Bound from agentflow.storage.* and
+  # consumed by the S3 client built in S10-03. The bucket and the private (no public URL) policy are
+  # fixed here; the endpoint is environment-specific and supplied per profile (local / kubernetes),
+  # never hardcoded here. The S3 credentials come from the environment, never from configuration
+  # (invariant 8). The bucket is private by default (public-access: disabled): objects are read and
+  # written only through the app, never via a public or anonymous URL (the S10-02 acceptance).
+  storage:
+    bucket: agentflow
+    region: garage
+    public-access: disabled
   # Kafka outbound producer (S06-09). Disabled by default: the skeleton boots without Kafka (S01-02),
   # and the KafkaMessageDeliverer bean only exists when agentflow.kafka.producer.enabled=true. Enable
   # it in a profile (local / kubernetes) with a reachable agentflow.kafka.producer.bootstrap-servers;
