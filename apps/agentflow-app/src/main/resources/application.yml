@@ -75,7 +75,7 @@ agentflow:
       global-max-concurrency: 32
       per-tenant-max-concurrency: 8
   # Object storage (Garage, S3-compatible) settings (S10-02). Bound from agentflow.storage.* and
-  # consumed by the S3 client built in S10-03. The bucket and the private (no public URL) policy are
+  # consumed by the S3 client built in S10-05. The bucket and the private (no public URL) policy are
   # fixed here; the endpoint is environment-specific and supplied per profile (local / kubernetes),
   # never hardcoded here. The S3 credentials come from the environment, never from configuration
   # (invariant 8). The bucket is private by default (public-access: disabled): objects are read and
@@ -84,6 +84,15 @@ agentflow:
     bucket: agentflow
     region: garage
     public-access: disabled
+  # Document-upload limits (S10-03). Bound from agentflow.upload.* and consumed by the
+  # DocumentUploadValidator the upload API drives. These bounds (payload size, sanitised filename
+  # length, and for media the decoded duration) are checked before any byte is written to object
+  # storage and before any documents row is committed, so an oversized or unsupported upload is
+  # rejected without leaving a dangling object or metadata row. Configured, not magic numbers.
+  upload:
+    max-bytes: 10485760 # 10 MiB
+    max-filename-length: 255
+    max-media-duration-seconds: 300 # 5 minutes; applies to media types (audio/wav) only
   # Kafka outbound producer (S06-09). Disabled by default: the skeleton boots without Kafka (S01-02),
   # and the KafkaMessageDeliverer bean only exists when agentflow.kafka.producer.enabled=true. Enable
   # it in a profile (local / kubernetes) with a reachable agentflow.kafka.producer.bootstrap-servers;

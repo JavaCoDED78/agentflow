@@ -48,3 +48,44 @@ Two additions in the `knowledgebase` module (object storage is a `knowledgebase`
 
 ### Not changed
 The S3 client, the credentials binding and the ingestion / upload wiring are `S10-03`; they are not on disk yet. Related changelog entry: **The storage config and object-key convention (S10-02)** in [`CHANGELOG.md`](../../CHANGELOG.md) (Unreleased → Added).
+
+## S10-03 — Document upload validation (accept/bound layer).
+
+
+### What changed
+The accept/bound checks the `POST /v1/documents` upload API runs before a single byte is written to
+object storage and before a single `documents` metadata row is committed. This is the whole of `S10-03`
+that is fully verifiable today: it needs no storage backend, no `documents` schema (S10-05) and no
+ingestion worker (S10-03 … S10-13) — only the configured limits — so it is the safe core the upload API
+can drive from an early API and unit-test in isolation, exactly as `S10-02` gave a usable value type and
+a validated config group before the real S3 client. The pieces:
+
+- **Config** — `agentflow.upload.*` on [`AgentFlowProperties.Upload`](../../apps/agentflow-app/src/main/java/com/example/agentflow/AgentFlowProperties.java): `max-bytes` (default `10485760`, 10 MiB), `max-filename-length` (default `255`), `max-media-duration-seconds` (default `300`, 5 minutes; media types only). Bound with the same `@Validated` + `@ConfigurationProperties` path as the other `agentflow.*` groups; a value below the minimum fails boot. Documented in [`application.yml`](../../apps/agentflow-app/src/main/resources/application.yml) and bound by [`config.DocumentUploadConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/DocumentUploadConfiguration.java), following the `ToolExecutionConfiguration` precedent (the validator is a value-bound bean built from the config group, never a `@Component`).
+- **Domain** — [`DocumentContentType`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/DocumentContentType.java): the closed allowlist (application/pdf, image/png, image/jpeg, image/gif, image/bmp, audio/wav, text/plain, text/markdown, text/csv, text/richtext, application/json, application/xml, text/xml); `from(String)` rejects anything not on it (an untrusted header cannot expand the surface), `matches(byte[])` verifies the real leading bytes — magic bytes, RIFF/WAVE or a light text check — so a payload that misrepresents itself is rejected, `isMedia()` flags the duration-bounded types, `isPermitted(String)` is the non-throwing allowlist probe; [`FileNameSanitizer`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/FileNameSanitizer.java): strips any path/traversal/control character to a bare base name, rejecting a blank, `.`-only or `..`-only input so the filename can never become an object path (invariant 1 / `S10-04`); [`MediaDuration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/MediaDuration.java): decodes the WAV duration from the header (RIFF/WAVE + fmt/data) so it can be bounded; [`DocumentUploadLimits`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/DocumentUploadLimits.java): immutable domain view of the three limits, constructor validation; [`DocumentUploadStatus`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/DocumentUploadStatus.java): the upload lifecycle state (UPLOADED → QUEUED → PROCESSING → INDEXED, FAILED, DELETE_REQUESTED, DELETED).
+- **Application** — [`DocumentUploadValidator`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/application/DocumentUploadValidator.java): runs the checks in reject-before-persist order — filename → content type → size → magic bytes → media duration → SHA-256 checksum — and every rejection is one [`DocumentUploadValidationException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/application/DocumentUploadValidationException.java) (the HTTP layer maps it to a `400`, `common.ErrorClass`); the payload bytes are never written by this call. [`ValidatedUpload`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/application/ValidatedUpload.java): the safe filename, canonical type, size, checksum and (for media) duration the row carries.
+
+
+### Why
+`S10-02` gave the storage configuration and the object-key convention the upload path builds on; `S10-03`
+gives the upload API the accept/bound layer it needs before it ever reaches storage. The limits are the
+first line of defense against oversized / hostile uploads and a prompt-injected content type, and they are
+the S10-03 acceptance: an oversized or unsupported upload is rejected without leaving a dangling metadata
+row or object. They are captured as pure, DB-free value types and a validated config group (no `DataSource`
+/ S3 dependency), so no Testcontainers integration test is needed at this stage — the real S3 client, the
+`documents` schema and the ingestion worker are `S10-03` … `S10-13`. No behaviour, interface or design
+choice is left open beyond the closed allowlist / three limits / reject-before-persist order the plan and
+invariants already dictate, so `brainstorming` is skipped.
+
+
+### Verification
+- **The closed allowlist and magic-byte verification** — [`DocumentContentTypeTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/domain/DocumentContentTypeTest.java): `from` resolves a declared type, strips parameters and rejects anything not on the allowlist; `matches` verifies the real leading bytes for a PDF, PNG and WAV (a payload that misrepresents itself is rejected), an empty payload never matches, a JSON payload needs a structural character; `isMedia()` / `isPermitted()`.
+- **The filename can never carry a path or traversal** — [`FileNameSanitizerTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/domain/FileNameSanitizerTest.java): a plain name is returned, a path is reduced to its trailing segment, a blank/null / null-byte / control-char / `..`-only input is rejected, and `../secret` / `../../etc/passwd` are sanitized to their safe base rather than trusted.
+- **The WAV duration decode** — [`MediaDurationTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/domain/MediaDurationTest.java): duration equals `data / byte_rate`, and a non-WAV payload returns empty.
+- **The limits are a validated value** — [`DocumentUploadLimitsTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/domain/DocumentUploadLimitsTest.java): value equality by the three fields, a non-positive limit is rejected.
+- **The reject-before-persist contract** — [`DocumentUploadValidatorTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/application/DocumentUploadValidatorTest.java): the accept case (safe filename, canonical type, size, real SHA-256 checksum, media duration) and every reject case — oversized, unsupported content type, tampered magic bytes, over-long filename, traversal name, over-long media, undecodable media, null payload — each throwing `DocumentUploadValidationException`.
+- **The config binds the safe defaults** — [`UploadPropertiesTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/UploadPropertiesTest.java): the `agentflow.upload.*` group binds the defaults, custom values override them and a negative value fails startup through the validated binding.
+- `:apps:agentflow-app:check` green (unit + architecture + no-cycles + formatting + OpenAPI gates); `git diff --check` clean; the `knowledgebase` module boundary is unchanged — the accept/bound layer compiles only against the closed `knowledgebase` value types.
+
+
+### Not changed
+The S3 client, the credentials binding, the `documents` schema (S10-05), the ingestion worker and the upload/delete API are `S10-03` … `S10-13`; they are not on disk yet. The upload validation layer is a `knowledgebase` concern; it writes nothing and owns no row, so it changes no existing module. Related changelog entry: **The document upload validation layer (S10-03)** in [`CHANGELOG.md`](../../CHANGELOG.md) (Unreleased → Added).
