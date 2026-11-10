@@ -69,6 +69,27 @@ class PlannerPlanParserTest {
 
     assertThatThrownBy(() -> parser.parse(json))
         .isInstanceOf(PlannerPlanParseException.class)
-        .hasMessageContaining("duplicate step id");
+        .hasMessageContaining("duplicate step id")
+        // The structural violation classifies as SCHEMA_MISMATCH, not MALFORMED_JSON: Jackson 3
+        // wraps the record canonical-constructor failure in a JacksonException, and the parser
+        // unwraps the cause chain to keep the documented distinction.
+        .extracting(e -> ((PlannerPlanParseException) e).classification())
+        .isEqualTo(PlannerFailure.SCHEMA_MISMATCH);
+  }
+
+  @Test
+  void a_dangling_dependency_classifies_as_schema_mismatch_too() {
+    String json = "{\"steps\":[{\"id\":\"s1\",\"type\":\"FINALIZE\",\"dependsOn\":[\"ghost\"]}]}";
+
+    assertThatThrownBy(() -> parser.parse(json))
+        .isInstanceOf(PlannerPlanParseException.class)
+        .hasMessageContaining("unknown step")
+        .extracting(e -> ((PlannerPlanParseException) e).classification())
+        .isEqualTo(PlannerFailure.SCHEMA_MISMATCH);
+  }
+
+  @Test
+  void a_null_payload_is_a_contract_error_not_a_parse_failure() {
+    assertThatThrownBy(() -> parser.parse(null)).isInstanceOf(IllegalArgumentException.class);
   }
 }
