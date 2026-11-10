@@ -4,6 +4,72 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-12
+
+### What changed
+- The opt-in real provider contract test (S09-12).
+  [`RealProviderContractTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/provider/RealProviderContractTest.java)
+  (test source set, `ai.provider`, `@Tag("real-provider")`) verifies the OpenAI adapter contract
+  against a **live** provider, so the mapping can never silently drift from the real API shape the
+  S09-11 fake stands in for. Three checks, each through the production wiring
+  (`OpenAiChatModelConfiguration` + resilience layer booted via `ApplicationContextRunner`, so the
+  rendering/mapping under test is exactly what production runs):
+  - response mapping + token usage — a plain completion maps to the neutral `ChatResponse` with
+    non-null content, the provider-reported model and finish reason, and `ChatUsage` with positive
+    input/output counts whose total matches the sum;
+  - structured output — a neutral `outputSchemaJson` renders into the provider's
+    structured-output form and the completion parses as JSON conforming to the schema (the
+    Planner's S09-05 seam end to end);
+  - timeout — the production `ResilientChatModel` aborts a real in-flight call (a forced
+    ~150-token generation cannot finish inside the bound) and the production
+    `ProviderExceptionClassifier` maps the abort to `TIMEOUT`.
+- The opt-in mechanism. The default `test` task excludes the `real-provider` tag (so `./gradlew
+  check` stays free, offline and deterministic), and a new `realProviderContractTest` Gradle task
+  runs only that tag, only when `OPENAI_API_KEY` is set (`onlyIf` with an explicit skip reason).
+  The key is read from the environment / a `agentflow.contract-test.*` system property only; model,
+  base URL and the timeout bound are overridable for compatible gateways.
+
+### Why
+- The S09-12 acceptance: the adapter is verified against the real provider, but the standard CI
+  gate remains free and deterministic. The offline gate keeps using the S09-11
+  `FakeModelProvider` fixtures; this suite is the scheduled/manual smoke that catches a provider
+  contract drift the fake cannot see (response envelope shape, usage accounting, structured-output
+  rendering, real timeout faults). An invalid key fails loudly from the provider's real error —
+  a contract test working as intended, never a silent pass.
+
+### Verification
+- `./gradlew :apps:agentflow-app:test --tests '*ai.provider*'` green, and the JUnit XML of the
+  default `test` task contains **no** `RealProviderContractTest` results — the tag exclusion is
+  real.
+- `./gradlew :apps:agentflow-app:realProviderContractTest` without `OPENAI_API_KEY` →
+  `SKIPPED` with the explicit reason; build successful.
+- `OPENAI_API_KEY=<dummy> AGENTFLOW_CONTRACT_TEST_TIMEOUT_MILLIS=50 ./gradlew
+  :apps:agentflow-app:realProviderContractTest` → the task runs against the live endpoint: the
+  timeout check **passed** (the abort fired in flight and classified `TIMEOUT`), while the two
+  mapping checks failed loudly with the provider's real `403 Country, region, or territory not
+  supported` — this sandbox's egress IP is geo-blocked and the key is a dummy, which is exactly
+  how a contract test must behave. With a valid key from a supported region all three checks
+  exercise the real happy path (RTT here ~100–200 ms; a forced long generation takes seconds, so
+  the default 500 ms bound is safe for healthy endpoints).
+- Design note from that run: a millisecond SDK read timeout was rejected for the timeout check —
+  it also interrupts the TLS handshake on some network paths (classified `CONNECTION`, not
+  `TIMEOUT`), which is environment noise. The platform's own overall-timeout seam
+  (`ResilientChatModel`) is the deterministic bound against a live provider; SDK read-timeout
+  classification stays covered offline by `ProviderExceptionClassifierTest` and the fake `TIMEOUT`
+  fixture.
+- `./gradlew :apps:agentflow-app:check` green (see below).
+
+### Docs
+- `CHANGELOG.md`: S09-12 entry under `Unreleased / Added` (newest-first).
+- `docs/ai/real-provider-contract-test.md`: opt-in mechanism, configuration table, the three
+  checks, report location and format, scheduling and cost notes.
+- `docs/README.md`: the `docs/ai/` index entry points at the new document; `rag/` and
+  `evaluation/` stay ⚠ planned.
+
+### Follow-up
+- S09-13 (AI redaction tests) is the next dependency-safe task in the sprint.
+
+
 ## S09-11
 
 ### What changed

@@ -203,7 +203,12 @@ tasks.register<JavaExec>("generateOpenApiContract") {
 // extends testImplementation) so the Testcontainers / JUnit dependencies are
 // declared once, not duplicated.
 tasks.named<Test>("test") {
-    useJUnitPlatform()
+    // The opt-in real-provider contract test (S09-12) is tagged `real-provider` and excluded
+    // from the fast gate, so `./gradlew check` stays free, offline and deterministic — it needs
+    // neither an API key nor a network. Run it on demand via `realProviderContractTest`.
+    useJUnitPlatform {
+        excludeTags("real-provider")
+    }
     // Fail the build (not silently pass) if a future change makes the platform
     // discover zero tests. This caught the silent "0 tests discovered" pass.
     failOnNoDiscoveredTests = true
@@ -253,4 +258,25 @@ tasks.register<Test>("integrationTest") {
     useJUnitPlatform()
     // Fail loudly if the suite is ever emptied instead of silently passing.
     failOnNoDiscoveredTests = true
+}
+
+// The opt-in real-provider contract smoke test (S09-12). The `real-provider`-tagged
+// RealProviderContractTest is excluded from the standard `test` task (and therefore from
+// `check`), so the every-PR gate stays free, offline and deterministic; this task runs only that
+// tag and only when OPENAI_API_KEY is present, so a manual or scheduled run is explicit and an
+// unconfigured environment skips with a clear reason instead of failing. The report is the
+// standard JUnit XML / HTML under build/test-results/realProviderContractTest and
+// build/reports/tests/realProviderContractTest; see docs/ai/real-provider-contract-test.md.
+tasks.register<Test>("realProviderContractTest") {
+    group = "verification"
+    description = "Runs the opt-in real model provider contract test (needs OPENAI_API_KEY); never part of check."
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        includeTags("real-provider")
+    }
+    failOnNoDiscoveredTests = true
+    onlyIf("OPENAI_API_KEY is not set") {
+        System.getenv("OPENAI_API_KEY")?.isNotBlank() == true
+    }
 }

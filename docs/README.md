@@ -71,7 +71,7 @@ docs/
 │   └── dsl-v1.md                      ← workflow DSL v1: shape, node types, validation, examples (S05-17)
 ├── tools/
 │   └── README.md                      ← tool authoring guide (S08-15)
-├── ai/, rag/, evaluation/             ⚠ planned — providers, RAG, eval sets
+├── ai/                                real-provider-contract-test.md ← opt-in live provider contract test (S09-12); rag/, evaluation/ ⚠ planned
 ├── observability/                     ⚠ planned (S13) — standards, metric catalogue, SLOs
 └── load-tests/                        ⚠ planned — k6 scenarios, reports, environment description
 ```
@@ -106,7 +106,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Security & threat model | `docs/security/`, `docs/threat-model/` | `permissions.md` (S04-04 catalogue), `tenant-claim.md` (S04-05 tenant claim), `response-policy.md` (S04-09 masking policy), `secrets.md` (S09-03 secrets policy); threat-model full model (S11) |
 | Workflow DSL & examples | `docs/workflows/` | `docs/workflows/dsl-v1.md` (S05-17) |
 | Tools | `docs/tools/` | `README.md` authoring guide (S08-15) |
-| AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | ⚠ planned |
+| AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test); provider configuration & eval sets ⚠ planned |
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
 | Usage, costs, budgets, audit | `docs/usage-and-costs.md` | ⚠ planned |
