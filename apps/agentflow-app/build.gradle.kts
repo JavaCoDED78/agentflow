@@ -31,7 +31,7 @@ dependencies {
     // The OpenAI starter is BOM-managed (version from spring-ai-bom) and opt-in: the Spring AI
     // beans are created only by a @ConditionalOnProperty config (agentflow.ai.provider=openai),
     // so the core app boots without a provider profile and without any AI key. The API key and
-    // base URL come from the environment / secrets (application.yml, docs/ai/provider.md), never
+    // base URL come from the environment / secrets (application.yml, docs/ai/provider-configuration.md), never
     // hardcoded. See ADR-014.
     implementation(libs.spring.ai.openai)
     implementation("org.springframework.boot:spring-boot-starter-web")
