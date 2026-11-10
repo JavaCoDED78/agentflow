@@ -40,6 +40,7 @@ public class AgentFlowProperties {
   @Valid private final Worker worker = new Worker();
   @Valid private final Tools tools = new Tools();
   @Valid private final Ai ai = new Ai();
+  @Valid private final Upload upload = new Upload();
   private final Storage storage = new Storage();
 
   /**
@@ -272,6 +273,13 @@ public class AgentFlowProperties {
    */
   public Storage getStorage() {
     return storage;
+  }
+
+  /**
+   * @return the validated document-upload limits (S10-03)
+   */
+  public Upload getUpload() {
+    return upload;
   }
 
   /**
@@ -1439,6 +1447,88 @@ public class AgentFlowProperties {
     public enum PublicAccess {
       DISABLED,
       PUBLIC
+    }
+  }
+
+  /**
+   * Document-upload limits (S10-03). Bound from {@code agentflow.upload.*}. These are the
+   * accept/bound checks that run <b>before</b> a single byte is written to object storage and
+   * before a single metadata row is committed (the {@code S10-03} acceptance: an oversized or
+   * unsupported file is rejected without leaving a dangling metadata row or object). They live in
+   * configuration, not in code, following the rule that budgets and limits are configured, and they
+   * are validated at startup so a nonsensical limit fails boot rather than silently accepting
+   * everything.
+   *
+   * <p>Three independent bounds:
+   *
+   * <ul>
+   *   <li><b>max-bytes</b> &mdash; the maximum upload payload size; a larger payload is rejected.
+   *   <li><b>max-filename-length</b> &mdash; the maximum length of the sanitised client filename
+   *       that is stored on the {@code documents} row; the filename is server-sanitised (no path,
+   *       no traversal) so it can never become an object path (invariant 1 / {@code S10-04}).
+   *   <li><b>max-media-duration-seconds</b> &mdash; the maximum decoded duration, in seconds, of a
+   *       media upload (currently {@code audio/wav}); longer media is rejected. Non-media types are
+   *       never duration-checked.
+   * </ul>
+   */
+  public static class Upload {
+
+    /** Maximum upload payload size in bytes. Default 10 MiB; at least 1, a value below 1 fails. */
+    @Min(value = 1, message = "agentflow.upload.max-bytes must be at least 1")
+    private int maxBytes = 10 * 1024 * 1024;
+
+    /** Maximum length of the sanitised filename stored on the document row. Default 255. */
+    @Min(value = 1, message = "agentflow.upload.max-filename-length must be at least 1")
+    private int maxFileNameLength = 255;
+
+    /**
+     * Maximum decoded duration, in seconds, of a media upload before it is rejected. Default 300 (5
+     * minutes); at least 1, a value below 1 fails. Only applies to content types flagged as media
+     * (currently {@code audio/wav}); static document types are never duration-checked.
+     */
+    @Min(value = 1, message = "agentflow.upload.max-media-duration-seconds must be at least 1")
+    private int maxMediaDurationSeconds = 300;
+
+    /**
+     * @return the maximum upload payload size in bytes (default {@code 10485760}, 10 MiB)
+     */
+    public int getMaxBytes() {
+      return maxBytes;
+    }
+
+    /**
+     * @param maxBytes the maximum upload payload size in bytes (at least 1)
+     */
+    public void setMaxBytes(int maxBytes) {
+      this.maxBytes = maxBytes;
+    }
+
+    /**
+     * @return the maximum sanitised filename length (default {@code 255})
+     */
+    public int getMaxFileNameLength() {
+      return maxFileNameLength;
+    }
+
+    /**
+     * @param maxFileNameLength the maximum sanitised filename length (at least 1)
+     */
+    public void setMaxFileNameLength(int maxFileNameLength) {
+      this.maxFileNameLength = maxFileNameLength;
+    }
+
+    /**
+     * @return the maximum media upload duration in seconds (default {@code 300}, 5 minutes)
+     */
+    public int getMaxMediaDurationSeconds() {
+      return maxMediaDurationSeconds;
+    }
+
+    /**
+     * @param maxMediaDurationSeconds the maximum media upload duration in seconds (at least 1)
+     */
+    public void setMaxMediaDurationSeconds(int maxMediaDurationSeconds) {
+      this.maxMediaDurationSeconds = maxMediaDurationSeconds;
     }
   }
 }
