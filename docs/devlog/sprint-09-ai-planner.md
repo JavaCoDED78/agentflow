@@ -4,6 +4,55 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-14 — Planner baseline eval cases: a prompt/model change is compared against a fixed, structurally scored baseline, never on text similarity
+
+### What changed
+- The internal `ai.evaluation` package holds the harness and the fixtures:
+  - [`PlannerEvalCase`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/evaluation/PlannerEvalCase.java)
+    — a fixed task, the tool allowlist handed to the Planner for it, and the exact expected plan
+    shape (step count + referenced tool set);
+  - [`PlannerEvalCases`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/evaluation/PlannerEvalCases.java)
+    — the fixed baseline: `calc-then-finalize` (minimal tool pipeline), `calc-report-finalize`
+    (two-tool chain), `finalize-only` (no-tool answer against an empty allowlist),
+    `parallel-calc-finalize` (fork into one finalize), using the built-in `calculator` / `report`
+    registry names;
+  - [`PlannerEvalRunner`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/evaluation/PlannerEvalRunner.java)
+    — drives the production `PlannerService` (bounded repair and pre-call budget guard included)
+    and re-checks every plan with the production `ValidationGate`; scores four structural metrics
+    per case: schema validity, tool allowlist conformance, expected shape, limits. A failed model
+    attempt is a failed case carrying its `PlannerFailure` classification, never a rethrown fault;
+  - [`PlannerEvalReport`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/evaluation/PlannerEvalReport.java)
+    — aggregates pass/fail and renders a byte-stable report (fixed `\n` endings, no timestamps,
+    fixture order) so two configurations diff directly.
+
+### Why
+- The S09-14 acceptance: a prompt or model change can be compared against the baseline. The eval
+  deliberately scores structure — schema validity, allowed tools, steps, limits — not textual
+  similarity: a plan is a typed graph to validate, not prose. Expectations are exact ("close
+  enough" is not a pass); dependency wiring is covered by the schema-validity metric, so step-id
+  naming taste never fails a case.
+
+### Verification
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.evaluation.*'` green; the
+  JUnit XML shows `tests="7" skipped="0" failures="0"` — the suite really ran.
+- The 7 tests pin: the baseline passes against an ideal scripted model; a tool outside the
+  allowlist fails with the gate's `unknown tool` violation; an over-limit plan (`PlanLimits(1, …)`)
+  fails the limits metric; a malformed response is a `MALFORMED_JSON` schema failure with null
+  model/prompt metadata; an unexpected step count fails the shape metric only (schema/limits stay
+  green); the rendered report is identical across runs; null construction arguments are contract
+  errors.
+
+### Docs
+- `CHANGELOG.md`: S09-14 entry under `Unreleased / Added` (newest-first).
+- `docs/evaluation/README.md`: the cases, the metrics, the run/compare commands — the promised
+  `docs/evaluation/` tree entry is no longer ⚠ planned; `docs/README.md` (tree + topic table) and
+  the `ai` module `AGENTS.md` package layout are updated.
+
+### Follow-up
+- S09-15 (AI integration guide) documents the eval run command and the real-provider eval wiring
+  on top of this harness; see below for the earlier S09-12/S09-13 records.
+
+
 ## S09-12
 
 ### What changed
