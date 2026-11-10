@@ -4,6 +4,37 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-15 — Document the AI integration: provider behind a port (opt-in, key from env/secret), the offline fake provider for CI, prompt versioning, structured-output validation, refusal/malformed/timeout/rate-limit handling, budget reservation, and the Planner eval run command — an integration guide without a local-environment dependency.
+
+
+### What changed
+Two documents complete the `docs/ai/` tree: [`docs/ai/README.md`](../../docs/ai/README.md) (the AI integration guide) and [`docs/ai/provider-configuration.md`](../../docs/ai/provider-configuration.md) (provider wiring). They transcribe the already-solved AI layer (S09-01 … S09-14) into an operator/developer reference; the code is unchanged, so `brainstorming` is skipped for this documentation task.
+
+**The AI integration guide** (`docs/ai/README.md`) leads with the `ADR-006` / invariant-7 premise and the verifyable seams: the port-not-provider boundary (S09-01), the untrusted-planner gate where the model *proposes* and the backend *authorizes before executing* (S09-07), the bounded call and the pre-call budget reservation (S09-09 / S09-10), the versioned/hashed prompt catalogue with the SYSTEM/USER split (S09-04), the refusal / malformed / schema-mismatch / empty handling (S09-06 / S09-08), the opt-in live-provider contract test, and the eval run command with the four per-case metrics (S09-14).
+
+**The provider configuration guide** (`docs/ai/provider-configuration.md`) is the wiring reference. It pins the exact configuration keys and defaults verified in code: the `agentflow.ai.provider` gate (`openai` | `fake`, `matchIfMissing = false` so unset = no provider bean); the OpenAI secret + endpoint (`agentflow.ai.provider.openai.{api-key|model|base-url}`, the key also from `OPENAI_API_KEY`, model default `gpt-4o-mini`, base URL default the public endpoint); the resilience keys and defaults (`agentflow.ai.timeout.{connect-seconds,read-seconds,overall-seconds}` = 10/120/150, `agentflow.ai.retry.{max-attempts,base-delay-seconds,multiplier,max-delay-seconds,jitter}` = 3/1/2.0/60/true, `agentflow.ai.max-parallel-calls` = 4); the fake fixture modes (`agentflow.ai.provider.fake.mode`, default `valid-plan`; `valid-plan`, `invalid-plan`, `malformed-response`, `timeout`, `429`/rate-limit, `refusal`); and the `ai.prompt.prompts[]` declaration (`planner` / `version "1"`). Secrets are documented as env/secret-store only.
+
+### Why
+The S09-15 acceptance: the AI integration guide must be usable without binding it to one local environment, real credentials must reach a deployment only through secret/env configuration, and the eval command with its expected result fields must be documented. The `ai` module was built across S09-01 … S09-14 but only had inline Javadoc; the two new documents are the single source of truth an operator reads to wire a provider, reason about resilience, enable the offline fake, and run the eval — the promised `docs/ai/` tree entry (the index and the `ai/AGENTS.md` package layout were the only `docs/` owners of AI; `docs/evaluation/` is S09-14, the opt-in contract test is S09-12).
+
+### Verification
+- The commands documented in the guides are the repository's own, run verbatim in the S09-09 … S09-14 records and still green: `./gradlew :apps:agentflow-app:check` (the standard gate runs the Planner against the fake fixtures with no key and no network); `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.evaluation.*'` (the offline eval suite); `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.provider.FakeModelProviderTest'` and `FakeModelConfigurationTest` (every fixture, the opt-in gate).
+- The configuration keys and defaults quoted in the guide were cross-checked against `AgentFlowProperties.Ai` (`agentflow.ai.timeout.*` / `agentflow.ai.retry.*` / `max-parallel-calls`), `application.yml` (`ai.prompt.prompts`), `OpenAiChatModelConfiguration` (`agentflow.ai.provider.openai.*`), and `FakeModelConfiguration` / `FakeModelProvider.Fixture` (`agentflow.ai.provider.fake.mode`); the `@ConditionalOnProperty` gate (`matchIfMissing = false`) and the test-source-set placement of the fake (S04-10) are re-checked in the code, not restated from memory.
+- No key, credential or connection string is written in the guides or the examples.
+- `docs/README.md`: the `docs/ai/` index entry and the AI/RAG/evaluation row now point at the two new documents; the `provider configuration ⚠ planned (S09-15)` marker is removed (a document that now exists is never marked planned). `CHANGELOG.md`: the S09-15 entry under `Unreleased / Added` (newest-first).
+- **Not changed:** the code, the port, the adapter, the resilience policy, the prompt catalogue and the eval harness are untouched — this is documentation only; `./gradlew check` was not run against a code change, so the architecture / formatting gates are unchanged from the S09-09 … S09-14 runs.
+
+### Docs
+- `docs/ai/README.md` — AI integration guide (S09-15), newly created.
+- `docs/ai/provider-configuration.md` — provider wiring, secrets, resilience, fake provider, budget, eval command (S09-15), newly created.
+- `docs/README.md` — `docs/ai/` index entry + AI/RAG/evaluation row updated; `provider configuration ⚠ planned` marker removed.
+- `CHANGELOG.md` — S09-15 entry under `Unreleased / Added` (newest-first).
+- This file.
+
+### Follow-up
+`S13` (the RAG pipeline: document ingestion, pgvector hybrid retrieval, citations) completes the `docs/ai/` family with an `ai/` RAG document; the eval harness (`docs/evaluation/README.md`, S09-14) and the opt-in contract test (`docs/ai/real-provider-contract-test.md`, S09-12) already link to this guide as part of the AI integration reference.
+
+
 ## S09-14 — Planner baseline eval cases: a prompt/model change is compared against a fixed, structurally scored baseline, never on text similarity
 
 ### What changed
