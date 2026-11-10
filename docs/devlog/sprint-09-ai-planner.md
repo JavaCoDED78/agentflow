@@ -4,6 +4,69 @@
 # Sprint 9 — AI layer / Planner
 
 
+## S09-11
+
+### What changed
+- The deterministic fake model provider (S09-11). [`FakeModelProvider`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/provider/FakeModelProvider.java)
+  (test source set, `ai.provider`) is a `ChatModelPort` that reproduces every provider outcome the
+  platform must survive — one fixture per behaviour, each fully deterministic: `VALID_PLAN` (a
+  fixed two-step plan that parses through the real `PlannerPlanParser`), `INVALID_PLAN`
+  (well-formed JSON with a duplicated step id), `MALFORMED_RESPONSE` (not JSON), `TIMEOUT` (a
+  fault carrying a `TimeoutException` cause), `RATE_LIMIT` (a 429 `OpenAIServiceException`) and
+  `REFUSAL` (`null` content with a `content_filter` stop). Every call is counted, so bounded-repair
+  tests assert the exact number of model calls. The fault fixtures reuse the production fault
+  *types* rather than parallel fake ones, so the real `ProviderExceptionClassifier` maps them to
+  `TIMEOUT` / `RATE_LIMIT` (retryable under the S09-09 policy) exactly as it would a live provider
+  fault.
+- Test-only wiring. [`FakeModelConfiguration`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/provider/FakeModelConfiguration.java)
+  exposes the fake as the `ChatModelPort` bean when `agentflow.ai.provider=fake`, with the fixture
+  selected by `agentflow.ai.provider.fake.mode` (default `valid-plan`; `429` accepted as the
+  rate-limit alias; an unknown mode fails the context at bean creation). It lives in the test
+  source set — the S04-10 pattern for the permissive security chain — so a misconfigured profile
+  can never point a real deployment at it, and the default / local / kubernetes profiles keep the
+  S09-02 contract (no provider bean, no key, bootable core app).
+
+### Why
+- The S09-11 acceptance: the standard `./gradlew check` gate must need neither an API key nor an
+  internet connection. The Planner (and later the AI step handler) is exercised against fixed
+  fixtures instead of a live model, so CI is deterministic, free and offline — while the fixtures
+  flow through the *real* seams (parser, classifier, Planner bounded repair), not parallel
+  reimplementations of them.
+
+### Verification
+- Three new suites (26 tests, JUnit XML checked, all green): `FakeModelProviderTest` (20 — each
+  fixture through the real parser / classifier / Planner: valid plan parses into the expected
+  two-step plan, invalid plan rejected with the duplicate-id signal, malformed rejected as
+  `MALFORMED_JSON`, timeout and 429 classify as `TIMEOUT` / `RATE_LIMIT` by the production
+  classifier, refusal returns `null` content, every fixture deterministic across repeated calls,
+  call counting, the planner's bounded repair against the malformed / invalid / timeout / 429
+  fixtures with exact call counts, the refusal never retried, the valid plan returned with its
+  metadata, config parsing incl. the `429` alias and fail-fast unknown modes);
+  `FakeModelConfigurationTest` (4 — the port is wired only for `agentflow.ai.provider=fake`, the
+  configured mode is honored, an unknown mode fails the context, no port without the property);
+  `FakeProviderPlannerEndToEndTest` (2 — the full application context boots with the fake provider
+  and the `PlannerService` proposes a plan with no key and no network).
+- Parser follow-up evidence: `PlannerPlanParserTest` (7 tests) pins the `SCHEMA_MISMATCH`
+  classification for the duplicate-id and dangling-dependency payloads and the
+  `IllegalArgumentException` null guard.
+- `./gradlew :apps:agentflow-app:check` green.
+
+### Docs
+- `CHANGELOG.md`: S09-11 entry under `Unreleased / Added` (newest-first).
+
+### Follow-up
+- Parser follow-up (done in the same change): [`PlannerPlanParser`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParser.java)
+  now unwraps Jackson 3's `ValueInstantiationException` wrapping, so well-formed JSON that
+  violates a plan invariant (duplicated / dangling / self dependency) classifies as
+  `SCHEMA_MISMATCH` as documented — before the fix it misclassified as `MALFORMED_JSON`, because
+  Jackson 3 wraps record-canonical-constructor violations in a `JacksonException` and the parser
+  caught that first, making `SCHEMA_MISMATCH` unreachable for real content. A `null` payload is
+  now a contract `IllegalArgumentException`, not a parse failure. Pinned by
+  `PlannerPlanParserTest` (duplicate id, dangling dependency, the null guard) and the `INVALID_PLAN`
+  fixture paths; retry semantics are unchanged (both classes are repairable exactly once).
+- S09-12 (opt-in real-provider contract test) builds on this seam: manual/scheduled, never on PR.
+
+
 ## S09-10
 
 ### What changed
