@@ -26,13 +26,14 @@ lives behind the port, never in the contract.
 com.example.agentflow.ai/               ← public API boundary
 ├── domain/          pure model + invariants        internal
 ├── application/     use cases, transactions         public services + DTOs
+├── evaluation/      Planner baseline eval cases     internal
 ├── web/             controllers + API DTOs          internal
 ├── persistence/     repositories, mappers, SQL       internal
 └── worker/          Kafka listeners                 internal
 ```
 
-`persistence`, `web`, `worker` and `domain` are internal: another module must not import them
-(enforced by the architecture test, `S02-08` / `S02-09`).
+`persistence`, `web`, `worker`, `domain` and `evaluation` are internal: another module must not
+import them (enforced by the architecture test, `S02-08` / `S02-09`).
 
 ## Rules
 
