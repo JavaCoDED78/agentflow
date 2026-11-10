@@ -160,7 +160,7 @@ word.
 |---|---|---|
 | **Knowledge base** | table `knowledge_bases` (`id`, `tenant_id`, `name`, `embedding_model`, `chunking_config`, `status`); `unique (tenant_id, name)` | A tenant-scoped collection of indexed documents. |
 | **Document** | table `documents` (`id`, `tenant_id`, `knowledge_base_id`, `object_key`, `filename`, `mime_type`, `size_bytes`, `sha256`, `version`, `status`, `pipeline_version`, `page_count`, timestamps) | The original object (kept in object storage under a server-generated, tenant-scoped `object_key`) plus its metadata. `sha256` + `pipeline_version` drive ingestion idempotency. |
-| **Document lifecycle** | `documents.status` | `UPLOADED → QUEUED → PROCESSING → INDEXED`, with `FAILED`, `DELETE_REQUESTED`, `DELETED`. |
+| **Document lifecycle** | `documents.status` | `UPLOADED → QUEUED → PROCESSING → INDEXED`, with `FAILED`, `DELETE_REQUESTED`, `DELETED`. The full state set, the three terminal states, the diagram and the per-transition event/command/condition table are in [`docs/architecture/document-lifecycle.md`](architecture/document-lifecycle.md) (`S10-01`); transitions stay centralized in the single `knowledgebase` transition service and must not be set directly from a controller or listener. |
 | **Chunk** | table `document_chunks` (`id`, `tenant_id`, `document_id`, `chunk_index`, `page_from`, `page_to`, `content`, `content_hash`, `embedding`, `metadata_json`); `unique (document_id, chunk_index, pipeline_version)` | One fragment of a document indexed for retrieval, with page metadata and an embedding. The tenant filter is mandatory on chunk search. |
 
 API: `POST /api/v1/knowledge-bases`, `POST /api/v1/knowledge-bases/{id}/documents`

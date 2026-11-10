@@ -53,6 +53,7 @@ docs/
 │   ├── module-map.md                  ← bounded contexts, owners, dependency direction (S02-03)
 │   ├── module-api.md                  ← public API per module: services, event types, permitted DTOs, internal packages (S02-04)
 │   ├── run-state-machine.md           ← run state machine + transitions (S05-01)
+│   ├── document-lifecycle.md          ← document lifecycle: UPLOADED→QUEUED→PROCESSING→INDEXED + FAILED/DELETE_REQUESTED/DELETED (S10-01)
 │   ├── step-state-machine.md          ← step state machine + run-state aggregation (S05-02)
 │   ├── durable-execution.md               ← lease, fencing, recovery (S07-17)
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
