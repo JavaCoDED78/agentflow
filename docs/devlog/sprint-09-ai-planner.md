@@ -67,7 +67,73 @@
   `evaluation/` stay ⚠ planned.
 
 ### Follow-up
-- S09-13 (AI redaction tests) is the next dependency-safe task in the sprint.
+- S09-13 (AI redaction tests) is now complete; see below.
+
+
+## S09-13 — Redact the value of sensitive prompt / document fields: the system / user prompt, the document body or the injected messages is masked to end of value, so none of that untrusted content — a canary included — reaches the log, Loki, disk or the Actuator.
+
+
+
+### What changed
+The redaction guard from `S09-03` proved that the registered
+[`SecretRedactingValueMasker`](apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
+masks a *single-token* secret embedded in a log line (`api_key=<canary>` → `api_key=***`), but it left
+the whole value of a sensitive prompt / document field untouched: `documentBody=<body>` and
+`prompt=<text>` were logged verbatim. Such a value is untrusted content (`ADR-006`) that can span many
+words — a document body, a paragraph, a JSON `messages` payload — so the existing `api_key=<secret>`
+rule, which stops at the first whitespace, would leave the canary behind.
+
+`SecretRedactingValueMasker` therefore gains a `PROMPT_CONTENT` pattern that masks the *whole* value of
+a sensitive field to end of value, not only up to the first whitespace. It covers `document` /
+`documentBody` / `prompt` / `systemPrompt` / `userContent` and the injected `messages`; the safe
+observability surface (model, latency, token count, safe error category) is left unchanged, and a bare
+`promptVersion=<id>` identifier is not mistaken for content. The three secret-key patterns
+(`BEARER_TOKEN`, `AWS_ACCESS_KEY`, `KEY_SECRET`) are unchanged, so every `S09-03` case still holds. The
+redaction filter stays in the cross-cutting `observability` module (no new module dependency); the
+redaction tests live in the per-domain `ai.security` package, the `S09-03` pattern, reusing the same
+`SecretRedactingValueMasker` the `logback-spring.xml` registers — so the change covers the log path in
+production.
+
+
+### Why
+`S09-03` closed the *provider key*; `S09-13` closes the same leak on the *other* secret surface the AI
+layer logs: the prompt and the document. Invariant 8 says a secret never lands in a log, and the
+prompt / document body is exactly where a secret (or a prompt-injection payload carrying one) is most
+likely to appear. Masking to end of value — not up to the first word — is the only way to keep the whole
+value out when it is a multi-word document or a `messages` JSON blob.
+
+
+### Verification
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.security.AiObservationRedactionTest' --tests 'com.example.agentflow.observability.SecretRedactingValueMaskerTest' --tests 'com.example.agentflow.ai.security.CanaryLeakScanTest'`
+— green (19 tests: 6 + 9 + 4). The acceptance cases run DB-free against the real masker: the planted
+canary is redacted from an `api_key` pair, a document body, every sensitive prompt field and the
+`messages` payload, survives nowhere in the safe observation, and is committed only to the sanctioned
+fixture (git scan). `:apps:agentflow-app:check` green (compilation, unit, architecture gates, spotless
+formatting, OpenAPI contract).
+
+
+### Tests
+- `AiObservationRedactionTest` (`ai.security`, DB-free, 6): the canary is redacted from an `api_key`
+  pair, a document body, every sensitive prompt field and the `messages` payload; it survives nowhere
+  in the safe observation; the git scan asserts the canary is committed only to the sanctioned fixture.
+- `SecretRedactingValueMaskerTest` (`observability`, unit, +3 new): the document body and sensitive
+  prompt fields are masked to end of value; the safe AI observability fields (model, latency, token
+  count, safe error category) and a bare `promptVersion=<id>` are left unchanged.
+- `CanaryLeakScanTest` (`ai.security`, DB-free, unchanged, 4): still green — the `S09-03` guard is not
+  regressed.
+
+
+### Docs
+- `CHANGELOG.md` — S09-13 entry under `Unreleased / Added` (newest-first).
+- `docs/security/secrets.md` — the redaction of prompt / document fields is noted alongside the
+  provider-key masking it extends.
+- This file.
+
+
+### Follow-up
+Wire the redaction into the actual AI call path once observability / tracing is integrated (`S13`):
+today the guard is the `logback-spring.xml` filter, which covers the log path; trace-attribute and
+diagnostic-surface coverage follows the same pattern.
 
 
 ## S09-11

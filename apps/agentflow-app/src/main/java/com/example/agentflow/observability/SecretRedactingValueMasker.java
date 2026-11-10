@@ -6,8 +6,13 @@ import tools.jackson.core.TokenStreamContext;
 
 /**
  * Redacts secret-like values from log field values before they are serialized to JSON, so JWTs /
- * Bearer tokens, API keys, passwords and AWS access keys never reach stdout, Loki, disk or the
- * Actuator (S01-19).
+ * Bearer tokens, API keys, authorization headers, passwords and AWS access keys never reach stdout,
+ * Loki, disk or the Actuator (S01-19).
+ *
+ * <p>The value of a sensitive prompt / document field — the model's system / user prompt, the
+ * document body, or the injected messages — is untrusted content (S09-13), so the whole value is
+ * masked too: unlike a single-token secret it can span many words, so it is masked to end of value
+ * rather than only up to the first whitespace.
  *
  * <p>Registered in {@code logback-spring.xml} via the encoder's {@code <valueMasker>} element. The
  * encoder calls {@link #mask} for every field value, so a secret that is embedded in a longer
@@ -33,6 +38,13 @@ public class SecretRedactingValueMasker implements ValueMasker {
       Pattern.compile(
           "(?i)\\b(api[_-]?key|apikey|bearer|secret|password|passwd|client[_-]?secret|auth[_-]?token|access[_-]?token|token)(\\s*[=:]\\s*)[^\\s',;}]+");
 
+  // The value of a prompt / document field is untrusted content (a full prompt, a document body,
+  // the injected USER messages): none of it may reach the log, so the whole value is masked, not
+  // just up to the first whitespace.
+  private static final Pattern PROMPT_CONTENT =
+      Pattern.compile(
+          "(?is)\\b(document|document[_-]?body|prompt|system[_-]?prompt|user[_-]?content|messages)(\\s*[=:]\\s*)(.*)$");
+
   @Override
   public Object mask(TokenStreamContext context, Object value) {
     if (value == null || !(value instanceof String text)) {
@@ -41,6 +53,7 @@ public class SecretRedactingValueMasker implements ValueMasker {
     String masked = BEARER_TOKEN.matcher(text).replaceAll("$1" + MASK);
     masked = AWS_ACCESS_KEY.matcher(masked).replaceAll("AKIA" + MASK);
     masked = KEY_SECRET.matcher(masked).replaceAll("$1$2" + MASK);
+    masked = PROMPT_CONTENT.matcher(masked).replaceAll("$1$2" + MASK);
     return masked;
   }
 }

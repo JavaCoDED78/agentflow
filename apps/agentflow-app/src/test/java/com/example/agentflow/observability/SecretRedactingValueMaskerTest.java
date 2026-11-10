@@ -48,4 +48,39 @@ class SecretRedactingValueMaskerTest {
     // a null context is accepted.
     assertThat(masker.mask(null, "Bearer x.y.z")).isEqualTo("Bearer ***");
   }
+
+  @Test
+  void masks_document_body_value_fully() {
+    // S09-13: the document body is untrusted content, so the whole value is masked, not only up to
+    // the first whitespace (a body can hold many words).
+    String masked = (String) masker.mask(null, "documentBody=the quick secret123 fox");
+    assertThat(masked).contains("***");
+    assertThat(masked).doesNotContain("secret123");
+    assertThat(masked).startsWith("documentBody=");
+  }
+
+  @Test
+  void masks_sensitive_prompt_field_values_fully() {
+    // S09-13: a sensitive prompt field (system prompt, user content, or the messages) is masked to
+    // end of value so none of its content reaches the log.
+    assertThat(masker.mask(null, "systemPrompt=do secret123 things")).isEqualTo("systemPrompt=***");
+    assertThat(masker.mask(null, "userContent=scan secret123 here")).isEqualTo("userContent=***");
+    String maskedMessages =
+        (String)
+            masker.mask(null, "messages=[{\"role\":\"user\",\"text\":\"scan secret123 here\"}]");
+    assertThat(maskedMessages).contains("***");
+    assertThat(maskedMessages).doesNotContain("secret123");
+  }
+
+  @Test
+  void leaves_safe_ai_observability_fields_untouched() {
+    // S09-13: the safe observability fields (model, latency, token count, safe error category) are
+    // logged; only sensitive fields are masked.
+    assertThat(
+            masker.mask(null, "model=gpt-4o-mini latency=42ms tokens=10 error=TRANSPORT_FAILURE"))
+        .isEqualTo("model=gpt-4o-mini latency=42ms tokens=10 error=TRANSPORT_FAILURE");
+    // A prompt identifier is an id, not prompt content, so it is not masked.
+    assertThat(masker.mask(null, "promptVersion=v3 model=gpt-4o-mini"))
+        .isEqualTo("promptVersion=v3 model=gpt-4o-mini");
+  }
 }
