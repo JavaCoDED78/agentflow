@@ -43,7 +43,10 @@ Two independent layers keep a key from leaving the process:
    is registered as the `<valueMasker>` in [`logback-spring.xml`](../apps/agentflow-app/src/main/resources/logback-spring.xml).
    The encoder calls it for every field value, so a secret embedded in a longer message (for example
    `provider api_key=<key>`) is masked to `***` before it is serialized to structured JSON on stdout
-   — and therefore never reaches Loki, disk, or the collector.
+   — and therefore never reaches Loki, disk, or the collector. Since `S09-13` it also masks the whole
+   value of a sensitive prompt / document field (`documentBody`, `prompt`, `systemPrompt`,
+   `userContent`, the injected `messages`), so none of that untrusted content — a canary included —
+   reaches the collector.
 2. **Actuator exposure.** Only `health` and `info` are reachable over HTTP; the sensitive `env`,
    `configprops`, `beans` and `mappings` endpoints are outside the exposure allow-list and answer
    `404` anonymously (see [`application.yml`](../apps/agentflow-app/src/main/resources/application.yml)). A configured
@@ -78,6 +81,24 @@ appear in Git, logs, or diagnostic endpoints* — with real code:
 
 If a developer ever commits a real key (or the canary stand-in for it), `git ls-files` + the scan
 fails `./gradlew check`.
+
+## Redact the whole value of prompt / document fields (S09-13)
+
+The provider key is one secret surface; the prompt and the document body are another — and they are
+exactly where a secret (or a prompt-injection payload carrying one) is most likely to appear. Invariant 8
+applies to them too. The masking above stops at the first whitespace, which is enough for a single-token
+secret but not for a prompt or document value that can span many words — a document body, a paragraph, a
+JSON `messages` payload — so the canary would otherwise survive inside them. `S09-13` extended
+`SecretRedactingValueMasker` with a `PROMPT_CONTENT` rule that masks the whole value of a sensitive prompt
+/ document field (`document`, `documentBody`, `prompt`, `systemPrompt`, `userContent`, the injected
+`messages`) to end of value, not only up to the first whitespace. The safe observability fields (model,
+latency, token count, safe error category) and a bare `promptVersion=<id>` identifier are left unchanged,
+and the existing provider-key cases are untouched, so no `S09-03` guard is regressed.
+
+The acceptance is pinned by `AiObservationRedactionTest` (`ai.security`, DB-free): the planted canary is
+redacted from an `api_key` pair, a document body, every sensitive prompt field and the `messages` payload,
+and survives nowhere in the safe observation. The `S09-03` `CanaryLeakScanTest` is unchanged and still
+green.
 
 ## Relation to the other Sprint 9 tasks
 
