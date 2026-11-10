@@ -102,7 +102,12 @@ class TicketLookupTest {
     // flaps, and an absent ticket answers not-found; neither throws.
     TicketResult known = TicketLookup.lookup("TKT-1001");
     assertThat(known.outcome()).isIn(TicketOutcome.SUCCESS, TicketOutcome.TRANSIENT_FAILURE);
-    assertThat(known.record()).isNotNull();
+    // A record is present only on SUCCESS: a known ticket can also flap to TRANSIENT_FAILURE,
+    // whose record is null (deterministically covered by
+    // a_ticket_that_flaps_on_every_attempt_is_a_transient_failure).
+    if (known.outcome() == TicketOutcome.SUCCESS) {
+      assertThat(known.record()).isNotNull();
+    }
 
     TicketResult missing = TicketLookup.lookup("TKT-DOES-NOT-EXIST");
     assertThat(missing.outcome()).isEqualTo(TicketOutcome.NOT_FOUND);
