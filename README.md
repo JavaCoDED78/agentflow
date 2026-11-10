@@ -182,6 +182,33 @@ The rules and the single process (forward-only, expand/contract, one owning
 module per migration) are in
 [`docs/architecture/database-migrations.md`](docs/architecture/database-migrations.md).
 
+## Object storage
+
+Large document payloads and artifacts are stored in the S3-compatible Garage
+bucket and addressed by a server-generated, tenant-scoped `object_key`
+(`documents/<tenantId>/<documentId>[.<ext>]`). The key is generated from the
+server-issued identifiers by
+`com.example.agentflow.knowledgebase.domain.DocumentObjectKey` — never from the
+client filename, and always namespaced by tenant. The bucket is **private**
+(`S10-02`): an object is addressed only through the app, which owns the S3
+credentials and re-checks the tenant on every access (invariants 1 and 8).
+
+The configuration is the typed `agentflow.storage.*` group — `@Validated`
+`@ConfigurationProperties` in `AgentFlowProperties.Storage`:
+
+- `bucket` — default `agentflow`, matching the Garage bucket in `infra/compose`.
+- `region` — default `garage` (Garage serves on region `garage`).
+- `public-access` — `disabled` by default; the bucket is private and an object
+  is never addressable through a public or anonymous URL. `public` is an
+  explicit operator opt-in only, never the default.
+- `endpoint` — environment-specific; supplied per profile (local / kubernetes),
+  never hardcoded. It is required by the S3 client (built in `S10-03`).
+
+The S3 credentials (`AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` /
+`AGENTFLOW_OBJECT_STORAGE_SECRET_KEY`) come from the environment only, never
+from configuration or source (invariant 8); the git-ignored local `.env`
+provides the localhost defaults — see [`.env.example`](.env.example).
+
 ## Tests
 
 - `./gradlew check` — unit tests, the module-boundary and no-cycles architecture gates, the formatting gate (`spotlessCheck`) and the OpenAPI contract gate. Runs without Docker.

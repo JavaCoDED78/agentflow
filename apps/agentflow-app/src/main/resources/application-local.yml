@@ -53,6 +53,16 @@ agentflow:
       buffer-memory: 33554432
       compression-type: none
 
+  # Object storage (S10-02). The endpoint / bucket / region come from the git-ignored local .env
+  # (AGENTFLOW_OBJECT_STORAGE_*); the localhost endpoint is a local-development default and is never
+  # shipped to a real profile. The bucket / region match the base profile; the policy stays private
+  # (public-access: disabled) so objects are addressed only through the app, never via a public URL.
+  storage:
+    endpoint: ${AGENTFLOW_OBJECT_STORAGE_ENDPOINT:http://localhost:3900}
+    bucket: ${AGENTFLOW_OBJECT_STORAGE_BUCKET:agentflow}
+    region: ${AGENTFLOW_OBJECT_STORAGE_REGION:garage}
+    public-access: disabled
+
 # Log levels for the local profile (S01-19). The JSON layout lives in
 # logback-spring.xml; this only picks the level per logger. Our code runs at
 # DEBUG for local diagnostics, while framework / boot noise is capped at WARN so
