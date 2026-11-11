@@ -42,6 +42,7 @@ public class AgentFlowProperties {
   @Valid private final Ai ai = new Ai();
   @Valid private final Upload upload = new Upload();
   private final Storage storage = new Storage();
+  private final Ingestion ingestion = new Ingestion();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -280,6 +281,13 @@ public class AgentFlowProperties {
    */
   public Upload getUpload() {
     return upload;
+  }
+
+  /**
+   * @return the validated document-extraction limits (S10-07)
+   */
+  public Ingestion getIngestion() {
+    return ingestion;
   }
 
   /**
@@ -1529,6 +1537,70 @@ public class AgentFlowProperties {
      */
     public void setMaxMediaDurationSeconds(int maxMediaDurationSeconds) {
       this.maxMediaDurationSeconds = maxMediaDurationSeconds;
+    }
+  }
+
+  /**
+   * Document-extraction limits (S10-07). Bound from {@code agentflow.ingestion.*}; these bound the
+   * {@code DocumentParser} the ingestion worker runs on an already-uploaded document (extraction
+   * happens in the worker, never in the upload use case &mdash; S10-06). The limits live in
+   * configuration, not in code: the number of pages read from a PDF and the number of characters
+   * retained from the extracted text are capped here so a very large or pathological document
+   * cannot exhaust a worker. They are validated at startup so a nonsensical limit fails boot rather
+   * than silently accepting everything, mirroring the {@link Upload} limits.
+   *
+   * <p>Two independent bounds:
+   *
+   * <ul>
+   *   <li><b>max-pages</b> &mdash; the maximum number of pages read from a PDF (default 100). Pages
+   *       beyond this cap are not read; {@code ExtractionResult#truncated()} is {@code true} when
+   *       the document has more pages than this.
+   *   <li><b>max-chars</b> &mdash; the maximum number of characters retained from the extracted
+   *       text (default 500000, ~500 KiB). Text beyond this cap is dropped; {@code
+   *       ExtractionResult#truncated()} is {@code true} when it was.
+   * </ul>
+   */
+  public static class Ingestion {
+
+    /** Maximum number of pages read from a PDF. Default 100; at least 1, a value below 1 fails. */
+    @Min(value = 1, message = "agentflow.ingestion.max-pages must be at least 1")
+    private int maxPages = 100;
+
+    /**
+     * Maximum number of characters retained from the extracted text. Default 500000 (~500 KiB); at
+     * least 1, a value below 1 fails.
+     */
+    @Min(value = 1, message = "agentflow.ingestion.max-chars must be at least 1")
+    private int maxChars = 500 * 1000;
+
+    /**
+     * @return the maximum number of pages read from a PDF (default {@code 100})
+     */
+    public int getMaxPages() {
+      return maxPages;
+    }
+
+    /**
+     * @param maxPages the maximum number of pages read from a PDF (at least 1)
+     */
+    public void setMaxPages(int maxPages) {
+      this.maxPages = maxPages;
+    }
+
+    /**
+     * @return the maximum number of characters retained from the extracted text (default {@code
+     *     500000})
+     */
+    public int getMaxChars() {
+      return maxChars;
+    }
+
+    /**
+     * @param maxChars the maximum number of characters retained from the extracted text (at least
+     *     1)
+     */
+    public void setMaxChars(int maxChars) {
+      this.maxChars = maxChars;
     }
   }
 }

@@ -4,6 +4,39 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-07 — The PDF and text extraction adapter.
+
+### What changed
+
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/DocumentParser.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/DocumentParser.java) — the neutral outbound port (`ingestion.application`). `parse(originalName, contentType, payload)` returns an `ExtractionResult` for **every** input (success, empty or a classified failure) and never throws for a parseable-but-bad document: the ingestion worker depends on the contract, never on a concrete parser, so the extraction engine (Tika / PDFBox) can be replaced without touching the worker. The javadoc records that a payload reaching the parser has already passed upload validation (`knowledgebase.domain.DocumentContentType`), so the parser only reads it, not re-checks it.
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/parser/TikaDocumentParser.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/parser/TikaDocumentParser.java) — the sole class in the codebase that imports a Tika / PDFBox API. Magic-byte content-type detection via `Tika#detect` (the client filename / content type is a hint, never trusted for the decision — invariant 1); `application/pdf` is extracted with PDFBox (`PDFTextStripper`, page-limited) and its page count; everything else is decoded directly as UTF-8 text. Two bounded, configurable limits: `maxPages` caps the pages PDFBox reads (pages beyond it are not read — the multi-page result is flagged `truncated()`), `maxChars` caps the retained characters for any document. Every fault is classified into a result, never thrown: corrupt / malformed PDF → `FAILED` + `ExtractionError.Code.CORRUPT` (PDFBox's non-repairing `load` makes corruption observable), password-protected PDF → `FAILED` + `ExtractionError.Code.ENCRYPTED` (`isEncrypted()` plus an encryption-exception heuristic across PDFBox exception types), empty payload → `EMPTY` (not an error). The `ExtractionError.summary` / `shortMessage` are redacted one-liners (line breaks and NUL bytes stripped, length-capped) so no binary fragment, stack trace or secret reaches the persisted `error_summary`.
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/domain/ExtractionResult.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/domain/ExtractionResult.java) — the immutable, total result: `Status.EXTRACTED` / `EMPTY` / `FAILED`, page count, char count, text, a safe unmodifiable metadata subset (title / author / creation date), a `truncated` flag (page or character limit hit) and the classified `ExtractionError` (non-null only when `FAILED`).
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/domain/ExtractionError.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/domain/ExtractionError.java) — the classified failure: a stable machine-readable `Code` (`ENCRYPTED` / `CORRUPT`, persisted verbatim as the document `error_code`) and a redacted `summary` (`error_summary`).
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/config/DocumentExtractionConfiguration.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/config/DocumentExtractionConfiguration.java) — wires the `DocumentParser` bean from the `agentflow.ingestion.*` group; a misconfigured limit fails construction (via the `TikaDocumentParser` constructor) at context startup. It is homed in the `ingestion` module, not the global `config` package, so the module graph stays acyclic.
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/config/AgentFlowProperties.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/AgentFlowProperties.java) — the validated `agentflow.ingestion.*` group (`Ingestion.maxPages` default 100, `maxChars` default 500000, both `@Min(1)`, fail-fast) — the limits are configuration, not magic numbers.
+- [`apps/agentflow-app/src/test/java/com/example/agentflow/ingestion/application/parser/TikaDocumentParserTest.java`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ingestion/application/parser/TikaDocumentParserTest.java) — the DB-free unit suite (8 tests) generating its PDF fixtures on the fly with PDFBox (normal single-page, multi-page, password-protected) and a `%PDF` + garbage corrupt header.
+- `apps/agentflow-app/build.gradle.kts`, `gradle/libs.versions.toml`, `gradle.lockfile` — the `tika-core` and `tika-parser-pdf` dependencies (from the version catalog; PDFBox and their transitive tree are pulled in by Tika), nothing pinned inline (S01-06).
+
+### Why
+
+- **A port, not a concrete parser.** The worker must survive the extraction engine being swapped (Tika → PDFBox → …), so the dependency is the neutral `DocumentParser` port; the single PDFBox / Tika import stays confined to one implementation class behind it.
+- **Bounded by design, not magic numbers.** A pathological or huge document must never exhaust a worker, so the page and character limits are enforced in the parser and exposed as `agentflow.ingestion.*` configuration (validated, fail-fast) rather than hard-coded.
+- **Classify, do not throw.** The ingest side keeps processing a corrupt or encrypted document (at-least-once, never exactly-once — invariant 3); a failure is a *result* (`FAILED` + classified `Code`), not an interruption, and the persisted `error_code` lets a query distinguish corrupt from encrypted without a stack trace or the raw file (the S10-08 diagnostics intent carried into S10-07).
+- **The error payload is safe.** `error_summary` and metadata are redacted and never carry the document body, binary bytes, a stack trace or a secret (invariant 8 / S10-08).
+
+### Verification
+
+The suite (8 tests, JUnit XML checked: root `tests="3"` + `Limits` `tests="2"` + `Failures` `tests="2"` + `Configuration` `tests="1"`, all `failures="0" errors="0"`) pins, DB-free (no `DataSource` / Kafka — the parser is pure), the four states the S10-07 acceptance calls for: a normal single-page PDF → `EXTRACTED` with the text + page count and no error; a blank payload → `EMPTY`; a corrupt PDF (`%PDF` + garbage, rejected deterministically by PDFBox's non-repairing `load`) → `FAILED` + `CORRUPT`; a password-protected PDF → `FAILED` + `ENCRYPTED`; plus the page limit (a 10-page PDF through a `maxPages=5` parser → `EXTRACTED`, `pageCount()=5`, `truncated()` true), the within-limits case (not truncated) and the constructor rejecting non-positive limits.
+
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (`ArchitectureBoundaryTest` — the `ingestion` boundary is `{ingestion, knowledgebase, messaging}`, `PackageDependencyGraphTest` — the same edge, `NoCyclicModuleDependenciesTest`) + no-cycles + `spotless` + OpenAPI gates; the Tika / PDFBox dependencies add no new module edge (only `TikaDocumentParser` imports the PDFBox / Tika APIs, so the boundary holds). `git diff --check` clean.
+
+### Not changed
+
+- The ingestion worker, chunking, embeddings, indexing and the `document.indexed` event — `S10-09` … `S10-13`.
+- The `documents` parser-metadata columns (`page_count`, `error_code`, `error_summary`) — the `S10-05` migration already declares them, so this classified `error_code` / `error_summary` has a home to persist into.
+
+---
+
 ## S10-06 — Commit the upload and enqueue ingestion through the transactional outbox (async, non-blocking).
 
 ### What changed

@@ -86,6 +86,13 @@ dependencies {
     // forward an outbox envelope to the broker. BOM-managed by the Spring Boot BOM, so no version
     // is pinned inline and the app never pins a client version that diverges from Spring Kafka.
     implementation(libs.kafka.clients)
+    // Document extraction (S10-07): Apache Tika. tika-core drives magic-byte content-type
+    // detection; tika-parser-pdf-module drives PDFBox for PDF text extraction. Text-like content
+    // types are decoded directly by the parser (no text parser module needed). The DocumentParser
+    // implementation compiles and the ingestion worker can extract PDF + text. Versions from the
+    // catalog; nothing pinned inline (S01-06).
+    implementation(libs.tika.core)
+    implementation(libs.tika.parser.pdf)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Nimbus JOSE (com.nimbusds) is already on the test classpath transitively via the

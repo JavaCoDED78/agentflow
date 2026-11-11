@@ -15,6 +15,10 @@ spring-ai   = "2.0.1"
 # Architecture tests (S02-08): ArchUnit enforces the module boundary rules.
 # Pinned here like every other version; it is not part of the Spring Boot BOM.
 archunit = "1.5.1"
+# Document extraction (S10-07): Apache Tika standard parsers (Tika + PDFBox). Pinned here, not in
+# any build file (S01-06); Tika 2.9.2 / PDFBox 2.0.31 target Java 11 and are compatible with the
+# Java 25 + Spring Boot 4.1.1 stack used here.
+tika = "2.9.2"
 # OpenAPI contract generation (S03-12): springdoc-openapi v3 targets Spring Boot
 # 4 (Java 17+, Jakarta EE 9), so it is compatible with the Boot 4.1.1 / Spring
 # Framework 7 / Jackson 3 stack used here. The v3 line is the Spring Boot 4
@@ -66,6 +70,13 @@ springdoc-openapi-starter-webmvc-ui = { module = "org.springdoc:springdoc-openap
 # publisher controls send/confirmation and retry. Version is BOM-managed by the
 # Spring Boot BOM; nothing is pinned inline.
 kafka-clients = { module = "org.apache.kafka:kafka-clients" }
+# Document extraction (S10-07): Apache Tika. tika-core drives magic-byte content-type detection;
+# tika-parser-pdf-module drives PDFBox for PDF (page count + page-limited text + metadata). Text-like
+# content types are decoded directly by the parser (no parser module needed). The parser lives behind
+# the neutral DocumentParser port (S10-07), so no module other than this implementation imports a
+# PDFBox / Tika API directly. Version pinned in the catalog; nothing re-pinned inline.
+tika-core = { module = "org.apache.tika:tika-core", version.ref = "tika" }
+tika-parser-pdf = { module = "org.apache.tika:tika-parser-pdf-module", version.ref = "tika" }
 # Testcontainers Kafka (S06-09): an in-process KRaft broker for the outbound
 # producer integration suite, on the same apache/kafka image as Compose. The
 # 2.x published module is `org.testcontainers:kafka`, but the Spring Boot BOM's
