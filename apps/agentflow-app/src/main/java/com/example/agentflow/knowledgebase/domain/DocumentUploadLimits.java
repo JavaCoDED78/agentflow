@@ -10,8 +10,8 @@ import java.util.Objects;
  * are validated here (in addition to at config-bind time) so a nonsensical limit fails at the
  * value, never silently accepting everything.
  *
- * <p>Constructed in {@code knowledgebase.application.DocumentUploadConfiguration} from {@link
- * com.example.agentflow.config.AgentFlowProperties.Upload}.
+ * <p>Constructed in {@code knowledgebase.application.config.DocumentUploadConfiguration} from
+ * {@link com.example.agentflow.config.AgentFlowProperties.Upload}.
  */
 public final class DocumentUploadLimits {
 
