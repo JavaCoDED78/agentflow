@@ -42,9 +42,13 @@ import org.apache.tika.Tika;
  */
 public final class TikaDocumentParser implements DocumentParser {
 
+  /** Label prefix for the extraction engine version reported as a diagnostic (S10-08). */
+  private static final String PARSER_VERSION_PREFIX = "tika:";
+
   private final Tika tika;
   private final int maxPages;
   private final int maxChars;
+  private final String parserVersion;
 
   /**
    * @param maxPages the maximum number of pages read from a PDF (must be &gt; 0)
@@ -61,12 +65,34 @@ public final class TikaDocumentParser implements DocumentParser {
     this.maxPages = maxPages;
     this.maxChars = maxChars;
     this.tika = new Tika();
+    // The extraction engine version is one of the persisted diagnostics (S10-08): record the Tika
+    // library version so a later failure can be correlated with the parser that generated it. Read
+    // from the library manifest (tika-core carries Implementation-Version); the parser is the only
+    // class importing Tika, so it owns this infrastructure detail and never leaks a Tika type past
+    // the neutral DocumentParser port. A safe fallback keeps the label non-null everywhere.
+    this.parserVersion = PARSER_VERSION_PREFIX + tikaVersion();
+  }
+
+  /**
+   * Read the Tika library version from its manifest package info (for example {@code 2.9.2});
+   * returns {@code "unknown"} when the manifest does not expose one, so the diagnostic label is
+   * never {@code null}.
+   *
+   * @return the Tika library version used by this parser
+   */
+  private static String tikaVersion() {
+    Package pkg = Tika.class.getPackage();
+    String version =
+        (pkg != null && pkg.getImplementationVersion() != null)
+            ? pkg.getImplementationVersion()
+            : "unknown";
+    return version;
   }
 
   @Override
   public ExtractionResult parse(String originalName, String contentType, byte[] payload) {
     if (payload == null || payload.length == 0) {
-      return ExtractionResult.empty();
+      return ExtractionResult.empty(parserVersion);
     }
     // Detect from the payload's leading bytes (magic bytes), falling back to the filename hint. The
     // client-supplied content type is NOT trusted for this decision (invariant 1): a payload that
@@ -93,7 +119,8 @@ public final class TikaDocumentParser implements DocumentParser {
         return ExtractionResult.failed(
             new ExtractionError(
                 ExtractionError.Code.ENCRYPTED,
-                "PDF is password protected and could not be decrypted"));
+                "PDF is password protected and could not be decrypted"),
+            parserVersion);
       }
       int totalPages = doc.getNumberOfPages();
       PDFTextStripper stripper = new PDFTextStripper();
@@ -104,17 +131,19 @@ public final class TikaDocumentParser implements DocumentParser {
       String text = boundChars(fullText);
       int pageCount = Math.min(totalPages, maxPages);
       return ExtractionResult.of(
-          pageCount, text, pdfMetadata(doc), totalPages > maxPages || charLimited);
+          pageCount, text, pdfMetadata(doc), totalPages > maxPages || charLimited, parserVersion);
     } catch (Exception e) {
       if (isEncryptionFailure(e)) {
         return ExtractionResult.failed(
             new ExtractionError(
                 ExtractionError.Code.ENCRYPTED,
-                "PDF is password protected and could not be decrypted"));
+                "PDF is password protected and could not be decrypted"),
+            parserVersion);
       }
       return ExtractionResult.failed(
           new ExtractionError(
-              ExtractionError.Code.CORRUPT, "PDF could not be parsed: " + shortMessage(e)));
+              ExtractionError.Code.CORRUPT, "PDF could not be parsed: " + shortMessage(e)),
+          parserVersion);
     } finally {
       if (doc != null) {
         try {
@@ -136,7 +165,7 @@ public final class TikaDocumentParser implements DocumentParser {
   private ExtractionResult parseText(byte[] payload) {
     String raw = new String(payload, StandardCharsets.UTF_8).replace('\u0000', ' ').trim();
     boolean truncated = raw.length() > maxChars;
-    return ExtractionResult.of(0, boundChars(raw), Map.of(), truncated);
+    return ExtractionResult.of(0, boundChars(raw), Map.of(), truncated, parserVersion);
   }
 
   /**

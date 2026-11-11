@@ -4,6 +4,28 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-08 — Persist safe parsing diagnostics (P0)
+
+### What changed
+
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/domain/ExtractionResult.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/domain/ExtractionResult.java): the immutable result is now a full extraction-diagnostic record. Every state carries `parserVersion()` (the Tika library version, e.g. `tika:2.9.2`, never null), the stable `ExtractionError.Code` of a failure, the `pageCount()` read and the `charCount()` actually extracted; a new `isPartialSuccess()` distinguishes a page/character-limited `EXTRACTED` (partial success, `truncated()`) from a real `FAILED`. The constructor now requires `parserVersion` (never null), and it participates in `equals`, `hashCode` and `toString`.
+- [`apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/parser/TikaDocumentParser.java`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/application/parser/TikaDocumentParser.java): the parser computes `parserVersion` once (the Tika implementation version read from its jar manifest via `Package#getImplementationVersion`, with an `unknown` fallback) and injects it into every result it returns — success, empty, truncated and both failure classifications. The Tika type stays confined to this class (the only import past the `DocumentParser` port).
+
+### Why
+
+- The failure cause must be recoverable from the persisted record alone. `error_code` and `error_summary` (S10-07) already make the corrupt-vs-encrypted distinction queryable without a stack trace or the raw file; adding the parser version lets an operator correlate a failed or partial extraction with the exact engine version that produced it, which is the diagnostic the plan calls for (never a document fragment, a stack trace or a secret, invariant 8).
+- Partial success is not a failure. A page/character limit is bounded and expected (`truncated()` / `isPartialSuccess()`), so the ingestion side keeps processing the document instead of retrying a "failure".
+
+### Verification
+
+The `TikaDocumentParserTest` suite (JUnit XML checked: root `tests="3"` + `Limits` `tests="2"` + `Failures` `tests="2"` + `Configuration` `tests="1"` + new `Diagnostics` `tests="4"`; all `failures="0" errors="0" skipped="0"`, 12 in total) asserts the parser version on a success, a partial extraction, a failure and an empty payload, that the corrupt-failure summary carries no line break / carriage return / raw `%PDF` fragment and is length-capped, and that a page limit is a partial success, not a failure. The exact value `tika:2.9.2` was confirmed with a throwaway probe test that asserted it explicitly (removed after verification). `./gradlew :apps:agentflow-app:test --tests '*TikaDocumentParserTest*' --rerun-tasks` and the full `./gradlew check` are green — unit + architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`) + no-cycles + `spotless` + OpenAPI gates; `git diff --check` clean.
+
+### Not changed
+
+- The `documents` parser-metadata persistence (`page_count`, `error_code`, `error_summary`) is written by the ingestion worker's persistence layer when it lands (`S10-13`); this task enriches the diagnostic the worker will persist. A `parser_version` / `char_count` column is not added now: the DB layer is not yet built, and `char_count` already lives on the result.
+
+---
+
 ## S10-07 — The PDF and text extraction adapter.
 
 ### What changed
