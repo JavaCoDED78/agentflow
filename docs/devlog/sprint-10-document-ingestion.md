@@ -4,6 +4,73 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-05 — The knowledge base and document schema (migration + duplicate-upload policy).
+
+### What changed
+
+- `apps/agentflow-app/src/main/resources/migrations/V3_3_18__create_knowledge_bases_documents.sql` — the migration. It is step 19 of the ordered Flyway line (`V3_3_17` … `V3_3_18`), owner `knowledgebase`, and applies cleanly against PostgreSQL 18 (pgvector `pgvector/pgvector:0.8.6-pg18`) — the exact image Compose and Testcontainers use.
+- `CHANGELOG.md` — an `Unreleased → Added` entry (S10-05) describing the schema and the duplicate-upload policy.
+
+The `knowledgebase` module boundary, the OpenAPI contract and the Java code are unchanged: this is a schema + documentation change (no controller, no repository, no listener).
+
+`knowledge_bases` (one tenant-scoped collection per `unique (tenant_id, name)`):
+
+| column | type | constraint / default | meaning |
+|---|---|---|---|
+| `id` | `UUID` | PK | collection id (assigned by the domain factory) |
+| `tenant_id` | `UUID` | FK `tenants.id`, `NOT NULL` | owning tenant (isolation by `(tenant_id, name)` + `(tenant_id, id)` read) |
+| `name` | `TEXT` | `NOT NULL`, part of unique | fixed after creation — collection is immutable |
+| `embedding_model` | `TEXT` | `NOT NULL` | pinned model; dimensionality is fixed by `S10-11` |
+| `chunking_config` | `JSONB` | nullable | optional JSON chunker configuration |
+| `status` | `TEXT` | `NOT NULL DEFAULT 'ACTIVE'` | application-managed collection status |
+| `created_by` | `TEXT` | nullable | audit |
+| `created_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()` | audit (immutable-row set — no `version`, no `updated_at`) |
+
+`documents` (one row per uploaded object; created after `knowledge_bases` so the FK resolves):
+
+| column | type | constraint / default | meaning |
+|---|---|---|---|
+| `id` | `UUID` | PK | document id (canonical id on `GET /api/v1/documents/{documentId}`) |
+| `tenant_id` | `UUID` | FK `tenants.id`, `NOT NULL` | owning tenant |
+| `knowledge_base_id` | `UUID` | FK `knowledge_bases.id`, `NOT NULL` | parent collection |
+| `object_key` | `TEXT` | `NOT NULL` | server-generated, tenant-scoped object path (`documents/<tenantId>/<id>[.<ext>]`), generated once at upload, immutable |
+| `filename` | `TEXT` | `NOT NULL` | safe, sanitized display name (never a path) |
+| `mime_type` | `TEXT` | `NOT NULL` | canonical content type resolved by the validator |
+| `size_bytes` | `BIGINT` | `NOT NULL` | payload length (the `S10-03` size bound is applied before commit) |
+| `sha256` | `TEXT` | `NOT NULL` | payload SHA-256; content fingerprint for duplicate detection + ingestion idempotency |
+| `version` | `INTEGER` | `DEFAULT 0` | optimistic-lock counter → `409` on conflict |
+| `status` | `TEXT` | `DEFAULT 'UPLOADED'`, CHECK over 7 states | lifecycle (`document-lifecycle.md`) |
+| `pipeline_version` | `TEXT` | `NOT NULL DEFAULT 'v1'` | chunking/embedding pipeline version; part of the idempotency key + reindex trigger (`S10-19`) |
+| `page_count` | `INTEGER` | nullable | parser metadata (extractor output; NULL at `UPLOADED`) |
+| `error_code` | `TEXT` | nullable | safe machine-readable failure token (`S10-08`) |
+| `error_summary` | `TEXT` | nullable | short redacted failure summary (`S10-08`) |
+| `retained_until` | `TIMESTAMPTZ` | nullable | retention deadline for object + chunks |
+| `created_by` / `created_at` / `updated_at` | `TEXT` / `TIMESTAMPTZ` / `TIMESTAMPTZ` | `created_at` default `now()` | unified audit set on the mutable row |
+
+Indexes: `(tenant_id, knowledge_base_id, status)` — a knowledge base's document list, tenant-scoped, status-filterable (plan §8.1); `(tenant_id, sha256)` — duplicate detection / idempotent lookup.
+
+### Why
+
+- **Retention + lifecycle as constraints, not post-filters.** The status `CHECK` pins the seven canonical states (`UPLOADED → QUEUED → PROCESSING → INDEXED`, `FAILED`, `DELETE_REQUESTED`, `DELETED`); a transition is a conditional update + optimistic `version` bump + append-only audit record in one transaction, never set directly from a controller/listener (invariant 4). `retained_until` carries the retention deadline at the row, so retention is enforced at query time, not after the fact.
+- **Duplicate upload policy (determined here, implemented by `S10-19`).** A re-upload whose `(tenant_id, sha256)` matches an existing document is *content-identical*, so it is treated as a duplicate — the upload API returns the existing document and creates no new row. This keeps ingestion idempotent by content ("a repeated upload does not create duplicate logical chunks", `S10-13`) and never treats delivery as exactly-once (invariant 3). The `sha256` column is **indexed, not made unique**: a change in `pipeline_version` reindexes as a new document (`S10-19`), which a `unique (tenant_id, sha256)` would wrongly forbid.
+- **`documents` is a mutable row, `knowledge_bases` is immutable.** `documents` gets an optimistic `version` counter + `updated_at` (the row changes status); `knowledge_bases` is fixed after creation, so it gets no counter — mirroring the run-state-machine separation in `S05-01`.
+
+### Verification
+
+All of it ran against a live PostgreSQL 18 container (`pgvector/pgvector:0.8.6-pg18`), the same image Compose and Testcontainers use. The migration line applied cleanly as step 19 (`./gradlew flywayMigrate`, now at `v3.3.18`).
+
+- **Schema.** `information_schema` + `pg_constraint` confirm: FKs `documents.knowledge_base_id → knowledge_bases`, `documents.tenant_id → tenants`, `knowledge_bases.tenant_id → tenants`; PKs; the `unique (tenant_id, name)` on `knowledge_bases`; the `documents_status_check` over the seven states; and `NOT NULL` on every required column. `information_schema` confirms `object_key`, `status`, `version`, `pipeline_version`, `page_count`, `error_code`, `error_summary`, `retained_until` exist on `documents`.
+- **Positive path.** A tenant → knowledge base → document chain inserts (`INSERT 0 1` ×3); the persisted document reads back `status = UPLOADED`, `page_count = 7`, the right `sha256`/`object_key`, tenant-scoped.
+- **Negative paths.** A bogus `tenant_id` is rejected by the FK ("Key … is not present in table tenants"); `status = 'PROCESSED'` is rejected by the CHECK; a duplicate `(tenant_id, name)` is rejected by the unique constraint; a `tenant-b` lookup returns 0 rows for a `tenant-a` document (isolation); `EXPLAIN` shows the `(tenant_id, sha256)` index backing the duplicate-detection lookup ("Index Scan using documents_tenant_sha256_idx").
+
+`git diff --check` clean. The `knowledgebase` module boundary and the OpenAPI contract are unchanged (no Java, no controller) — this is a schema + documentation change, so the Java `check` gate (unit + architecture + no-cycles + formatting + OpenAPI) does not need to re-validate anything here, though the broader `:apps:agentflow-app:check` run is green.
+
+### Not changed
+
+- The row binding of `documents` to the verified `TenantContext`, the `(tenant_id, id)` row lookup, the object storage client (`S10-03`), the append-only audit event the upload writes (needs the `knowledgebase → audit` edge, an ADR) and the no-public-URL enforcement are the rest of the secure upload flow; they complete when their schema / persistence / wiring land (`S10-03` … `S10-06`, `S10-08`).
+- The ingestion worker, the pgvector/FTS chunk indexing and the live duplicate-detection enforcement are `S10-11` / `S10-13` / `S10-19`.
+
+---
 ## S10-04 — Tenant-safe file upload (negative tests for path traversal and cross-tenant access).
 
 
