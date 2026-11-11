@@ -45,6 +45,7 @@ public final class ExtractionResult {
   private final Map<String, String> metadata;
   private final boolean truncated;
   private final ExtractionError error;
+  private final String parserVersion;
 
   private ExtractionResult(
       Status status,
@@ -52,7 +53,8 @@ public final class ExtractionResult {
       String text,
       Map<String, String> metadata,
       boolean truncated,
-      ExtractionError error) {
+      ExtractionError error,
+      String parserVersion) {
     this.status = Objects.requireNonNull(status, "status");
     this.pageCount = pageCount;
     this.charCount = (text == null) ? 0 : text.length();
@@ -61,6 +63,7 @@ public final class ExtractionResult {
         (metadata == null) ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
     this.truncated = truncated;
     this.error = error;
+    this.parserVersion = Objects.requireNonNull(parserVersion, "parserVersion");
   }
 
   /**
@@ -70,27 +73,42 @@ public final class ExtractionResult {
    * @param text the extracted text, already bounded by the caller's limit
    * @param metadata the safe document metadata captured for diagnostics
    * @param truncated whether a page / character limit was hit, i.e. this is a partial extraction
+   * @param parserVersion the extraction engine version that produced the result (never {@code
+   *     null}); persisted as an extraction diagnostic (S10-08)
    * @return an extracted result (partial when {@code truncated})
    */
   public static ExtractionResult of(
-      int pageCount, String text, Map<String, String> metadata, boolean truncated) {
-    return new ExtractionResult(Status.EXTRACTED, pageCount, text, metadata, truncated, null);
+      int pageCount,
+      String text,
+      Map<String, String> metadata,
+      boolean truncated,
+      String parserVersion) {
+    return new ExtractionResult(
+        Status.EXTRACTED, pageCount, text, metadata, truncated, null, parserVersion);
   }
 
   /** An {@link Status#EMPTY} result: no extractable content, not an error. */
-  public static ExtractionResult empty() {
-    return new ExtractionResult(Status.EMPTY, 0, "", Map.of(), false, null);
+  public static ExtractionResult empty(String parserVersion) {
+    return new ExtractionResult(Status.EMPTY, 0, "", Map.of(), false, null, parserVersion);
   }
 
   /**
    * A {@link Status#FAILED} result.
    *
    * @param error the classified extraction error
-   * @return a failed result carrying the error code and a safe summary
+   * @param parserVersion the extraction engine version that produced the result (never {@code
+   *     null}); persisted as an extraction diagnostic (S10-08)
+   * @return a failed result carrying the error code, a safe summary and the parser version
    */
-  public static ExtractionResult failed(ExtractionError error) {
+  public static ExtractionResult failed(ExtractionError error, String parserVersion) {
     return new ExtractionResult(
-        Status.FAILED, 0, "", Map.of(), false, Objects.requireNonNull(error, "error"));
+        Status.FAILED,
+        0,
+        "",
+        Map.of(),
+        false,
+        Objects.requireNonNull(error, "error"),
+        Objects.requireNonNull(parserVersion, "parserVersion"));
   }
 
   /**
@@ -136,6 +154,18 @@ public final class ExtractionResult {
   }
 
   /**
+   * The extraction engine version that produced this result (for example the Tika library version
+   * {@code "tika:2.9.2"}). Persisted as a diagnostic (S10-08) so a failed or partial extraction can
+   * be correlated with the parser that generated it; the parser version is a stable, machine-safe
+   * label &mdash; never a document fragment, a stack trace or a secret.
+   *
+   * @return the parser version (never {@code null}).
+   */
+  public String parserVersion() {
+    return parserVersion;
+  }
+
+  /**
    * @return the classified error, non-null only when {@link #status()} is {@link Status#FAILED}.
    */
   public ExtractionError error() {
@@ -163,6 +193,14 @@ public final class ExtractionResult {
     return status == Status.FAILED;
   }
 
+  /**
+   * @return {@code true} when the extraction is a partial success (a page / character limit was
+   *     hit).
+   */
+  public boolean isPartialSuccess() {
+    return status == Status.EXTRACTED && truncated;
+  }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -177,12 +215,14 @@ public final class ExtractionResult {
         && status == other.status
         && Objects.equals(text, other.text)
         && Objects.equals(metadata, other.metadata)
-        && Objects.equals(error, other.error);
+        && Objects.equals(error, other.error)
+        && Objects.equals(parserVersion, other.parserVersion);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(status, pageCount, charCount, text, metadata, truncated, error);
+    return Objects.hash(
+        status, pageCount, charCount, text, metadata, truncated, error, parserVersion);
   }
 
   @Override
@@ -196,6 +236,8 @@ public final class ExtractionResult {
         + ", truncated="
         + truncated
         + (error == null ? "" : ", error=" + error)
+        + ", parserVersion="
+        + parserVersion
         + "]";
   }
 }

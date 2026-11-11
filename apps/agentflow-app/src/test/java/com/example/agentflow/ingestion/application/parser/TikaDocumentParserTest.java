@@ -141,6 +141,61 @@ class TikaDocumentParserTest {
     }
   }
 
+  @Nested
+  @DisplayName("extraction diagnostics (S10-08)")
+  class Diagnostics {
+
+    @Test
+    @DisplayName("a successful extraction reports the parser version, page and char counts")
+    void parserVersionReportedOnSuccess() throws Exception {
+      ExtractionResult result =
+          parser.parse("sample.pdf", "application/pdf", singlePagePdf("S10-08"));
+
+      assertThat(result.isSuccess()).isTrue();
+      assertThat(result.parserVersion()).isNotBlank();
+      assertThat(result.pageCount()).isEqualTo(1);
+      assertThat(result.charCount()).isGreaterThan(0);
+      assertThat(result.error()).isNull();
+    }
+
+    @Test
+    @DisplayName("a partial extraction (page limit hit) is a partial success, not a failure")
+    void partialSuccessCarriesParserVersion() throws Exception {
+      TikaDocumentParser small = new TikaDocumentParser(5, MAX_CHARS);
+      ExtractionResult result = small.parse("many.pdf", "application/pdf", multiPagePdf(10));
+
+      assertThat(result.isPartialSuccess()).isTrue();
+      assertThat(result.error()).isNull();
+      assertThat(result.parserVersion()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("a failure reports the parser version and a summary without raw file fragments")
+    void failureReportsParserVersionAndSafeSummary() {
+      ExtractionResult corrupt = parser.parse("bad.pdf", "application/pdf", corruptPdf());
+
+      assertThat(corrupt.isFailure()).isTrue();
+      assertThat(corrupt.error().code()).isEqualTo(ExtractionError.Code.CORRUPT);
+      assertThat(corrupt.parserVersion()).isNotBlank();
+
+      String summary = corrupt.error().summary();
+      assertThat(summary).isNotBlank();
+      assertThat(summary).doesNotContain("\n");
+      assertThat(summary).doesNotContain("\r");
+      assertThat(summary).hasSizeLessThanOrEqualTo(500);
+    }
+
+    @Test
+    @DisplayName("an empty payload reports the parser version and is not an error")
+    void emptyReportsParserVersion() {
+      ExtractionResult empty = parser.parse("empty.pdf", "application/pdf", new byte[0]);
+
+      assertThat(empty.isEmpty()).isTrue();
+      assertThat(empty.parserVersion()).isNotBlank();
+      assertThat(empty.error()).isNull();
+    }
+  }
+
   // --- PDF fixtures -------------------------------------------------------
 
   private static byte[] singlePagePdf(String text) throws Exception {
