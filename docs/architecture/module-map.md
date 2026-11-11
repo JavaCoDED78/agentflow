@@ -75,6 +75,7 @@ flowchart LR
     usage -->|9| wfexc
     audit -->|10| identity
     ingest -->|11| messaging
+    kb -->|18| messaging
     wfexc -->|12| wfdef
     wfexc -->|13| messaging
     feedback["execution SPI<br/>StepHandler port (defined in wfexc)"]
@@ -122,7 +123,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `workflowdefinition` | versioned workflow graph, DSL/graph validation, activation | `agentcatalog` |
 | `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, `StepHandler` port | `workflowdefinition`, messaging (outbox/inbox) |
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
-| `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port), object storage |
+| `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port), `messaging` (outbox, `S10-06`), object storage |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |
@@ -224,6 +225,7 @@ model provider) and is **not** a module edge.
 | 11 | `ingestion -> messaging` | ingestion is driven by outbox/inbox events |
 | 12 | `workflowexecution -> workflowdefinition` | a run executes a pinned, validated version |
 | 13 | `workflowexecution -> messaging` | a run/step transition publishes through the outbox port |
+| 18 | `knowledgebase -> messaging` | the upload enqueues `ingestion-requested` through the transactional outbox port (S10-06; ADR-015) |
 | 14–16 | `toolexecution -> workflowexecution`, `ai -> workflowexecution`, `knowledgebase -> workflowexecution` | **the execution SPI**: these packages implement the `StepHandler` port that `workflowexecution` owns (open decision §4) |
 | 17 | `workflowexecution -> toolexecution/ai/knowledgebase` | **runtime only**, via the SPI (never a compile edge) |
 

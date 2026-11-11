@@ -60,7 +60,7 @@ class ArchitectureBoundaryTest {
           "observability",
           "common");
 
-  /** Allowed compile-time targets per module (module-map.md arrows 1-16, self included). */
+  /** Allowed compile-time targets per module (module-map.md arrows 1-18, self included). */
   private static final Map<String, Set<String>> ALLOWED =
       Map.ofEntries(
           Map.entry("identity", Set.of("identity")),
@@ -71,7 +71,8 @@ class ArchitectureBoundaryTest {
           Map.entry(
               "toolexecution",
               Set.of("toolexecution", "agentcatalog", "audit", "workflowexecution")),
-          Map.entry("knowledgebase", Set.of("knowledgebase", "ai", "workflowexecution")),
+          Map.entry(
+              "knowledgebase", Set.of("knowledgebase", "ai", "workflowexecution", "messaging")),
           Map.entry("ingestion", Set.of("ingestion", "knowledgebase", "messaging")),
           Map.entry("ai", Set.of("ai", "toolexecution", "workflowexecution")),
           Map.entry("usage", Set.of("usage", "ai", "workflowexecution")),

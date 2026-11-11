@@ -27,7 +27,7 @@ byte is written to object storage and before a single `documents` row is committ
   decodes the WAV duration. [`domain.DocumentUploadLimits`](domain/DocumentUploadLimits.java) is the
   immutable domain view of the three configured limits. [`domain.DocumentUploadStatus`](domain/DocumentUploadStatus.java)
   is the upload lifecycle state.
-- The limits bind from `agentflow.upload.*` (`config.AgentFlowProperties.Upload`); `config.DocumentUploadConfiguration`
+- The limits bind from `agentflow.upload.*` (`config.AgentFlowProperties.Upload`); `knowledgebase.application.config.DocumentUploadConfiguration`
   wires the validator, following `ToolExecutionConfiguration`.
 
 The upload API, the storage client, the `documents` schema (`S10-05`) and the ingestion worker are

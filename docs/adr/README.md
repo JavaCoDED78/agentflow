@@ -30,6 +30,7 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-012`](ADR-012-local-tenant-default-bypass.md) | The local-skeleton tenant default is a documented, removable tenant-isolation bypass | 2026-11-02 | S03-13 / S03-14 / S04-05 / S04-10 | Accepted |
 | [`ADR-013`](ADR-013-s3-object-storage-garage.md) | S3-compatible object storage: Garage for the local stack | 2026-10-18 | S01-15 | Accepted |
 | [`ADR-014`](ADR-014-provider-port.md) | The AI provider is accessed behind a neutral application port | 2026-11-07 | S09-01 | Accepted |
+| [`ADR-015`](ADR-015-knowledgebase-outbox-edge.md) | knowledgebase enqueues ingestion through the transactional outbox (its only `messaging` edge) | 2026-11-11 | S10-06 | Accepted |
 
 ## Statuses
 
