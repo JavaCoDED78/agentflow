@@ -4,6 +4,61 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-04 — Tenant-safe file upload (negative tests for path traversal and cross-tenant access).
+
+
+### What changed
+The part of `S10-04` that is verifiable before the `documents` schema (S10-05), the object storage
+client and the `(tenant_id, id)` row lookup exist — the two invariants the future upload flow builds
+on (invariant 1), captured as a DB-free negative suite in `knowledgebase.domain`, exactly as `S10-02`
+gave a usable value type and `S10-03` gave the accept/bound layer before their real dependencies:
+[`DocumentUploadTenantSafetyTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/domain/DocumentUploadTenantSafetyTest.java).
+
+- **Path traversal.** The object key is generated <b>server-side</b> from the server-issued UUIDs,
+  never from the client `filename` — see `S10-02` [`DocumentObjectKey`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/DocumentObjectKey.java); two uploads of
+  the same document with two different (even hostile) filenames map to the exact same key, whose shape
+  is exactly `documents/<tenantId>/<documentId>[.<ext>]` (3 segments, no `..`, no extra segment), so a
+  traversal or extra path a malicious filename would inject is impossible; a prompt-injected extension
+  (`exe` / `jsp` / `php` / `..` / `a/b` / …) is rejected as a non-whitelisted content-type hint; and
+  [`FileNameSanitizer`](../../apps/agentflow-app/src/main/java/com/example/agentflow/knowledgebase/domain/FileNameSanitizer.java)
+  reduces any path/traversal to a bare base name (defense-in-depth: the display filename the row carries
+  can never be a path).
+- **Cross-tenant access.** An object key is <b>bound</b> to exactly the tenant that issued it (a key
+  parsed from its string still resolves to that tenant, it cannot be re-issued under another); the same
+  document maps to <b>distinct</b> keys across tenants (`of(TenantA, doc) != of(TenantB, doc)`); another
+  tenant's key, read in tenant A's context, still resolves to tenant B, so a tenant-scoped lookup keyed
+  by `(tenant_id, document_id)` treats it as a missing one (the S10-04 "indistinguishable from a missing
+  one" policy); a tenant cannot authorize another tenant's key string, and a forged key for a different
+  document under the same tenant is a distinct, non-authorizable key.
+
+### Why
+`S10-02` proved the key is generated server-side and tenant-scoped; `S10-03` proved the accept/bound
+layer rejects a hostile filename and content type. `S10-04`'s acceptance — *path traversal and access to
+another tenant's document covered by negative tests* — is the isolation guarantee those two layers make
+usable: without it, a tenant could read another tenant's object, or a hostile filename could become an
+object path. Those are exactly the negative scenarios `AGENTS.md` lists as mandatory, and the object-key
+shape plus the filename sanitizer already encode them, so a DB-free suite pins them today. No behaviour,
+interface or design choice is left open beyond the closed `knowledgebase` value types, so
+`brainstorming` is skipped.
+
+### Verification
+- **Path traversal** — the key is generated from the ids only (never the filename) and a hostile
+  extension is rejected: `DocumentUploadTenantSafetyTest#PathTraversal` (3 tests, JUnit XML
+  `tests="3"` `failures="0"`).
+- **Cross-tenant access** — the key is bound to its issuing tenant, the same document yields distinct
+  keys across tenants, and another tenant's key resolves to that tenant (missing here):
+  `DocumentUploadTenantSafetyTest#CrossTenantAccess` (5 tests, JUnit XML `tests="5"` `failures="0"`).
+- `:apps:agentflow-app:check` green (unit + architecture + no-cycles + spotless + OpenAPI gates);
+  `git diff --check` clean; the `knowledgebase` module boundary is unchanged — the suite compiles only
+  against the closed `knowledgebase` value types plus `java.util.*` (no new edge, no ADR).
+
+### Not changed
+The row binding of `documents` to the verified `TenantContext`, the real `(tenant_id, id)` read that
+enforces cross-tenant isolation, the object storage client (`S10-03`), the append-only **audit event**
+the upload must write (needs the `knowledgebase → audit` edge, an ADR) and the no-public-URL enforcement
+(the private-by-bucket policy from `S10-02`) are the rest of the `secure upload flow`; they complete when
+their schema / persistence / wiring land (`S10-05` … `S10-06`) and are not on disk yet, so they are not
+tested here. Related changelog entry: **Tenant-safe file upload (S10-04)** in [`CHANGELOG.md`](../../CHANGELOG.md) (Unreleased → Added).
 ## S10-01 — Define the document lifecycle (status state machine of `knowledgebase`).
 
 
