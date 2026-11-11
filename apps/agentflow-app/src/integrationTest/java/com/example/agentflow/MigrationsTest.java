@@ -73,7 +73,7 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18");
+              "3.3.17", "3.3.18", "3.3.19");
     }
   }
 
@@ -93,7 +93,8 @@ class MigrationsTest {
             "workflow_events",
             "outbox_events",
             "inbox_messages",
-            "dlq_messages");
+            "dlq_messages",
+            "document_chunks");
   }
 
   /**
@@ -212,6 +213,10 @@ class MigrationsTest {
     assertThat(uniqueConstraints("workflow_runs")).contains("workflow_runs_tenant_idempotency_key");
     assertThat(uniqueConstraints("workflow_step_runs"))
         .contains("workflow_step_runs_run_step_attempt");
+    // S10-10: one chunk per (document_id, chunk_index, pipeline_version) forbids a duplicate chunk
+    // within a version (the S10-10 acceptance criterion).
+    assertThat(uniqueConstraints("document_chunks"))
+        .contains("document_chunks_document_index_version");
   }
 
   /** Every foreign key points at the table the migrations document. */
@@ -229,6 +234,9 @@ class MigrationsTest {
     // S06-03: the outbox row is tenant-scoped; the aggregate is addressed by aggregate_type +
     // aggregate_id, so the only parent FK is the tenant (the generic outbox is not run-specific).
     assertThat(referencedParents("outbox_events")).contains("tenants");
+    // S10-10: a chunk is tenant-scoped (FK tenants) and pinned to its parent document (FK
+    // documents).
+    assertThat(referencedParents("document_chunks")).contains("tenants", "documents");
   }
 
   /** The single genuine secondary index (S03-07) exists on the tenant-list lookup path. */
@@ -239,6 +247,9 @@ class MigrationsTest {
     // S05-08: a tenant's run list, and a run's step list — one index per real path.
     assertThat(indexes("workflow_runs")).contains("workflow_runs_tenant_created_at_idx");
     assertThat(indexes("workflow_step_runs")).contains("workflow_step_runs_run_created_at_idx");
+    // S10-10: a document's chunks, tenant-scoped and in creation order (the tenant filter is
+    // mandatory on chunk search, invariant 1).
+    assertThat(indexes("document_chunks")).contains("document_chunks_tenant_document_idx");
   }
 
   /**
@@ -309,6 +320,8 @@ class MigrationsTest {
     // S06-04: the consumer-side inbox records its owner (messaging) and the task in its table
     // COMMENT, so the table's ownership is obvious from the schema itself.
     assertThat(tableComment("inbox_messages")).contains("S06-04").contains("messaging");
+    // S10-10: the chunk table records its owner (knowledgebase) and the task in its table COMMENT.
+    assertThat(tableComment("document_chunks")).contains("S10-10").contains("knowledgebase");
   }
 
   /**
@@ -647,6 +660,126 @@ class MigrationsTest {
                         3))
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("unique constraint");
+
+        connection.rollback();
+      } catch (SQLException e) {
+        connection.rollback();
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * The S10-10 acceptance, proven against data rather than declared: a chunk is tenant-scoped and
+   * pinned to its document; a duplicate chunk within the same (document_id, chunk_index,
+   * pipeline_version) is rejected by the DB {@code UNIQUE} guard rather than a post-check, so a
+   * repeated chunk set (a redelivery, S10-13) cannot create a second row; the same fragment is safe
+   * to persist again only under a different pipeline version (a retuned chunking config reindexes
+   * the document, S10-19); and a chunk with a missing parent document is rejected by the foreign
+   * key. Every probe rolls back so nothing leaks.
+   */
+  @Test
+  void document_chunks_are_tenant_scoped_and_a_duplicate_is_forbidden_by_constraint()
+      throws SQLException {
+    try (Connection connection = connection()) {
+      connection.setAutoCommit(false);
+      try {
+        // A tenant, then its knowledge base and a document (the NOT NULL document columns).
+        insert("INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')", uuid(), "t-chunk");
+        UUID tenant = tenantId("t-chunk");
+        assertThat(tenant).isNotNull();
+
+        String knowledgeBase = uuid();
+        insert(
+            "INSERT INTO knowledge_bases (id, tenant_id, name, embedding_model) VALUES (?, ?, ?, ?)",
+            knowledgeBase,
+            tenant,
+            "kb-chunk",
+            "text-embedding-3-small");
+
+        String document = uuid();
+        insert(
+            "INSERT INTO documents (id, tenant_id, knowledge_base_id, object_key, filename, "
+                + "mime_type, size_bytes, sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            document,
+            tenant,
+            knowledgeBase,
+            "documents/" + tenant + "/" + document + ".pdf",
+            "sample.pdf",
+            "application/pdf",
+            "1024",
+            "sha256-sample");
+
+        // A valid chunk (index 0, pipeline v1) lands under the document, tenant-scoped.
+        insert(
+            "INSERT INTO document_chunks (id, tenant_id, document_id, chunk_index, page_from, "
+                + "page_to, content, content_hash, pipeline_version) VALUES (?, ?, ?, 0, 1, 1, ?, ?, 'v1')",
+            uuid(),
+            tenant,
+            document,
+            "first fragment",
+            "hash-0");
+
+        // A second chunk with a different index under the same document + pipeline also lands.
+        insert(
+            "INSERT INTO document_chunks (id, tenant_id, document_id, chunk_index, page_from, "
+                + "page_to, content, content_hash, pipeline_version) VALUES (?, ?, ?, 1, 1, 2, ?, ?, 'v1')",
+            uuid(),
+            tenant,
+            document,
+            "second fragment",
+            "hash-1");
+
+        // The duplicate: same (document_id, chunk_index, pipeline_version) with different content
+        // is
+        // rejected by the UNIQUE guard — the S10-10 acceptance criterion. A redelivery cannot make
+        // a
+        // second row.
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO document_chunks (id, tenant_id, document_id, chunk_index, "
+                            + "page_from, page_to, content, content_hash, pipeline_version) "
+                            + "VALUES (?, ?, ?, 0, 1, 1, ?, ?, 'v1')",
+                        uuid(),
+                        tenant,
+                        document,
+                        "a different first fragment",
+                        "hash-0-different"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
+
+        // The same (document, index) with a different pipeline version is allowed — the guard keys
+        // on
+        // the whole triple, not on the content hash, so a retuned chunking config reindexes
+        // (S10-19).
+        insert(
+            "INSERT INTO document_chunks (id, tenant_id, document_id, chunk_index, page_from, "
+                + "page_to, content, content_hash, pipeline_version) VALUES (?, ?, ?, 0, 1, 1, ?, ?, 'v2')",
+            uuid(),
+            tenant,
+            document,
+            "a different first fragment",
+            "hash-0-different");
+
+        // A chunk whose parent document does not exist is rejected by the foreign key (the tenant
+        // is
+        // valid, so only the document guard fires).
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO document_chunks (id, tenant_id, document_id, chunk_index, "
+                                + "page_from, page_to, content, content_hash, pipeline_version) VALUES ("
+                                + "'"
+                                + uuid()
+                                + "', '"
+                                + tenant
+                                + "', '"
+                                + uuid()
+                                + "', 0, 1, 1, 'x', 'h', 'v1')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
 
         connection.rollback();
       } catch (SQLException e) {

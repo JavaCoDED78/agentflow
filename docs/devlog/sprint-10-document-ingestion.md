@@ -4,6 +4,51 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-10 — Create the document_chunks schema.
+
+### What changed
+
+- [`apps/agentflow-app/src/main/resources/migrations/V3_3_19__create_document_chunks.sql`](../../apps/agentflow-app/src/main/resources/migrations/V3_3_19__create_document_chunks.sql) — the migration. It is step 20 of the ordered Flyway line (`V3_3_18` … `V3_3_19`), owner `knowledgebase`, and applies cleanly against PostgreSQL 18 (pgvector `pgvector/pgvector:0.8.6-pg18`) — the exact image Compose and Testcontainers use.
+
+`document_chunks` (one row per deterministic fragment of a document; glossary "Chunk"):
+
+| column | type | constraint / default | meaning |
+|---|---|---|---|
+| `id` | `UUID` | PK | chunk id (assigned by the persistence layer) |
+| `tenant_id` | `UUID` | FK `tenants.id`, `NOT NULL` | owning tenant (isolation by `(tenant_id, document_id)` read) |
+| `document_id` | `UUID` | FK `documents.id`, `NOT NULL`, `ON DELETE CASCADE` | parent document; fragments leave with the document |
+| `pipeline_version` | `TEXT` | `NOT NULL DEFAULT 'v1'` | chunking pipeline version; part of the `(document_id, chunk_index, pipeline_version)` unique + the `S10-13` / `S10-19` idempotency key |
+| `chunk_index` | `INTEGER` | `NOT NULL` | zero-based position within the document's chunk set |
+| `page_from` | `INTEGER` | `NOT NULL` | first page the fragment spans (≥ 1) |
+| `page_to` | `INTEGER` | `NOT NULL` | last page the fragment spans (≥ `page_from`) |
+| `content` | `TEXT` | `NOT NULL` | the fragment text (whitespace-normalised) |
+| `content_hash` | `TEXT` | `NOT NULL` | SHA-256 hex fingerprint; the idempotency seed `S10-13` keys on |
+| `metadata_json` | `JSONB` | nullable | optional chunk metadata (e.g. embedding dimensionality / model) |
+| `created_by` | `TEXT` | nullable | audit |
+| `created_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()` | audit (immutable row — no `version`, no `updated_at`) |
+
+`document_chunks` is created after `documents` (`V3_3_18`) so the `document_id` foreign key resolves. One business unique — `document_chunks_document_index_version` on `(document_id, chunk_index, pipeline_version)` — forbids a duplicate chunk within a version (the `S10-10` acceptance). One lookup index `document_chunks_tenant_document_idx` on `(tenant_id, document_id, chunk_index)` backs the tenant-scoped chunk list in creation order (the tenant filter is mandatory on chunk search, invariant 1). No `version` column: a chunk is append-only, created once per (document, position, pipeline), guarded by the unique constraint rather than an optimistic-lock counter — the mirror of the immutable `knowledge_bases` row.
+
+### Why
+
+- **Uniqueness is the acceptance, and it is a DB guard.** One document has exactly one chunk per (position, pipeline), so the composite unique makes a repeated chunk set (a redelivery, `S10-13`) impossible to persist twice — the database rejects the duplicate, not a post-insert check. `pipeline_version` is in the key so a retuned chunking config reindexes the document (`S10-19`) instead of colliding with the old chunks.
+- **Tenant scope and cascade by construction.** `tenant_id` is the isolation key (invariant 1 — another tenant's chunk is indistinguishable from a missing one through the `(tenant_id, document_id)` read), and `document_id` cascades so the two-phase document lifecycle removes the fragments with the document (`document-lifecycle.md`).
+- **Embedding deferred to `S10-11`.** The glossary names the `embedding` vector column too, but pgvector is not enabled until `S10-11`, so the migration declares `metadata_json` (embedding dimensionality / model) and defers the vector — the same pattern `S10-05` used for `embedding_model` (declared, dimensionality fixed by `S10-11`).
+
+### Verification
+
+All of it ran against a live PostgreSQL 18 container (`pgvector/pgvector:0.8.6-pg18`), the same image Compose and Testcontainers use. The migration line applied cleanly as step 20.
+
+- **Schema.** The `MigrationsTest` integration suite (JUnit XML checked: `tests="17"` `failures="0"` `errors="0"` `skipped="0"`) asserts the exact ordered line now at `v3.3.19`, that `document_chunks` is an owning table, that the `(document_id, chunk_index, pipeline_version)` unique (`document_chunks_document_index_version`), the `(tenant_id, document_id)` + `(tenant_id)` foreign keys, the `(tenant_id, document_id, chunk_index)` index (`document_chunks_tenant_document_idx`) and the `S10-10`·`knowledgebase` table COMMENT all exist.
+- **Data (the `S10-10` acceptance).** `document_chunks_are_tenant_scoped_and_a_duplicate_is_forbidden_by_constraint` builds a tenant → knowledge base → document chain and a chunk that lands, then: a second chunk with a different `chunk_index` lands; a `(document_id, chunk_index, pipeline_version)` duplicate with different content is rejected by the unique constraint; the same fragment is allowed again under a different `pipeline_version`; and a chunk with a missing parent document is rejected by the foreign key. Every probe rolls back.
+
+`git diff --check` clean. The `knowledgebase` module boundary, the OpenAPI contract and the Java main sources are unchanged — this is a schema + documentation change (the persistence layer that writes chunks is `S10-13`), so `:apps:agentflow-app:check` is green — unit + architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`) + no-cycles + `spotless` + OpenAPI gates. The migration-line integration suite `:apps:agentflow-app:integrationTest --tests '*MigrationsTest*' --rerun-tasks` is green.
+
+### Not changed
+
+- The persistence layer that binds `(tenant_id, document_id)` and writes chunks (the `DocumentChunkRepository` / mapper), the embedding vector (`S10-11`), the ingestion indexing worker and ingestion idempotency — `S10-11` … `S10-13`. The domain glossary §7 already names the `document_chunks` columns verbatim, so it needs no edit; `docs/architecture/module-map.md` already lists `document_chunks → knowledgebase` with the unique constraint.
+
+---
 ## S10-09 — Deterministic chunking (P0).
 
 ### What changed
