@@ -43,6 +43,7 @@ public class AgentFlowProperties {
   @Valid private final Upload upload = new Upload();
   private final Storage storage = new Storage();
   private final Ingestion ingestion = new Ingestion();
+  private final Chunking chunking = new Chunking();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -288,6 +289,16 @@ public class AgentFlowProperties {
    */
   public Ingestion getIngestion() {
     return ingestion;
+  }
+
+  /**
+   * The deterministic-chunking parameters (S10-09). Bound from {@code
+   * agentflow.ingestion.chunking.*}.
+   *
+   * @return the chunking configuration group
+   */
+  public Chunking getChunking() {
+    return chunking;
   }
 
   /**
@@ -1601,6 +1612,91 @@ public class AgentFlowProperties {
      */
     public void setMaxChars(int maxChars) {
       this.maxChars = maxChars;
+    }
+  }
+
+  /**
+   * Deterministic-chunking parameters (S10-09), bound from {@code agentflow.ingestion.chunking.*}.
+   * These back the {@code Chunker} the ingestion worker runs on extracted text. As with the
+   * extraction limits, the values live in configuration, not code: the per-chunk character budget
+   * and the context overlap are tuned here, and the {@code ChunkingConfig} constructor rejects a
+   * nonsensical combination at bean creation (startup), mirroring the {@link Ingestion} group. The
+   * strategy is held as a plain string on purpose &mdash; the global {@code config} package must
+   * not import the {@code ingestion.domain} enum (that edge would cycle back through {@code
+   * ingestion}), so the {@code DocumentChunkingConfiguration} bean maps it to {@code
+   * Strategy.CHARACTER_BOUNDARY}.
+   *
+   * <p>Two independent bounds:
+   *
+   * <ul>
+   *   <li><b>max-chunk-chars</b> &mdash; the maximum characters retained per chunk (default 500).
+   *       Chunks are packed word-boundary-aware up to this budget; a single word longer than it is
+   *       kept whole as its own chunk.
+   *   <li><b>overlap-chars</b> &mdash; the characters carried forward from the end of one chunk
+   *       into the next (default 50), so context is not lost at the boundary. Must be &lt; {@code
+   *       max-chunk-chars}.
+   * </ul>
+   */
+  public static class Chunking {
+
+    /** Maximum characters retained per chunk. Default 500; at least 1, a value below 1 fails. */
+    @Min(value = 1, message = "agentflow.ingestion.chunking.max-chunk-chars must be at least 1")
+    private int maxChunkChars = 500;
+
+    /**
+     * Characters carried forward from the end of one chunk into the next. Default 50; at least 0
+     * and strictly less than {@code max-chunk-chars}.
+     */
+    @Min(value = 0, message = "agentflow.ingestion.chunking.overlap-chars must be at least 0")
+    private int overlapChars = 50;
+
+    /**
+     * The chunking strategy name (see {@code Strategy}). Held as a string so the global config
+     * package does not import the {@code ingestion.domain} enum; the {@code
+     * DocumentChunkingConfiguration} bean maps it to the domain strategy.
+     */
+    private String strategy = "character-boundary";
+
+    /**
+     * @return the maximum characters retained per chunk (default {@code 500})
+     */
+    public int getMaxChunkChars() {
+      return maxChunkChars;
+    }
+
+    /**
+     * @param maxChunkChars the maximum characters retained per chunk (at least 1)
+     */
+    public void setMaxChunkChars(int maxChunkChars) {
+      this.maxChunkChars = maxChunkChars;
+    }
+
+    /**
+     * @return the characters carried forward from one chunk into the next (default {@code 50})
+     */
+    public int getOverlapChars() {
+      return overlapChars;
+    }
+
+    /**
+     * @param overlapChars the characters carried forward from one chunk into the next (at least 0)
+     */
+    public void setOverlapChars(int overlapChars) {
+      this.overlapChars = overlapChars;
+    }
+
+    /**
+     * @return the chunking strategy name (default {@code "character-boundary"})
+     */
+    public String getStrategy() {
+      return strategy;
+    }
+
+    /**
+     * @param strategy the chunking strategy name
+     */
+    public void setStrategy(String strategy) {
+      this.strategy = strategy;
     }
   }
 }
