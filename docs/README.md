@@ -72,7 +72,7 @@ docs/
 │   └── dsl-v1.md                      ← workflow DSL v1: shape, node types, validation, examples (S05-17)
 ├── tools/
 │   └── README.md                      ← tool authoring guide (S08-15)
-├── ai/                                README.md ← AI integration guide (S09-15); provider-configuration.md ← S09-15; real-provider-contract-test.md ← S09-12; rag/ ⚠ planned
+├── ai/                                README.md ← AI integration guide (S09-15); provider-configuration.md ← S09-15; real-provider-contract-test.md ← S09-12; rag/ README.md ← RAG pipeline (S10-11 follow-up)
 ├── evaluation/
 │   └── README.md                      ← Planner baseline eval cases (S09-14)
 ├── observability/                     ⚠ planned (S13) — standards, metric catalogue, SLOs
@@ -109,7 +109,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Security & threat model | `docs/security/`, `docs/threat-model/` | `permissions.md` (S04-04 catalogue), `tenant-claim.md` (S04-05 tenant claim), `response-policy.md` (S04-09 masking policy), `secrets.md` (S09-03 secrets policy); threat-model full model (S11) |
 | Workflow DSL & examples | `docs/workflows/` | `docs/workflows/dsl-v1.md` (S05-17) |
 | Tools | `docs/tools/` | `README.md` authoring guide (S08-15) |
-| AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/evaluation/README.md` (S09-14 Planner baseline eval cases), `docs/ai/README.md` (S09-15 AI integration guide), `docs/ai/provider-configuration.md` (S09-15 provider configuration), `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test); rag/ ⚠ planned |
+| AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/evaluation/README.md` (S09-14 Planner baseline eval cases), `docs/ai/README.md` (S09-15 AI integration guide), `docs/ai/provider-configuration.md` (S09-15 provider configuration), `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test), `docs/rag/README.md` (RAG pipeline — S10-11 follow-up) |
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
 | Usage, costs, budgets, audit | `docs/usage-and-costs.md` | ⚠ planned |
