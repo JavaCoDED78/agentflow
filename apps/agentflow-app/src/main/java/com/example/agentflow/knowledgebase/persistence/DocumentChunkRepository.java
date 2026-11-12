@@ -19,10 +19,12 @@ import org.springframework.stereotype.Repository;
  *
  * <p>It does two things the plan fixes here: it <em>persists</em> a chunk's {@code
  * nomic-embed-text} embedding (a fixed 768-dimension {@code vector}, the column {@code S10-11}
- * added to {@code document_chunks}) and it runs the <em>nearest-neighbour</em> search the glossary
- * "Retrieval" names. Both are plain {@link JdbcTemplate} calls on Spring Data JDBC (the single
- * persistence approach, {@code ADR-009}); the row is a small, tenant-scoped write/read, not an
- * aggregate with a rich read model. The bean is registered only when a {@link DataSource} exists
+ * added to {@code document_chunks}) and it runs the two <em>retrieval</em> searches the glossary
+ * "Retrieval" names — the <em>nearest-neighbour</em> search (S10-14, embedding similarity) and the
+ * <em>lexical</em> full-text search (S10-15, {@link #findByKeyword}, exact text). Both are plain
+ * {@link JdbcTemplate} calls on Spring Data JDBC (the single persistence approach, {@code
+ * ADR-009}); the row is a small, tenant-scoped write/read, not an aggregate with a rich read model.
+ * The bean is registered only when a {@link DataSource} exists
  * ({@code @ConditionalOnBean(DataSource.class)}), so the application boots without a database
  * ({@code S01-02}) and the caller fails loud (reports {@code 503}) when the repository is absent —
  * exactly as the sibling {@code workflowexecution} / {@code knowledgebase} repositories do.
@@ -79,6 +81,29 @@ public class DocumentChunkRepository {
           + "WHERE c.tenant_id = ? AND d.knowledge_base_id = ? AND c.embedding IS NOT NULL "
           + "ORDER BY c.embedding <=> ?::vector "
           + "LIMIT ?";
+
+  /**
+   * The tenant-scoped lexical full-text search (S10-15). {@code plainto_tsquery('english', ?)}
+   * tokenises the incoming keyword as natural language, so an untrusted search string can never
+   * break the query with a malformed operator (invariant 7). {@code search_vector} is the generated
+   * {@code tsvector} the {@code S10-15} migration built over {@code content}; the {@code GIN} index
+   * backs the {@code @@} match. The tenant and the collection scope are part of the query itself
+   * (invariant 1), never a post-filter.
+   */
+  private static final String FIND_KEYWORD_SQL =
+      "WITH matched AS ("
+          + "SELECT c.id, c.tenant_id, c.document_id, c.pipeline_version, c.chunk_index, c.page_from, "
+          + "c.page_to, c.content, c.content_hash, c.created_by, c.created_at, "
+          + "ts_rank(c.search_vector, plainto_tsquery('english', ?)) AS rank "
+          + "FROM "
+          + TABLE
+          + " c JOIN documents d ON d.id = c.document_id "
+          + "WHERE c.tenant_id = ? AND d.knowledge_base_id = ? "
+          + "AND c.search_vector @@ plainto_tsquery('english', ?)"
+          + ") "
+          + "SELECT id, tenant_id, document_id, pipeline_version, chunk_index, page_from, page_to, "
+          + "content, content_hash, created_by, created_at, rank FROM matched "
+          + "ORDER BY rank DESC LIMIT ?";
 
   private final JdbcTemplate jdbc;
 
@@ -195,6 +220,61 @@ public class DocumentChunkRepository {
         tenantId,
         knowledgeBaseId,
         queryLiteral,
+        limit);
+  }
+
+  /**
+   * Return the chunks whose {@code content} matches {@code keyword} for one tenant inside one
+   * knowledge base, ordered by FTS relevance descending.
+   *
+   * <p>This is the lexical half of the hybrid retrieval (S10-15): it matches chunks by their exact
+   * text, the complement of {@link #findNearest} which matches by embedding similarity. The access
+   * predicate is part of the query itself (invariant 1), not a post-filter — {@code c.tenant_id =
+   * ?} isolates the tenant and the join to {@code documents} adds the collection scope ({@code
+   * d.knowledge_base_id = ?}), before the {@code @@} match and the limit — so the nearest-neighbour
+   * search never sees another tenant's — or another collection's — rows even when their content is
+   * a closer match to the keyword; both a cross-tenant and a cross-collection query return an empty
+   * list, exactly as a cross-tenant lookup of any other resource does.
+   *
+   * <p>The keyword is tokenised with {@code plainto_tsquery('english', ?)} (not {@code
+   * to_tsquery}), so an untrusted search string is read as natural language and can never throw on
+   * a malformed operator: an odd or hostile keyword is simply a no-match, never an error (invariant
+   * 7 — the caller / model is never an authority over query construction). The relevance is {@code
+   * ts_rank(search_vector, ...)}; the lexical half (S10-15) returns it as {@code rank} for {@link
+   * DocumentChunkRow}; {@link RetrievalService#lexicalSearch} maps it to the candidate score. The
+   * {@code search_vector} is the generated {@code tsvector} the {@code S10-15} migration built over
+   * {@code content}, so the index recomputes when {@code content} changes.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param knowledgeBaseId the knowledge base to search (a cross-tenant id yields an empty list —
+   *     another tenant's collection is indistinguishable from a missing one)
+   * @param keyword the keyword / term to find in the chunk text; tokenised as natural language
+   * @param limit the maximum number of chunks to return (>= 1)
+   * @return the matching chunks by descending relevance; empty when the tenant's collection matches
+   *     nothing (or is missing)
+   * @throws IllegalArgumentException if an argument is {@code null} or {@code limit} is {@code < 1}
+   */
+  public List<DocumentChunkRow> findByKeyword(
+      UUID tenantId, UUID knowledgeBaseId, String keyword, int limit) {
+    if (tenantId == null) {
+      throw new IllegalArgumentException("tenantId must not be null");
+    }
+    if (knowledgeBaseId == null) {
+      throw new IllegalArgumentException("knowledgeBaseId must not be null");
+    }
+    if (keyword == null) {
+      throw new IllegalArgumentException("keyword must not be null");
+    }
+    if (limit < 1) {
+      throw new IllegalArgumentException("limit must be >= 1, was " + limit);
+    }
+    return jdbc.query(
+        FIND_KEYWORD_SQL,
+        new KeywordRowMapper(),
+        keyword,
+        tenantId,
+        knowledgeBaseId,
+        keyword,
         limit);
   }
 
@@ -371,7 +451,35 @@ public class DocumentChunkRepository {
           rs.getString("content_hash"),
           rs.getString("created_by"),
           rs.getObject("created_at", OffsetDateTime.class),
-          rs.getDouble("distance"));
+          rs.getDouble("distance"),
+          0.0);
+    }
+  }
+
+  /**
+   * Maps one {@code document_chunks} row to a {@link DocumentChunkRow} for the lexical full-text
+   * search (S10-15): the plain columns plus the {@code float8} {@code rank} the query computed as
+   * {@code ts_rank}; {@code distance} is left at {@code 0} because the lexical half has no cosine
+   * distance. No {@code vector} column is mapped.
+   */
+  private static final class KeywordRowMapper implements RowMapper<DocumentChunkRow> {
+
+    @Override
+    public DocumentChunkRow mapRow(ResultSet rs, int rowNum) throws SQLException {
+      return new DocumentChunkRow(
+          rs.getObject("id", UUID.class),
+          rs.getObject("tenant_id", UUID.class),
+          rs.getObject("document_id", UUID.class),
+          rs.getString("pipeline_version"),
+          rs.getInt("chunk_index"),
+          rs.getInt("page_from"),
+          rs.getInt("page_to"),
+          rs.getString("content"),
+          rs.getString("content_hash"),
+          rs.getString("created_by"),
+          rs.getObject("created_at", OffsetDateTime.class),
+          0.0,
+          rs.getDouble("rank"));
     }
   }
 
