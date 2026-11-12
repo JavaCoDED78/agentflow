@@ -2,6 +2,7 @@ package com.example.agentflow.knowledgebase.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.data.Offset.offset;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -20,12 +21,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * The pgvector persistence adapter (S10-11) against a <em>real</em> PostgreSQL &mdash; {@code
- * pgvector/pgvector:0.8.6-pg18}, the exact image Compose pins (never {@code H2}, per {@code
- * AGENTS.md}). It proves the S10-11 acceptance: the nearest-neighbour query executes on the same
- * image type as Compose, returns the closest chunks ordered by distance, stays tenant-scoped (a
- * cross-tenant chunk never surfaces), and the fixed {@code vector(768)} dimension rejects a
- * mismatched width at the database layer.
+ * The pgvector persistence adapter (S10-11, extended by S10-14) against a <em>real</em> PostgreSQL
+ * &mdash; {@code pgvector/pgvector:0.8.6-pg18}, the exact image Compose pins (never {@code H2}, per
+ * {@code AGENTS.md}). It proves: the nearest-neighbour query executes on the same image type as
+ * Compose and returns the closest chunks ordered by distance, with the cosine distance mapped
+ * alongside; the search is scoped to one tenant <em>and</em> one knowledge base (a cross-tenant or
+ * cross-collection chunk never surfaces, even with a maximally close embedding); rows without an
+ * embedding are never returned; and the fixed {@code vector(768)} dimension rejects a mismatched
+ * width at the database layer.
  *
  * <p>Every probe rolls back so nothing leaks between methods (the throwaway container is the only
  * thing that holds the rows).
@@ -56,10 +59,13 @@ class DocumentChunkRepositoryIT {
     repo = new DocumentChunkRepository(jdbc);
   }
 
+  /** The tenant/knowledge-base/document chain a chunk fixture needs. */
+  private record Fixture(UUID tenantId, UUID knowledgeBaseId, UUID documentId) {}
+
   /**
    * Persist a chunk through the real {@link DocumentChunkRepository#insert} (the production path
    * the adapter owns): its {@code nomic-embed-text} vector is bound and cast {@code ::vector}
-   * there, so this exercises the same code the indexing path (`S10-13`) will use.
+   * there, so this exercises the same code the indexing path (`S10-13`) uses.
    */
   private void insertChunk(
       UUID tenant, UUID document, int index, float[] embedding, String content) {
@@ -68,16 +74,26 @@ class DocumentChunkRepositoryIT {
   }
 
   /** A bare tenant with a knowledge base and a document (the FK chain a chunk needs). */
-  private static UUID tenantWithDocument(String slug) {
+  private static Fixture tenantWithKnowledgeBaseAndDocument(String slug) {
     jdbc.update("INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')", uuid(), slug);
     UUID tenant = tenantId(slug);
+    UUID kb = insertKnowledgeBase(tenant, slug + "-kb");
+    UUID document = insertDocument(tenant, kb, slug);
+    return new Fixture(tenant, kb, document);
+  }
+
+  private static UUID insertKnowledgeBase(UUID tenant, String name) {
     UUID kb = uuid();
     jdbc.update(
         "INSERT INTO knowledge_bases (id, tenant_id, name, embedding_model) VALUES (?, ?, ?, ?)",
         kb,
         tenant,
-        slug + "-kb",
+        name,
         "nomic-embed-text");
+    return kb;
+  }
+
+  private static UUID insertDocument(UUID tenant, UUID kb, String slug) {
     UUID document = uuid();
     jdbc.update(
         "INSERT INTO documents (id, tenant_id, knowledge_base_id, object_key, filename, "
@@ -90,7 +106,7 @@ class DocumentChunkRepositoryIT {
         "application/pdf",
         1024L,
         "sha256-" + slug);
-    return tenant;
+    return document;
   }
 
   /**
@@ -117,73 +133,158 @@ class DocumentChunkRepositoryIT {
   /**
    * Cosine distance between two 768-d vectors (only the first three components are non-zero here).
    */
-  private static float cosine(float[] a, float[] b) {
+  private static double cosine(float[] a, float[] b) {
     double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    return (float) (1.0 - dot);
+    return 1.0 - dot;
   }
 
   /** The S10-11 acceptance: a nearest-neighbour query executes, returns the closest chunk first. */
   @Test
   void nearest_neighbour_search_runs_and_orders_by_distance() throws SQLException {
     // `repo` is wired in migrateAndWire (a stateless wrapper over the shared jdbc).
-    UUID tenant = tenantWithDocument("nn-order");
-    UUID document = documentIdForTenant(tenant);
+    Fixture fixture = tenantWithKnowledgeBaseAndDocument("nn-order");
 
     // Two chunks with embeddings on different axes: eA on +x, eB on +y. A query near +x must rank
     // eA first, eB second.
     float[] eA = unit768(1f, 0f, 0f);
     float[] eB = unit768(0f, 1f, 0f);
-    insertChunk(tenant, document, 0, eA, "chunk on x axis");
-    insertChunk(tenant, document, 1, eB, "chunk on y axis");
+    insertChunk(fixture.tenantId(), fixture.documentId(), 0, eA, "chunk on x axis");
+    insertChunk(fixture.tenantId(), fixture.documentId(), 1, eB, "chunk on y axis");
 
     float[] q = unit768(1f, 0.15f, 0f); // clearly closer to +x than to +y
     assertThat(cosine(q, eA)).isLessThan(cosine(q, eB));
 
-    List<DocumentChunkRow> rows = repo.findNearest(tenant, q, 10);
+    List<DocumentChunkRow> rows =
+        repo.findNearest(fixture.tenantId(), fixture.knowledgeBaseId(), q, 10);
 
     assertThat(rows).hasSize(2);
     // The closest chunk (the +x one) is returned first; content disambiguates the ordering.
     assertThat(rows.get(0).content()).isEqualTo("chunk on x axis");
     assertThat(rows.get(1).content()).isEqualTo("chunk on y axis");
+    // The distance is mapped alongside each row: ascending order, matching the cosine math the
+    // query computes in PostgreSQL (the literal round-trips through Float.toString, so the stored
+    // float4 values are the ones compared here).
+    assertThat(rows.get(0).distance())
+        .isCloseTo(cosine(q, eA), offset(1e-4))
+        .isLessThan(rows.get(1).distance());
+    assertThat(rows.get(1).distance()).isCloseTo(cosine(q, eB), offset(1e-4));
   }
 
   /** Invariant 1: a nearest-neighbour query never returns another tenant's chunk. */
   @Test
   void nearest_neighbour_search_is_tenant_scoped() throws SQLException {
     // `repo` is wired in migrateAndWire (a stateless wrapper over the shared jdbc).
-    UUID tenantA = tenantWithDocument("nn-tenant-a");
-    UUID tenantB = tenantWithDocument("nn-tenant-b");
-    UUID documentA = documentIdForTenant(tenantA);
-    UUID documentB = documentIdForTenant(tenantB);
+    Fixture fixtureA = tenantWithKnowledgeBaseAndDocument("nn-tenant-a");
+    Fixture fixtureB = tenantWithKnowledgeBaseAndDocument("nn-tenant-b");
 
     // A chunk in tenant A, and a clearly different chunk in tenant B.
-    insertChunk(tenantA, documentA, 0, unit768(1f, 0f, 0f), "A chunk");
-    insertChunk(tenantB, documentB, 0, unit768(0f, 1f, 0f), "B chunk");
+    insertChunk(fixtureA.tenantId(), fixtureA.documentId(), 0, unit768(1f, 0f, 0f), "A chunk");
+    insertChunk(fixtureB.tenantId(), fixtureB.documentId(), 0, unit768(0f, 1f, 0f), "B chunk");
 
     // A query answered for tenant A must be empty of tenant B's chunk, even though the search is
     // over the whole table.
-    List<DocumentChunkRow> forA = repo.findNearest(tenantA, unit768(1f, 0f, 0f), 10);
+    List<DocumentChunkRow> forA =
+        repo.findNearest(fixtureA.tenantId(), fixtureA.knowledgeBaseId(), unit768(1f, 0f, 0f), 10);
 
     assertThat(forA).hasSize(1);
-    assertThat(forA.get(0).tenantId()).isEqualTo(tenantA);
+    assertThat(forA.get(0).tenantId()).isEqualTo(fixtureA.tenantId());
     assertThat(forA.get(0).content()).isEqualTo("A chunk");
-    assertThat(forA).noneMatch(r -> r.tenantId().equals(tenantB));
+    assertThat(forA).noneMatch(r -> r.tenantId().equals(fixtureB.tenantId()));
 
     // And the reverse query for tenant B only ever sees B's chunk.
-    List<DocumentChunkRow> forB = repo.findNearest(tenantB, unit768(0f, 1f, 0f), 10);
+    List<DocumentChunkRow> forB =
+        repo.findNearest(fixtureB.tenantId(), fixtureB.knowledgeBaseId(), unit768(0f, 1f, 0f), 10);
     assertThat(forB).hasSize(1);
     assertThat(forB.get(0).content()).isEqualTo("B chunk");
+  }
+
+  /**
+   * The S10-14 acceptance: the search is scoped to one collection. Two knowledge bases — of one
+   * tenant and of two different tenants — hold chunks with <em>identical</em> embeddings (the
+   * maximally close case): a query still only ever returns the searched collection's chunks, and a
+   * cross-tenant knowledge-base id is indistinguishable from a missing one.
+   */
+  @Test
+  void nearest_neighbour_search_is_scoped_to_one_collection() throws SQLException {
+    // `repo` is wired in migrateAndWire (a stateless wrapper over the shared jdbc).
+    Fixture fixtureA = tenantWithKnowledgeBaseAndDocument("nn-kb-a");
+    // A second knowledge base (and document) for the *same* tenant.
+    UUID kbA2 = insertKnowledgeBase(fixtureA.tenantId(), "nn-kb-a-2");
+    UUID docA2 = insertDocument(fixtureA.tenantId(), kbA2, "nn-kb-a-2");
+    // A second tenant with its own collection.
+    Fixture fixtureB = tenantWithKnowledgeBaseAndDocument("nn-kb-b");
+
+    // Identical embeddings in all three collections: no result can be closer than identical.
+    float[] identical = unit768(1f, 0f, 0f);
+    insertChunk(fixtureA.tenantId(), fixtureA.documentId(), 0, identical, "collection 1 chunk");
+    insertChunk(fixtureA.tenantId(), docA2, 0, identical, "collection 2 chunk");
+    insertChunk(fixtureB.tenantId(), fixtureB.documentId(), 0, identical, "tenant B chunk");
+
+    // Same tenant, first collection: the second collection's identically-embedded chunk never
+    // surfaces.
+    List<DocumentChunkRow> inKb1 =
+        repo.findNearest(fixtureA.tenantId(), fixtureA.knowledgeBaseId(), unit768(1f, 0f, 0f), 10);
+    assertThat(inKb1).hasSize(1);
+    assertThat(inKb1.get(0).content()).isEqualTo("collection 1 chunk");
+
+    // Same tenant, second collection: only its own chunk.
+    List<DocumentChunkRow> inKb2 =
+        repo.findNearest(fixtureA.tenantId(), kbA2, unit768(1f, 0f, 0f), 10);
+    assertThat(inKb2).hasSize(1);
+    assertThat(inKb2.get(0).content()).isEqualTo("collection 2 chunk");
+
+    // Tenant B searching tenant A's knowledge-base id: indistinguishable from a missing one.
+    assertThat(
+            repo.findNearest(
+                fixtureB.tenantId(), fixtureA.knowledgeBaseId(), unit768(1f, 0f, 0f), 10))
+        .isEmpty();
+  }
+
+  /**
+   * A chunk whose {@code embedding} is {@code NULL} (created by ingestion, not yet — or failed to
+   * be — indexed) is never returned: a {@code NULL} distance would order unpredictably and map to a
+   * bogus {@code 0.0}, so the query excludes the row outright.
+   */
+  @Test
+  void chunks_without_an_embedding_are_never_returned() throws SQLException {
+    // `repo` is wired in migrateAndWire (a stateless wrapper over the shared jdbc).
+    Fixture fixture = tenantWithKnowledgeBaseAndDocument("nn-null-embedding");
+
+    // Insert without an embedding column at all (the S10-11 nullable path), bypassing the adapter
+    // so only the query's NULL guard can exclude the row.
+    statement()
+        .execute(
+            "INSERT INTO document_chunks (id, tenant_id, document_id, pipeline_version, "
+                + "chunk_index, page_from, page_to, content, content_hash) VALUES ('"
+                + uuid()
+                + "', '"
+                + fixture.tenantId()
+                + "', '"
+                + fixture.documentId()
+                + "', 'v1', 0, 1, 1, 'not indexed yet', 'h')");
+
+    assertThat(
+            repo.findNearest(
+                fixture.tenantId(), fixture.knowledgeBaseId(), unit768(1f, 0f, 0f), 10))
+        .isEmpty();
+
+    // Once the chunk is indexed through the adapter, it surfaces normally.
+    insertChunk(fixture.tenantId(), fixture.documentId(), 1, unit768(1f, 0f, 0f), "indexed chunk");
+    List<DocumentChunkRow> rows =
+        repo.findNearest(fixture.tenantId(), fixture.knowledgeBaseId(), unit768(1f, 0f, 0f), 10);
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0).content()).isEqualTo("indexed chunk");
   }
 
   /** The fixed 768 dimension is a database guard: a mismatched width is rejected by PostgreSQL. */
   @Test
   void embedding_dimension_is_fixed_to_768() throws SQLException {
     // `repo` is wired in migrateAndWire (a stateless wrapper over the shared jdbc).
-    UUID tenant = tenantWithDocument("nn-dim");
-    UUID document = documentIdForTenant(tenant);
+    Fixture fixture = tenantWithKnowledgeBaseAndDocument("nn-dim");
 
     // A correct 768-dim chunk lands through the adapter.
-    insertChunk(tenant, document, 0, fill((float) 0.01, 768), "correct width");
+    insertChunk(
+        fixture.tenantId(), fixture.documentId(), 0, fill((float) 0.01, 768), "correct width");
 
     // A 769-dim vector is rejected by the vector(768) column, not by the application: the insert
     // bypasses the adapter's Java guard so only the database guard can stop it.
@@ -196,9 +297,9 @@ class DocumentChunkRepositoryIT {
                             + "VALUES ('"
                             + uuid()
                             + "', '"
-                            + tenant
+                            + fixture.tenantId()
                             + "', '"
-                            + document
+                            + fixture.documentId()
                             + "', 'v1', 5, 1, 1, 'bad', 'h', "
                             + vectorLiteral(fill(0.01f, 769))
                             + "::vector)"))
@@ -208,15 +309,21 @@ class DocumentChunkRepositoryIT {
         .isInstanceOf(SQLException.class);
 
     // The valid chunk is still retrievable; the rejected insert left no row behind (rolled back).
-    assertThat(repo.findNearest(tenant, fill((float) 0.01, 768), 10)).hasSize(1);
+    assertThat(
+            repo.findNearest(
+                fixture.tenantId(), fixture.knowledgeBaseId(), fill((float) 0.01, 768), 10))
+        .hasSize(1);
   }
 
   /** A wrong-dim query vector is refused in Java before it can reach the database. */
   @Test
   void find_nearest_rejects_a_wrong_width_query_vector() {
     // `repo` is wired in migrateAndWire (a stateless wrapper over the shared jdbc).
-    UUID tenant = tenantWithDocument("nn-query-dim");
-    assertThatThrownBy(() -> repo.findNearest(tenant, fill(0.1f, 100), 10))
+    Fixture fixture = tenantWithKnowledgeBaseAndDocument("nn-query-dim");
+    assertThatThrownBy(
+            () ->
+                repo.findNearest(
+                    fixture.tenantId(), fixture.knowledgeBaseId(), fill(0.1f, 100), 10))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("768");
   }
@@ -253,23 +360,7 @@ class DocumentChunkRepositoryIT {
             st.executeQuery("SELECT id FROM tenants WHERE slug = '" + slug + "'")) {
       return rs.next() ? rs.getObject("id", UUID.class) : null;
     } catch (SQLException e) {
-      throw new UncheckedSQLException(e);
-    }
-  }
-
-  private static UUID documentIdForTenant(UUID tenant) {
-    try (Statement st = statement();
-        java.sql.ResultSet rs =
-            st.executeQuery("SELECT id FROM documents WHERE tenant_id = '" + tenant + "'")) {
-      return rs.next() ? rs.getObject("id", UUID.class) : null;
-    } catch (SQLException e) {
-      throw new UncheckedSQLException(e);
-    }
-  }
-
-  private static final class UncheckedSQLException extends RuntimeException {
-    UncheckedSQLException(SQLException cause) {
-      super(cause);
+      throw new IllegalStateException(e);
     }
   }
 }

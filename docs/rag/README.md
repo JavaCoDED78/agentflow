@@ -30,21 +30,24 @@ Both directions are bound by three invariants that shape every line of the pipel
 ## The pipeline (implemented vs. planned)
 
 The diagram separates the two. **Implemented** steps exist in code (`S10-11` storage + query
-primitive, `S10-12` embedding batching, `S10-13` the indexing path, `S09` planner). **Planned**
-steps (`S10-14`) are described in prose below and are *not* yet in the code.
+primitive, `S10-12` embedding batching, `S10-13` the indexing path, `S10-14` the tenant/ACL-
+filtered vector retrieval service, `S09` planner). **Planned** steps (`S10-15` full-text search,
+`S10-16` hybrid rank fusion, `S10-17` citations, `S10-18` the no-evidence policy) are described
+in prose below and are *not* yet in the code.
 
 ```mermaid
 flowchart TB
     subgraph Impl["Implemented in code"]
-        Repo["knowledgebase.persistence<br/>DocumentChunkRepository<br/>insert · findNearest<br/>(S10-11)"]
+        Repo["knowledgebase.persistence<br/>DocumentChunkRepository<br/>insert · scoped findNearest + distance<br/>(S10-11 / S10-14)"]
         Embed["ai.application<br/>EmbeddingPort · embed → float[]<br/>(S09-01)"]
         Ing["ingestion.application<br/>IngestionService + EmbeddingGenerationService<br/>claim → embed → ON CONFLICT upsert<br/>(S10-12 / S10-13)"]
+        Ret["knowledgebase.application<br/>RetrievalService (S10-14)<br/>tenant + KB predicate in-query · top-k bound · threshold"]
         Planner["ai.application<br/>PlannerService · propose<br/>(ADR-006, S09-06)"]
         Catalogue["ai.prompt<br/>PromptCatalogue · SYSTEM policy<br/>+ USER untrusted content"]
     end
-    subgraph Planned["Planned — S10-14"]
-        Ret["RetrievalService<br/>vector + hybrid FTS<br/>relevance threshold"]
-        Cit["assemble citations from<br/>real chunks only (never invented)<br/>empty → InsufficientEvidence"]
+    subgraph Planned["Planned — S10-15 … S10-18"]
+        Hybrid["hybrid retrieval<br/>vector + FTS rank fusion<br/>(S10-15 / S10-16)"]
+        Cit["assemble citations from<br/>real chunks only (never invented)<br/>empty → InsufficientEvidence (S10-17 / S10-18)"]
     end
     Doc["document_chunks.embedding<br/>vector(768) · nomic-embed-text"]
 
@@ -60,7 +63,8 @@ flowchart TB
     Ret --> Repo
 
     %% Grounding path (feeding the model)
-    Ret --> Cit
+    Ret --> Hybrid
+    Hybrid --> Cit
     Cit -->|"chunks + citations<br/>(untrusted USER content)"| Catalogue
     Planner --> Catalogue
     Planner -->|"validate-before-execute<br/>(S09-07)"| Backend["backend authorizes +<br/>executes (never the model)"]
@@ -100,14 +104,17 @@ flowchart TB
   app boots without a database). It does two things:
   - `insert(...)` persists a chunk row together with its 768-d embedding, bound as a pgvector text
     literal (`[v1,v2,…,vN]`, the PostgreSQL-array syntax pgvector 0.8.x parses) cast `::vector`.
-  - `findNearest(tenantId, query, limit)` returns the closest chunks for one tenant in ascending
-    distance order — `WHERE tenant_id = ? ORDER BY embedding <=> ?::vector LIMIT ?`. The stored
-    vector is **not** selected, so no `vector` column needs a driver type adapter.
+  - `findNearest(tenantId, knowledgeBaseId, query, limit)` returns the closest chunks for one
+    tenant inside one knowledge base in ascending distance order — `WHERE c.tenant_id = ? AND
+    d.knowledge_base_id = ? AND c.embedding IS NOT NULL ORDER BY c.embedding <=> ?::vector LIMIT ?`
+    (the collection scope and the NULL-embedding exclusion are the `S10-14` evolution of the
+    primitive). The cosine distance is selected as a plain `float8` column; the stored vector is
+    **not** selected, so no `vector` column needs a driver type adapter.
 
-This adapter is the *primitive*; it persists and reads rows. It is **not** a retrieval service — it
-does not combine vector with full-text search, apply a relevance threshold, or build citations
-(those are the `S10-14` layer, below). The indexing path that writes through it is `S10-13`,
-implemented.
+This adapter is the *primitive*; it persists and reads rows. The retrieval service that drives it
+(`S10-14`, below) adds the collection scope, the top-k bound and the relevance threshold on top;
+it still does not combine vector with full-text search or build citations (those remain planned,
+`S10-15` … `S10-17`). The indexing path that writes through it is `S10-13`, implemented.
 
 ## Embedding production (`S10-12` / `S10-13`)
 
@@ -124,20 +131,45 @@ vector through `knowledgebase.application.ChunkIndexingService` — an `ON CONFL
 `(document_id, chunk_index, pipeline_version)` unique key, so a redelivered event never duplicates
 a chunk. The provider adapter is the only code that knows the embedding SDK.
 
-## Planned: the retrieval + grounding layer (`S10-14`)
+## Implemented: the vector retrieval service (`S10-14`)
+
+`knowledgebase.application.RetrievalService` is the read entry point: `search(tenantId,
+knowledgeBaseId, SearchRequest)` resolves the collection's pinned `embedding_model`, embeds the
+query through the `ai` `EmbeddingPort`, and returns the closest chunks as `ChunkDto`s inside a
+`SearchResult` — with the access predicate inside the query and both bounds applied on top:
+
+- **Tenant *and* collection scope, in the query.** `DocumentChunkRepository.findNearest` runs
+  `WHERE c.tenant_id = ? AND d.knowledge_base_id = ?` (a `documents` join) before the distance
+  ordering and the limit — a post-filter is never permitted, so another tenant's or another
+  collection's chunk can never surface, no matter how close its embedding; a cross-tenant
+  knowledge base is indistinguishable from a missing one and simply retrieves nothing. Rows with a
+  `NULL` embedding (created, not yet indexed) are excluded, so an unindexed chunk never appears
+  with a bogus zero distance.
+- **Bounded.** A missing `topK` falls back to `agentflow.retrieval.default-top-k` (10), a caller
+  `topK` is clamped to `max-top-k` (50), and candidates whose cosine distance exceeds `threshold`
+  (0.5) are dropped. The distance arrives as a plain `float8` column computed in SQL — the stored
+  `vector` is still never read back.
+- **Opt-in seams.** With no database or no embedding provider the service still constructs (S01-02
+  / `ADR-014`) and fails loudly at call time; the wiring lives in
+  `knowledgebase.application.config.RetrievalConfiguration`.
+
+The public vocabulary (`SearchRequest`, `SearchResult`, `ChunkDto`) is what the citation layer
+extends, and the fragment text is untrusted content — never logged (invariants 7/8).
+
+## Planned: hybrid retrieval, citations and grounding (`S10-15` … `S10-18`)
 
 The following is the target the glossary §7 and `module-api.md` name; it is **not yet in the code**
-(no `RetrievalService`, no `InsufficientEvidence`, no `CitationDto`, `SearchRequest`, `SearchResult`
-or `ChunkDto`). The indexing path (`S10-13`) is implemented and described above; this section
-describes the retrieval steps so the RAG guide is complete, not because they run today.
+(no `InsufficientEvidence`, no `CitationDto`). The vector half (`S10-14`) is implemented and
+described above; this section describes the remaining retrieval steps so the RAG guide is
+complete, not because they run today.
 
-- **Retrieval (`RetrievalService`).** Calls `DocumentChunkRepository.findNearest` for the vector
-  half and a full-text search for the text half, then *hybrid* combines the two, applies a
-  relevance threshold on top of the nearest-neighbour ordering, and scopes everything to one
-  tenant. (Currently only the vector half exists; `document_chunks` has no FTS index yet.)
-- **Citations.** Builds each citation from a *real* retrieved chunk — the response-field set the
-  glossary names (`documentId`, `chunkId`, page/section, `score`). An empty retrieval returns
-  `InsufficientEvidence`; the model never invents a citation.
+- **Full-text search and hybrid fusion (`S10-15` / `S10-16`).** A lexical half over a PostgreSQL
+  FTS index, fused with the vector half by a simple rank fusion over the scores `S10-14` already
+  returns, deduplicated and capped. (Currently `document_chunks` has no FTS index yet.)
+- **Citations (`S10-17`).** Builds each citation from a *real* retrieved chunk — the response-field
+  set the glossary names (`documentId`, `chunkId`, page/section, `score`).
+- **No-evidence policy (`S10-18`).** An empty retrieval returns `InsufficientEvidence`; the model
+  never invents a citation.
 - **Grounding the model.** Feeds the retrieved chunks and their citations to the planner as the
   untrusted `USER` content. The planner (`S09-06`) already separates a fixed `SYSTEM` policy from a
   single untrusted `USER` message (`ai.prompt.PromptCatalogue`); the retrieval layer is what fills
@@ -157,11 +189,19 @@ describes the retrieval steps so the RAG guide is complete, not because they run
   (8 tests) on the same `pgvector/pgvector:0.8.6-pg18` image: a redelivered ingestion event
   creates no duplicate logical chunks, the SKIP/UPDATE redelivery policy is honored, and a
   transient provider fault leaves the document requeued with the event held.
-- **Planned (`S10-14`).** The retrieval + grounding layer must add its own integration
+- **Implemented (`S10-14`).** The vector retrieval layer is covered by
+  `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/application/RetrievalServiceIT.java`
+  (7 tests) and the reworked
+  `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/persistence/DocumentChunkRepositoryIT.java`
+  (6 tests) on the same image, driving the real service, repositories and Flyway-migrated schema
+  with a deterministic in-memory embedding port: the S10-14 acceptance — a cross-tenant query
+  returns empty even when the foreign chunks carry *identical* embeddings — plus the
+  knowledge-base scope, the relevance threshold, the top-k cap and the NULL-embedding exclusion.
+- **Planned (`S10-15` … `S10-18`).** The hybrid and citation layers must add their own integration
   tests on the same real-PostgreSQL image, covering the mandatory negative scenarios from
-  `AGENTS.md`: tenant isolation (a cross-tenant query returns empty), prompt injection in a
-  retrieved document, and **empty retrieval without invented citations**. These tests are a
-  requirement of that step, not a claim about `S10-11`.
+  `AGENTS.md` that are still open: prompt injection in a retrieved document, and **empty retrieval
+  without invented citations**. These tests are a requirement of those steps, not a claim about
+  `S10-14`.
 
 ## Ownership and references
 
@@ -170,9 +210,10 @@ describes the retrieval steps so the RAG guide is complete, not because they run
 | `embedding` column + nearest-neighbour primitive | `knowledgebase` | `DocumentChunkRepository`, migration `V3_3_20` |
 | Embedding production (`float[]`) | `ai` | `EmbeddingPort` (`ADR-014`) |
 | Indexing pipeline (claim → embed → idempotent upsert) | `ingestion` | `IngestionService`, `EmbeddingGenerationService`, `knowledgebase.application.ChunkIndexingService` (`S10-12` / `S10-13`) |
+| Vector retrieval service (tenant/ACL-filtered, bounded) | `knowledgebase` | `RetrievalService` (`S10-14`) |
 | Planner (propose; never execute), prompt separation | `ai` | `PlannerService`, `PromptCatalogue` (`ADR-006`) |
 | Citation value object | `toolexecution` | `Citation` (`S08-06`) |
-| Planned retrieval service, citations, hybrid FTS | `knowledgebase` | `module-api.md`, glossary §7 |
+| Planned hybrid FTS, citations, no-evidence policy | `knowledgebase` | `module-api.md`, glossary §7 |
 
 - [`domain-glossary.md`](../domain-glossary.md) §7 — *Retrieval*, *Citation*, *Embedding* (shared
   terms, one concept — one name).

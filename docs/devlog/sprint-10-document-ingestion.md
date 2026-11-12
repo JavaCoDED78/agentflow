@@ -4,6 +4,38 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-14 — Tenant/ACL-filtered vector search (P0).
+
+### What changed
+- The read half of the glossary "Retrieval" lands in `knowledgebase`: `knowledgebase.application.RetrievalService` — one `search(tenantId, knowledgeBaseId, SearchRequest)` call resolving the collection's pinned `embedding_model`, embedding the query text through the neutral `ai.application.EmbeddingPort`, and matching it against the stored `vector(768)` chunks — with the access predicate **inside** the retrieval query and both bounds (top-k, relevance threshold) applied on top of the nearest-neighbour ordering.
+- `DocumentChunkRepository.findNearest` evolves from the S10-11 primitive into the scoped read the service drives: the SQL gains a `documents` join adding the collection scope (`WHERE c.tenant_id = ? AND d.knowledge_base_id = ?`, before the ordering and the limit — a post-filter is never permitted), excludes rows with a `NULL` embedding (an unindexed chunk would otherwise order unpredictably and map to a bogus `0.0` distance), and selects `c.embedding <=> ?::vector AS distance` as a plain `float8` column — the stored `vector` is still never read back (no pgvector-jdbc), and the caller receives the score for the threshold and the future rank fusion (`S10-16`). `DocumentChunkRow` gains the `distance` component.
+- The new `knowledgebase.persistence.KnowledgeBaseRepository` is the first read path of the `knowledge_bases` table (S10-05): `findEmbeddingModelByIdAndTenant` reads the pinned model by the `(tenant_id, id)` pair — a cross-tenant id is indistinguishable from a missing one and yields an empty `SearchResult`, so retrieval against a foreign collection simply finds nothing (invariant 1).
+- The public search vocabulary the module API map already names: `SearchRequest` (query text + optional `topK`; the tenant and the knowledge base are deliberately *not* part of it — they are context, never body), `ChunkDto` (`id`, `documentId`, `pageFrom`, `pageTo`, `score`, `content` — the fragment text is untrusted content, never logged) and `SearchResult` (an unmodifiable copy; `SearchResult.empty()` is the shared "nothing relevant" answer the future `InsufficientEvidence` policy (`S10-18`) reports).
+- Configuration, not code: the validated `agentflow.retrieval.*` group on `AgentFlowProperties.Retrieval` — `default-top-k` (10), `max-top-k` (50, the hard ceiling a caller `topK` is clamped to) and `threshold` (0.5, a cosine distance bounded to `[0.0, 2.0]`) — wired by `knowledgebase.application.config.RetrievalConfiguration` following the `DocumentEmbeddingConfiguration` precedent (`ObjectProvider` for the conditional repositories and the opt-in port). The S01-02 contract holds: a default boot has no database and no provider, and `search` fails loudly at call time (`ADR-014`, the `PlannerService` idiom).
+
+### Why
+The S10-11 primitive persisted and ordered rows; it deliberately did not decide *who may see* a row or *how much* comes back — those are the S10-14 acceptance, and both belong inside the query, not around it. The tenant predicate alone is not the access model: the search API the plan fixes (`POST /api/v1/knowledge-bases/{id}/search`) is per collection, so the retrieval query joins `documents` and scopes by `knowledge_base_id` too — two collections of near-identical documents under different tenants (or one tenant) can then never leak into each other's results, no matter how close the embeddings. The NULL-embedding exclusion closes a latent correctness hole in the S10-11 query: `NULL <=> vector` is NULL, orders unpredictably and would surface an unindexed chunk as a false zero-distance hit. Reading the model from the collection row (rather than a global default) keeps the query vector in the same space the stored vectors were produced in, per collection. The bounds live in configuration because a limit that ships as a magic number cannot be tuned per deployment; the threshold is a *distance* cut applied over the ordered candidates, which keeps the repository a generic primitive and the service the policy owner.
+
+### Verification
+32 new DB-free tests, all JUnit-XML-verified (`failures="0" errors="0" skipped="0"`):
+- `RetrievalServiceTest` `tests="12"` — the happy path (the collection's own model embeds the query; rows map to scored, distance-ordered DTOs), the default/honored/clamped `topK`, the threshold dropping candidates beyond it (boundary kept), the empty result for a missing or cross-tenant collection without ever calling the provider or the repository, the fail-loud shapes (no database / no `EmbeddingPort`), the entry-point guards and the constructor validation.
+- `SearchRequestTest` `tests="5"`, `ChunkDtoTest` `tests="4"`, `SearchResultTest` `tests="4"` — the value contracts.
+- `RetrievalConfigurationTest` `tests="3"` — the service binds under the default and the custom `agentflow.retrieval.*` values, and a context with no database and no provider boots with the service present, failing loudly at `search` time.
+- `RetrievalPropertiesTest` `tests="4"` — the group binds with its defaults, custom values override, and an out-of-range `threshold` / a `max-top-k` below one fails startup through the validated binding.
+
+The acceptance — **retrieval never returns another tenant's chunks even at maximally close embeddings** — is proven end-to-end on `pgvector/pgvector:0.8.6-pg18` (the exact image Compose pins, never `H2`):
+- [`RetrievalServiceIT`](apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/application/RetrievalServiceIT.java) `tests="7"` drives the real service against the real Flyway-migrated schema with a deterministic in-memory `EmbeddingPort`: two tenants holding collections with *identical* embeddings retrieve only their own chunks; the search is scoped to one knowledge base inside a tenant; a cross-tenant knowledge-base id yields an empty result; the threshold, the requested top-k cap and the NULL-embedding exclusion hold through the real query; an empty collection is a plain empty answer.
+- The reworked [`DocumentChunkRepositoryIT`](apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/persistence/DocumentChunkRepositoryIT.java) `tests="6"` pins the adapter: ordering with the distance mapped alongside (matching the cosine math within the float literal round-trip), tenant scope, collection scope at maximal similarity, the NULL-embedding exclusion, the 768-dim database guard and the wrong-width query refusal.
+
+`:apps:agentflow-app:check` green — unit + architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`) + no-cycles + formatting (`spotless`) + OpenAPI gates; `:apps:agentflow-app:integrationTest --tests 'com.example.agentflow.knowledgebase.*'` green; `git diff --check` clean.
+
+### Not changed
+- No REST endpoint: the search API (`POST /api/v1/knowledge-bases/{id}/search`) is a follow-up; the service is the public boundary the controller will drive.
+- No full-text search, no hybrid rank fusion, no citations: `S10-15` / `S10-16` / `S10-17` build on this result (`SearchResult` / `ChunkDto` are the vocabulary they extend); the no-evidence `InsufficientEvidence` policy is `S10-18`.
+- No new module edge: `knowledgebase → ai` (arrow 5 in the module map, the embedding port) was already allowed, so no ADR; no migration (the S10-11 column and the S10-05 table already carry everything the query needs); no contract files.
+- No pgvector-jdbc: the distance is computed in SQL and mapped as `float8`, so the stored `vector` is still never read back.
+
+
 ## S10-13 — Indexing worker and idempotent chunk indexing (P0).
 
 ### What changed

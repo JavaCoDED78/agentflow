@@ -124,7 +124,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `workflowdefinition` | versioned workflow graph, DSL/graph validation, activation | `agentcatalog` |
 | `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, `StepHandler` port | `workflowdefinition`, messaging (outbox/inbox) |
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
-| `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port), `messaging` (outbox, `S10-06`), object storage |
+| `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), object storage |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19) |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |

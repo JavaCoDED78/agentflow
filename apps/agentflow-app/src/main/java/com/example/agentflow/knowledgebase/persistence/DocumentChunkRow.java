@@ -4,16 +4,17 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
- * A persisted {@code document_chunks} row as read by the tenant-scoped nearest-neighbour retrieval
- * query (S10-11 / S10-14).
+ * A persisted {@code document_chunks} row as read by the tenant/ACL-scoped nearest-neighbour
+ * retrieval query (S10-11 / S10-14).
  *
  * <p>This is a <em>persistence</em> projection, not the tenant-free {@code
  * ingestion.domain.DocumentChunk} value (that is the chunker's pure output); retrieval needs the
  * full (tenant, document, chunk) binding the glossary §7 fixes for a citation, plus the fragment
- * text and page range. It carries no embedding: the query orders by distance to the (in-memory)
- * query vector, so the returned rows already arrive relevance-ordered and the caller never reads
- * the stored vector back (the plain PostgreSQL driver cannot map a {@code vector} column to {@code
- * float[]} without pgvector-jdbc, which this task does not add).
+ * text, the page range and the <b>cosine distance</b> the row was found at. It carries no
+ * embedding: the query orders by distance to the (in-memory) query vector and selects the distance
+ * as a plain {@code float8} column, so the caller never reads the stored {@code vector} back (the
+ * plain PostgreSQL driver cannot map a {@code vector} column to {@code float[]} without
+ * pgvector-jdbc, which this task does not add).
  *
  * <p>Immutable value: all fields are {@code final}, equality covers every field, and it is created
  * only by the repository {@code RowMapper}. Another module reaches it only through the {@code
@@ -30,7 +31,8 @@ public record DocumentChunkRow(
     String content,
     String contentHash,
     String createdBy,
-    OffsetDateTime createdAt) {
+    OffsetDateTime createdAt,
+    double distance) {
 
   /**
    * @param id the chunk id (the persisted {@code document_chunks.id})
@@ -44,5 +46,8 @@ public record DocumentChunkRow(
    * @param contentHash the SHA-256 hex fingerprint of {@code content}
    * @param createdBy the actor recorded for the audit trail, or {@code null} for a system actor
    * @param createdAt the immutable creation instant
+   * @param distance the cosine distance ({@code embedding <=> query}) the row was returned at;
+   *     {@code 0} = identical to the query vector, lower is closer; the retrieval service compares
+   *     it against the configured relevance threshold
    */
 }
