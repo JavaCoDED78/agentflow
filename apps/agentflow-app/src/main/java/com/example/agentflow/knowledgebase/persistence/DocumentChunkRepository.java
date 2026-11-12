@@ -173,6 +173,159 @@ public class DocumentChunkRepository {
   }
 
   /**
+   * Insert one {@code document_chunks} row unless the {@code (document_id, chunk_index,
+   * pipeline_version)} unique key already holds it (S10-13, the redelivery {@code SKIP} policy).
+   * The conflict target is the unique constraint {@code S10-10} declared, so a redelivered indexing
+   * event can never create a duplicate logical chunk — the database guard, not a post-check.
+   *
+   * @param chunkId the server-issued id of the row
+   * @param tenantId the owning tenant
+   * @param documentId the parent document
+   * @param pipelineVersion the chunking pipeline version that produced the chunk
+   * @param chunkIndex the zero-based position within the document's chunk set
+   * @param pageFrom the first page the fragment spans
+   * @param pageTo the last page the fragment spans
+   * @param content the fragment text
+   * @param contentHash the SHA-256 hex fingerprint of {@code content}
+   * @param embedding the 768-dimension vector of {@code content}
+   * @param createdBy the actor recorded for the audit trail, or {@code null} for a system actor
+   * @return {@code true} when the row was inserted; {@code false} when the key already existed (the
+   *     redelivery was skipped)
+   */
+  public boolean insertSkippingConflicts(
+      UUID chunkId,
+      UUID tenantId,
+      UUID documentId,
+      String pipelineVersion,
+      int chunkIndex,
+      int pageFrom,
+      int pageTo,
+      String content,
+      String contentHash,
+      float[] embedding,
+      String createdBy) {
+    requireEmbeddingWidth(embedding);
+    int updated =
+        jdbc.update(
+            INSERT_SQL + " ON CONFLICT (document_id, chunk_index, pipeline_version) DO NOTHING",
+            ps -> {
+              bindChunk(
+                  ps,
+                  chunkId,
+                  tenantId,
+                  documentId,
+                  pipelineVersion,
+                  chunkIndex,
+                  pageFrom,
+                  pageTo,
+                  content,
+                  contentHash,
+                  embedding,
+                  createdBy);
+            });
+    return updated > 0;
+  }
+
+  /**
+   * Insert one {@code document_chunks} row or overwrite the existing one in place (S10-13, the
+   * redelivery {@code UPDATE} policy): on a {@code (document_id, chunk_index, pipeline_version)}
+   * conflict the fragment and its vector are replaced by the new values, so a reindex refreshes the
+   * index without duplicating or deleting rows. The key (and the row id) is stable across the
+   * update; only the payload columns move.
+   *
+   * @param chunkId the server-issued id of the row
+   * @param tenantId the owning tenant
+   * @param documentId the parent document
+   * @param pipelineVersion the chunking pipeline version that produced the chunk
+   * @param chunkIndex the zero-based position within the document's chunk set
+   * @param pageFrom the first page the fragment spans
+   * @param pageTo the last page the fragment spans
+   * @param content the fragment text
+   * @param contentHash the SHA-256 hex fingerprint of {@code content}
+   * @param embedding the 768-dimension vector of {@code content}
+   * @param createdBy the actor recorded for the audit trail, or {@code null} for a system actor
+   */
+  public void upsertUpdating(
+      UUID chunkId,
+      UUID tenantId,
+      UUID documentId,
+      String pipelineVersion,
+      int chunkIndex,
+      int pageFrom,
+      int pageTo,
+      String content,
+      String contentHash,
+      float[] embedding,
+      String createdBy) {
+    requireEmbeddingWidth(embedding);
+    jdbc.update(
+        INSERT_SQL
+            + " ON CONFLICT (document_id, chunk_index, pipeline_version) DO UPDATE SET "
+            + "page_from = EXCLUDED.page_from, page_to = EXCLUDED.page_to, "
+            + "content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, "
+            + "embedding = EXCLUDED.embedding",
+        ps -> {
+          bindChunk(
+              ps,
+              chunkId,
+              tenantId,
+              documentId,
+              pipelineVersion,
+              chunkIndex,
+              pageFrom,
+              pageTo,
+              content,
+              contentHash,
+              embedding,
+              createdBy);
+        });
+  }
+
+  /**
+   * Binds one chunk row for {@link #insertSkippingConflicts} / {@link #upsertUpdating} (the same
+   * column order as {@link #INSERT_SQL}).
+   */
+  private static void bindChunk(
+      PreparedStatement ps,
+      UUID chunkId,
+      UUID tenantId,
+      UUID documentId,
+      String pipelineVersion,
+      int chunkIndex,
+      int pageFrom,
+      int pageTo,
+      String content,
+      String contentHash,
+      float[] embedding,
+      String createdBy)
+      throws SQLException {
+    bindNullableUuid(ps, 1, chunkId);
+    bindNullableUuid(ps, 2, tenantId);
+    bindNullableUuid(ps, 3, documentId);
+    bindString(ps, 4, pipelineVersion);
+    ps.setInt(5, chunkIndex);
+    ps.setInt(6, pageFrom);
+    ps.setInt(7, pageTo);
+    bindString(ps, 8, content);
+    bindString(ps, 9, contentHash);
+    bindVector(ps, 10, embedding);
+    bindString(ps, 11, createdBy);
+  }
+
+  /**
+   * Refuse a wrong embedding width in Java, so the failure is explicit and dependency-free rather
+   * than a driver-side {@code invalid vector length} (the {@code vector(768)} column is the
+   * database guard, this is the application one).
+   */
+  private static void requireEmbeddingWidth(float[] embedding) {
+    if (embedding == null || embedding.length != 768) {
+      throw new IllegalArgumentException(
+          "embedding must be 768 dimensions (nomic-embed-text), was "
+              + (embedding == null ? "null" : embedding.length));
+    }
+  }
+
+  /**
    * Maps one {@code document_chunks} row to a {@link DocumentChunkRow} (no vector column selected).
    */
   private static final class ChunkRowMapper implements RowMapper<DocumentChunkRow> {
