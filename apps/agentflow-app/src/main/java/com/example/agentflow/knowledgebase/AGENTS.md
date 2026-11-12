@@ -33,6 +33,29 @@ byte is written to object storage and before a single `documents` row is committ
 The upload API, the storage client, the `documents` schema (`S10-05`) and the ingestion worker are
 separate; this layer only validates, it owns no row.
 
+## Vector retrieval (`S10-14`)
+
+`knowledgebase` owns the tenant/ACL-filtered vector search the glossary "Retrieval" names:
+
+- [`application.RetrievalService`](application/RetrievalService.java) is the public read entry point —
+  `search(tenantId, knowledgeBaseId, SearchRequest)`: it resolves the collection's pinned
+  `embedding_model` through [`persistence.KnowledgeBaseRepository`](persistence/KnowledgeBaseRepository.java)
+  (the `(tenant_id, id)` read — a cross-tenant collection is indistinguishable from a missing one),
+  embeds the query through the neutral `ai.application.EmbeddingPort` (opt-in, `ADR-014`), and returns
+  the closest chunks as `ChunkDto`s inside a `SearchResult`. The caller's `topK` falls back to
+  `agentflow.retrieval.default-top-k` and is clamped to `max-top-k`; candidates beyond the configured
+  cosine `threshold` are dropped.
+- [`persistence.DocumentChunkRepository.findNearest`](persistence/DocumentChunkRepository.java) keeps
+  the access predicate **inside** the query — `WHERE c.tenant_id = ? AND d.knowledge_base_id = ?`
+  (a `documents` join), before the ordering and the limit, never a post-filter — and excludes chunks
+  with a `NULL` embedding; the cosine distance is selected as a plain `float8` column (the stored
+  `vector` is never read back).
+- The fragment text of a `ChunkDto` is **untrusted content** (invariant 7): it is fed to a model only
+  as `USER` content and is never logged, hashed or written to metrics/traces (invariant 8).
+- `knowledgebase.application.config.RetrievalConfiguration` wires the service; both repositories are
+  `@ConditionalOnBean(DataSource.class)` and the port is opt-in, so a default boot has neither and the
+  service fails loudly at call time (S01-02).
+
 ## Data ownership
 
 `knowledgebase` owns exactly one table (plus related) and no other module may change its migration or schema: `knowledge_bases`, `documents`, `document_chunks`.

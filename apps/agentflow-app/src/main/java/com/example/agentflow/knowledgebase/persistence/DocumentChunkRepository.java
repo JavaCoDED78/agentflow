@@ -38,13 +38,16 @@ import org.springframework.stereotype.Repository;
  * RowMapper} maps only plain columns (UUID / text / int / timestamptz), which the plain driver
  * reads without a pgvector type adapter.
  *
- * <h2>Tenant scope (invariant 1)</h2>
+ * <h2>Tenant and collection scope (invariant 1)</h2>
  *
  * <p>Every read and every write is scoped by the {@code tenant_id} column. {@link #findNearest}
- * puts the tenant predicate <em>inside the query</em> ({@code WHERE tenant_id = ?}), before the
- * nearest-neighbour ordering and limit — a post-filter is not permitted, so another tenant's chunk
- * can never surface as a "close" match. A cross-tenant nearest-neighbour result set is empty, just
- * as a cross-tenant lookup of any other resource is.
+ * puts the access predicate <em>inside the query</em> — {@code WHERE c.tenant_id = ?} plus the
+ * {@code documents} join on {@code d.knowledge_base_id = ?} — before the nearest-neighbour ordering
+ * and limit: a post-filter is not permitted, so another tenant's or another collection's chunk can
+ * never surface as a "close" match, no matter how close its embedding is. A cross-tenant or
+ * cross-collection nearest-neighbour result set is empty, just as a cross-tenant lookup of any
+ * other resource is. Rows with a {@code NULL} embedding (not yet indexed) are excluded, so an
+ * unindexed chunk never appears with a bogus zero distance.
  *
  * <h2>Reliability</h2>
  *
@@ -67,12 +70,14 @@ public class DocumentChunkRepository {
           + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::vector, ?)";
 
   private static final String FIND_NEAREST_SQL =
-      "SELECT id, tenant_id, document_id, pipeline_version, chunk_index, page_from, page_to, "
-          + "content, content_hash, created_by, created_at "
+      "SELECT c.id, c.tenant_id, c.document_id, c.pipeline_version, c.chunk_index, c.page_from, "
+          + "c.page_to, c.content, c.content_hash, c.created_by, c.created_at, "
+          + "c.embedding <=> ?::vector AS distance "
           + "FROM "
           + TABLE
-          + " WHERE tenant_id = ? "
-          + "ORDER BY embedding <=> ?::vector "
+          + " c JOIN documents d ON d.id = c.document_id "
+          + "WHERE c.tenant_id = ? AND d.knowledge_base_id = ? AND c.embedding IS NOT NULL "
+          + "ORDER BY c.embedding <=> ?::vector "
           + "LIMIT ?";
 
   private final JdbcTemplate jdbc;
@@ -146,21 +151,35 @@ public class DocumentChunkRepository {
   }
 
   /**
-   * Return the closest chunks to {@code query} for one tenant, in ascending distance order.
+   * Return the closest chunks to {@code query} for one tenant inside one knowledge base, in
+   * ascending distance order.
    *
-   * <p>The tenant predicate is the first clause ({@code WHERE tenant_id = ?}), so the nearest
-   * -neighbour search never sees another tenant's rows (invariant 1); a cross-tenant query returns
-   * an empty list. The cosine distance to {@code query} orders the rows; {@code limit} caps the
-   * result set (the {@code S10-14} retrieval layer applies its own relevance threshold on top). The
-   * stored vector is not selected, so no {@code vector} column is mapped.
+   * <p>The access predicate is part of the query itself (invariant 1), not a post-filter: {@code
+   * c.tenant_id = ?} isolates the tenant and the join to {@code documents} adds the collection
+   * scope ({@code d.knowledge_base_id = ?}), so the nearest-neighbour search never sees another
+   * tenant's — or another collection's — rows even when their embeddings are maximally close to the
+   * query; both a cross-tenant and a cross-collection query return an empty list, exactly as a
+   * cross-tenant lookup of any other resource does. Rows whose {@code embedding} is {@code NULL} (a
+   * chunk created by ingestion that indexing has not vectorised yet, or whose embedding failed) are
+   * excluded: a {@code NULL} distance would order unpredictably and map to a bogus {@code 0.0}, so
+   * an unindexed chunk can never surface as a false "closest" hit.
+   *
+   * <p>The cosine distance to {@code query} orders the rows and is also selected as the plain
+   * {@code float8} {@code distance} column, so the caller receives the score without reading the
+   * stored {@code vector} back; {@code limit} caps the candidate set (the {@code S10-14} retrieval
+   * layer applies its own relevance threshold on top).
    *
    * @param tenantId the owning tenant (from the verified security context)
+   * @param knowledgeBaseId the knowledge base to search (a cross-tenant id yields an empty list —
+   *     another tenant's collection is indistinguishable from a missing one)
    * @param query the 768-dimension query vector; the same {@code nomic-embed-text} space as the
    *     stored vectors
    * @param limit the maximum number of chunks to return (>= 1)
-   * @return the nearest chunks, closest first; empty when the tenant has no chunks
+   * @return the nearest chunks with their cosine distances, closest first; empty when the tenant's
+   *     collection has no indexed chunks
    */
-  public List<DocumentChunkRow> findNearest(UUID tenantId, float[] query, int limit) {
+  public List<DocumentChunkRow> findNearest(
+      UUID tenantId, UUID knowledgeBaseId, float[] query, int limit) {
     if (query.length != 768) {
       throw new IllegalArgumentException(
           "query vector must be 768 dimensions (nomic-embed-text), was " + query.length);
@@ -168,8 +187,15 @@ public class DocumentChunkRepository {
     if (limit < 1) {
       throw new IllegalArgumentException("limit must be >= 1, was " + limit);
     }
+    String queryLiteral = toVectorLiteral(query);
     return jdbc.query(
-        FIND_NEAREST_SQL, new ChunkRowMapper(), tenantId, bindVectorLiteral(query), limit);
+        FIND_NEAREST_SQL,
+        new ChunkRowMapper(),
+        queryLiteral,
+        tenantId,
+        knowledgeBaseId,
+        queryLiteral,
+        limit);
   }
 
   /**
@@ -326,7 +352,8 @@ public class DocumentChunkRepository {
   }
 
   /**
-   * Maps one {@code document_chunks} row to a {@link DocumentChunkRow} (no vector column selected).
+   * Maps one {@code document_chunks} row to a {@link DocumentChunkRow} — the plain columns plus the
+   * {@code float8} {@code distance} the query computes; no {@code vector} column is mapped.
    */
   private static final class ChunkRowMapper implements RowMapper<DocumentChunkRow> {
 
@@ -343,7 +370,8 @@ public class DocumentChunkRepository {
           rs.getString("content"),
           rs.getString("content_hash"),
           rs.getString("created_by"),
-          rs.getObject("created_at", OffsetDateTime.class));
+          rs.getObject("created_at", OffsetDateTime.class),
+          rs.getDouble("distance"));
     }
   }
 
@@ -351,14 +379,6 @@ public class DocumentChunkRepository {
   private static void bindVector(PreparedStatement ps, int index, float[] values)
       throws SQLException {
     ps.setString(index, toVectorLiteral(values));
-  }
-
-  /**
-   * Bind the query vector for the nearest-neighbour ordering clause the same way the insert binds
-   * the stored one, so both round-trip through the identical {@code ::vector} cast.
-   */
-  private static String bindVectorLiteral(float[] values) {
-    return toVectorLiteral(values);
   }
 
   /**

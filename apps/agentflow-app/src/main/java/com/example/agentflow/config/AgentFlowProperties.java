@@ -1,6 +1,8 @@
 package com.example.agentflow.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -44,6 +46,7 @@ public class AgentFlowProperties {
   private final Storage storage = new Storage();
   private final Ingestion ingestion = new Ingestion();
   private final Chunking chunking = new Chunking();
+  @Valid private final Retrieval retrieval = new Retrieval();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -299,6 +302,14 @@ public class AgentFlowProperties {
    */
   public Chunking getChunking() {
     return chunking;
+  }
+
+  /**
+   * @return the validated tenant/ACL-filtered retrieval settings (S10-14: top-k bounds and the
+   *     relevance threshold)
+   */
+  public Retrieval getRetrieval() {
+    return retrieval;
   }
 
   /**
@@ -1859,6 +1870,92 @@ public class AgentFlowProperties {
      */
     public void setStrategy(String strategy) {
       this.strategy = strategy;
+    }
+  }
+
+  /**
+   * Tenant/ACL-filtered retrieval settings (S10-14). Bound from {@code agentflow.retrieval.*}.
+   * These back the {@code knowledgebase.application.RetrievalService} vector search: the caller's
+   * {@code topK} is clamped to {@link #maxTopK}, a missing {@code topK} falls back to {@link
+   * #defaultTopK}, and a nearest-neighbour candidate whose cosine distance exceeds {@link
+   * #threshold} is dropped from the result. The values live in configuration, not in code
+   * (apps/agentflow-app AGENTS.md), and are validated at startup so a nonsensical bound fails boot
+   * rather than silently retrieving everything or nothing.
+   */
+  public static class Retrieval {
+
+    /**
+     * The number of chunks a search returns when the caller does not name a {@code topK}. Default
+     * 10; at least 1, a value below 1 fails startup. Must not exceed {@link #maxTopK} (validated in
+     * {@link com.example.agentflow.knowledgebase.application.RetrievalService} at bean creation).
+     */
+    @Min(value = 1, message = "agentflow.retrieval.default-top-k must be at least 1")
+    private int defaultTopK = 10;
+
+    /**
+     * The hard ceiling a caller-supplied {@code topK} is clamped to, so one request can never pull
+     * an unbounded fragment set out of the index. Default 50; at least 1, a value below 1 fails
+     * startup. Must be at least {@link #defaultTopK} (validated in the retrieval service at bean
+     * creation).
+     */
+    @Min(value = 1, message = "agentflow.retrieval.max-top-k must be at least 1")
+    private int maxTopK = 50;
+
+    /**
+     * The maximum cosine distance (the pgvector {@code <=>} operator's unit: {@code 0} = identical,
+     * {@code 2} = diametrically opposite) a nearest-neighbour candidate may have to stay in the
+     * result. Default 0.5; the cosine distance is bounded to {@code [0, 2]} and so is this
+     * threshold.
+     */
+    @DecimalMin(
+        value = "0.0",
+        message = "agentflow.retrieval.threshold must be at least 0.0 (cosine distance)")
+    @DecimalMax(
+        value = "2.0",
+        message = "agentflow.retrieval.threshold must be at most 2.0 (cosine distance)")
+    private double threshold = 0.5;
+
+    /**
+     * @return the fallback result size when the caller names no {@code topK} (default {@code 10})
+     */
+    public int getDefaultTopK() {
+      return defaultTopK;
+    }
+
+    /**
+     * @param defaultTopK the fallback result size (at least 1, at most {@link #maxTopK})
+     */
+    public void setDefaultTopK(int defaultTopK) {
+      this.defaultTopK = defaultTopK;
+    }
+
+    /**
+     * @return the hard ceiling a caller-supplied {@code topK} is clamped to (default {@code 50})
+     */
+    public int getMaxTopK() {
+      return maxTopK;
+    }
+
+    /**
+     * @param maxTopK the hard {@code topK} ceiling (at least 1, at least {@link #defaultTopK})
+     */
+    public void setMaxTopK(int maxTopK) {
+      this.maxTopK = maxTopK;
+    }
+
+    /**
+     * @return the maximum cosine distance a candidate may have to stay in the result (default
+     *     {@code 0.5})
+     */
+    public double getThreshold() {
+      return threshold;
+    }
+
+    /**
+     * @param threshold the maximum cosine distance, bounded to {@code [0.0, 2.0]}
+     */
+    public void setThreshold(double threshold) {
+      this.threshold = threshold;
     }
   }
 }
