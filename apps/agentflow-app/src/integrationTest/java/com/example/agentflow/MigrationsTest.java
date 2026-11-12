@@ -73,7 +73,7 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18", "3.3.19");
+              "3.3.17", "3.3.18", "3.3.19", "3.3.20");
     }
   }
 
@@ -789,6 +789,24 @@ class MigrationsTest {
     }
   }
 
+  /**
+   * The pgvector extension is enabled and the S10-11 embedding column is pinned at the schema
+   * level. The column is a {@code vector(768)} &mdash; the {@code nomic-embed-text} dimension fixed
+   * by S10-11 &mdash; nullable so a chunk can predate its embedding (ingestion, `S10-09`, indexes
+   * only later, `S10-13`), while the type still rejects a mismatched width. A COMMENT attributes it
+   * to S10-11 / {@code knowledgebase}. The behavioural guard (a mismatched-width insert is rejected
+   * by the column, proved in {@code DocumentChunkRepositoryIT}) and the nearest-neighbour query
+   * itself are not schema facts, so they live in that suite; this test asserts only the schema the
+   * migration declares.
+   */
+  @Test
+  void pgvector_is_enabled_and_the_embedding_column_is_pinned() throws SQLException {
+    assertThat(extensionEnabled("vector")).isTrue();
+    assertThat(columnType("document_chunks", "embedding")).isEqualTo("vector(768)");
+    assertThat(nullableColumn("document_chunks", "embedding")).isTrue();
+    assertThat(columnComment("document_chunks", "embedding")).contains("S10-11");
+  }
+
   private static Connection connection() throws SQLException {
     return DriverManager.getConnection(
         postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
@@ -985,6 +1003,36 @@ class MigrationsTest {
                     + column
                     + "')) AS comment")) {
       return rs.next() ? rs.getString("comment") : null;
+    }
+  }
+
+  /** Whether the named extension (for example {@code vector}) is installed in the database. */
+  private static boolean extensionEnabled(String name) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = '"
+                    + name
+                    + "') AS on")) {
+      return rs.next() && rs.getBoolean("on");
+    }
+  }
+
+  /**
+   * The declared type of {@code column} on {@code table} (for example {@code vector(768)}), via
+   * {@code format_type}, so the fixed embedding dimension is asserted as the driver reports it.
+   */
+  private static String columnType(String table, String column) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute "
+                    + "WHERE attrelid = '"
+                    + table
+                    + "'::regclass AND attname = '"
+                    + column
+                    + "'")) {
+      return rs.next() ? rs.getString("type") : null;
     }
   }
 }

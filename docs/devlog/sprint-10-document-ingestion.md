@@ -4,6 +4,28 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-11 — Enable pgvector and the tenant-scoped nearest-neighbour search (768-d, `nomic-embed-text`).
+
+### What changed
+- Migration `V3_3_20` (`classpath:migrations`, step 21 of the ordered Flyway line, owner `knowledgebase`), applied cleanly against `pgvector/pgvector:0.8.6-pg18` (the exact image Compose and Testcontainers use — never `H2` per `AGENTS.md`): `CREATE EXTENSION IF NOT EXISTS vector` (idempotent, so a fresh Testcontainers image and the controlled apply stay quiet — `ADR-008` forward-only, changes nothing already applied) then `ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector(768)` — the embedding column the S10-10 schema left for S10-11.
+- `document_chunks.embedding` is **nullable** (`ADD COLUMN ... vector(768)`, no `NOT NULL`): a chunk is created by ingestion (`S10-09`) and indexed only later (`S10-13`), so a row may predate its vector and a failed or pending embedding leaves it without one — but the `vector(768)` type still pins the width, so anything stored must be 768-d and a mismatched-width insert fails at the database layer (never a post-check; `S10-13` / `S10-14` rely on this guard); no `DEFAULT` is needed, and the dimension 768 is the `nomic-embed-text` model the S10-05 / `knowledge_bases.embedding_model` fixes. The migration carries an `S10-11` / `knowledgebase` COMMENT.
+- The persistence adapter — `knowledgebase.persistence.DocumentChunkRepository` (`@ConditionalOnBean(DataSource.class)`, so it boots without a database) on plain `JdbcTemplate` / Spring Data JDBC (`ADR-009`) — does **not** add pgvector-jdbc: the plain driver cannot map a `vector` column to `float[]`, and retrieval never reads the stored vector back (rows already arrive relevance-ordered by the ordering clause). The adapter is the one owner of `document_chunks` write/read outside the migration; it does not touch `documents`, `knowledge_bases` or the ingestion worker.
+- **`insert(...)`** persists one chunk with its embedding: the vector is bound as a pgvector 0.8.x literal (`[v1,v2,...,vN]`, the PostgreSQL-array syntax 0.8.x parses) cast `::vector`, and the 768 width is refused in Java first (`IllegalArgumentException`) so the failure is explicit and dependency-free.
+- **`findNearest(tenantId, query, limit)`** runs the tenant-scoped nearest-neighbour search: the `tenant_id` predicate is the first clause (`WHERE tenant_id = ?`), so the query never sees another tenant's rows (invariant 1 — a foreign chunk is indistinguishable from a missing one, so a cross-tenant search returns empty), the rows are ordered by distance to the query vector and `limit` caps them, and no `vector` column is mapped. The projection is `DocumentChunkRow` — the tenant/document/chunk binding for a citation plus text and pages, no embedding.
+
+### Why
+The glossary "Retrieval" names tenant/ACL-filtered nearest-neighbour search as the retrieval primitive, and the S10-11 plan pins the engine (pgvector) and the model/dimension (`nomic-embed-text`, 768). Postgres is the source of truth (invariant 2): the vector lives in the owning table with the chunk, not a side table, so a chunk and its embedding are one row and one `(tenant_id, document_id)` binding. A single transition / single owner keeps the boundary acyclic (`workflowexecution` never imports the `knowledgebase` persistence layer). The nullable column keeps the two-phase lifecycle (chunk at ingestion, index at `S10-13`) working: a chunk never fails to be created while its embedding is still pending. The tenant predicate in the `WHERE` (not a post-filter) is invariant 1 in the retrieval path — the ACL filter runs before content is sent to the model.
+
+### Verification
+`pgvector/pgvector:0.8.6-pg18` — the exact image Compose and Testcontainers use, never `H2`:
+- The migration-line suite (`MigrationsTest`) asserts the exact ordered line now at `v3.3.20`, that the `vector` extension is enabled, that `document_chunks.embedding` is `vector(768)` (nullable) with an `S10-11` / `knowledgebase` COMMENT, and that the S10-10 tenant-scoped chunk test still lands.
+- The new [`DocumentChunkRepositoryIT`](apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/persistence/DocumentChunkRepositoryIT.java) (4 tests) proves the adapter end-to-end against that image: a nearest-neighbour query executes and returns the closest chunk first (a `+x` query ranks a `+x` chunk over a `+y` one), the search is tenant-scoped (a `+y` chunk in another tenant never surfaces for a `+x` query), the fixed 768 dimension rejects a 769-width vector at the database layer (bypassing the Java guard), and a wrong-width query vector is refused in Java.
+
+`:apps:agentflow-app:check` green — unit + architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`) + no-cycles + formatting (`spotless`) + OpenAPI gates; `git diff --check` clean; the migration-line integration suite (`:apps:agentflow-app:integrationTest --tests '*MigrationsTest|DocumentChunkRepositoryIT*' --rerun-tasks`) is green, JUnit XML checked: `MigrationsTest` `tests="18"` + `DocumentChunkRepositoryIT` `tests="4"`, all `failures="0"` `errors="0"` `skipped="0"`.
+
+### Not changed
+No `documents`, `knowledge_bases` or ingestion change; no contract, dependency, or module-boundary change — only the `document_chunks` column and the `knowledgebase` adapter that reads it. The `MigrationsTest` `document_chunks_are_tenant_scoped_and_a_duplicate_is_forbidden_by_constraint` test is unchanged (it inserts a chunk without an embedding, which the nullable column now allows).
+
 ## S10-10 — Create the document_chunks schema.
 
 ### What changed
