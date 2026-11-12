@@ -1585,6 +1585,12 @@ public class AgentFlowProperties {
     private int maxChars = 500 * 1000;
 
     /**
+     * Chunk-embedding batching parameters (S10-12), bound from {@code
+     * agentflow.ingestion.embedding.*}.
+     */
+    @Valid private final Embedding embedding = new Embedding();
+
+    /**
      * @return the maximum number of pages read from a PDF (default {@code 100})
      */
     public int getMaxPages() {
@@ -1607,11 +1613,47 @@ public class AgentFlowProperties {
     }
 
     /**
-     * @param maxChars the maximum number of characters retained from the extracted text (at least
-     *     1)
+     * @param maxChars the maximum characters retained from the extracted text (at least 1)
      */
     public void setMaxChars(int maxChars) {
       this.maxChars = maxChars;
+    }
+
+    /**
+     * @return the chunk-embedding batching parameters (S10-12)
+     */
+    public Embedding getEmbedding() {
+      return embedding;
+    }
+
+    /**
+     * Chunk-embedding batching parameters (S10-12), bound from {@code
+     * agentflow.ingestion.embedding.*}. These back the {@code EmbeddingGenerationService} the
+     * ingestion worker runs on a chunk set. As with the extraction limits, the value lives in
+     * configuration, not code: the per-call batch size sent to the embedding provider is tuned
+     * here, and a nonsensical value fails validation at startup. Provider-side rate limiting and
+     * retries are the {@code ai} module's resilience layer ({@code ProviderResiliencePolicy},
+     * {@code agentflow.ai.retry.*}), not this group.
+     */
+    public static class Embedding {
+
+      /** Maximum chunk texts per embedding call. Default 32; at least 1, a value below 1 fails. */
+      @Min(value = 1, message = "agentflow.ingestion.embedding.batch-size must be at least 1")
+      private int batchSize = 32;
+
+      /**
+       * @return the maximum chunk texts per embedding call (default {@code 32})
+       */
+      public int getBatchSize() {
+        return batchSize;
+      }
+
+      /**
+       * @param batchSize the maximum chunk texts per embedding call (at least 1)
+       */
+      public void setBatchSize(int batchSize) {
+        this.batchSize = batchSize;
+      }
     }
   }
 

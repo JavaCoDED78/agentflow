@@ -47,7 +47,7 @@ class PackageDependencyGraphTest {
 
   @Test
   void declared_module_graph_is_acyclic() {
-    // Mirrors docs/architecture/module-map.md arrows 1-16. Arrow 17 is runtime-only (the
+    // Mirrors docs/architecture/module-map.md compile edges. Arrow 17 is runtime-only (the
     // StepHandler SPI) and is therefore not a compile edge and not part of this graph; the SPI is
     // what keeps the graph acyclic (S02-09).
     Map<String, Set<String>> edges = new LinkedHashMap<>();
@@ -55,7 +55,7 @@ class PackageDependencyGraphTest {
     edges.put("workflowdefinition", Set.of("agentcatalog"));
     edges.put("toolexecution", Set.of("agentcatalog", "audit", "workflowexecution"));
     edges.put("knowledgebase", Set.of("ai", "workflowexecution"));
-    edges.put("ingestion", Set.of("knowledgebase", "messaging"));
+    edges.put("ingestion", Set.of("knowledgebase", "messaging", "ai"));
     edges.put("ai", Set.of("toolexecution", "workflowexecution"));
     edges.put("usage", Set.of("ai", "workflowexecution"));
     edges.put("audit", Set.of("identity"));
