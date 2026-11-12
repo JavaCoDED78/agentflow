@@ -155,7 +155,7 @@ owner is responsible for forward-only migrations only.
 | `inbox_messages` | `messaging` | PK `(consumer_name, event_id)`; dedup in the same transaction as the business change |
 | `knowledge_bases` | `knowledgebase` | `unique (tenant_id, name)` |
 | `documents` | `knowledgebase` | metadata row; payload stays in object storage (`object_key` + `sha256`) |
-| `document_chunks` | `knowledgebase` | `unique (document_id, chunk_index, pipeline_version)`; embedding + tenant filter |
+| `document_chunks` | `knowledgebase` | `unique (document_id, chunk_index, pipeline_version)`; embedding + tenant filter; `search_vector` (generated `tsvector`, FTS index) |
 | `approvals` | `workflowexecution` | immutable-payload-bound pause point; `payload_fingerprint` binds the decision |
 | `usage_records` | `usage` | money is `NUMERIC`; `estimated` vs provider-reported |
 | `tenant_budgets` | `usage` | reservation that blocks the next operation when exceeded |

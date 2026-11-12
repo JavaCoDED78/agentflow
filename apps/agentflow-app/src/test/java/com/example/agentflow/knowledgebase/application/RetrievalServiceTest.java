@@ -3,7 +3,9 @@ package com.example.agentflow.knowledgebase.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -95,7 +97,8 @@ class RetrievalServiceTest {
         "hash-" + chunkIndex,
         "tester",
         OffsetDateTime.now(),
-        distance);
+        distance,
+        0.0);
   }
 
   /** The happy path: the collection's model embeds the query; rows map to scored, ordered DTOs. */
@@ -232,6 +235,66 @@ class RetrievalServiceTest {
 
     assertThatThrownBy(
             () -> noDatabase.search(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("no database connection");
+  }
+
+  // --- lexical (full-text) half (S10-15) -----------------------------------------------------
+
+  /**
+   * The lexical half maps directly to the tenant-scoped repository method with no embedding step.
+   */
+  @Test
+  void lexical_search_queries_the_tenant_scoped_repository() {
+    service.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", null);
+
+    verify(chunkRepository).findByKeyword(TENANT, KNOWLEDGE_BASE, "retention", 10);
+    verify(embeddingPort, never()).embed(any());
+  }
+
+  /** The lexical half honours the same top-k bounds as the vector half (default, then clamped). */
+  @Test
+  void lexical_search_respects_the_topk_bound() {
+    service.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", 3);
+    verify(chunkRepository).findByKeyword(TENANT, KNOWLEDGE_BASE, "retention", 3);
+
+    service.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", 999);
+    verify(chunkRepository).findByKeyword(TENANT, KNOWLEDGE_BASE, "retention", 50);
+  }
+
+  /** The FTS relevance is surfaced as the candidate score, not the cosine distance. */
+  @Test
+  void lexical_search_maps_frs_relevance_to_the_candidate_score() {
+    DocumentChunkRow row =
+        new DocumentChunkRow(
+            UUID.randomUUID(),
+            TENANT,
+            UUID.randomUUID(),
+            "v1",
+            0,
+            1,
+            2,
+            "fragment",
+            "hash-0",
+            "tester",
+            OffsetDateTime.now(),
+            0.0,
+            0.7);
+    when(chunkRepository.findByKeyword(any(), any(), any(), anyInt())).thenReturn(List.of(row));
+
+    SearchResult result = service.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", null);
+
+    assertThat(result.chunks()).hasSize(1);
+    assertThat(result.chunks().get(0).score()).isEqualTo(0.7);
+  }
+
+  /** S01-02: no database connection (lexical half never needs an embedding provider). */
+  @Test
+  void lexical_search_fails_loudly_without_a_database_connection() {
+    RetrievalService noDatabase =
+        new RetrievalService(null, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5);
+
+    assertThatThrownBy(() -> noDatabase.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", null))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("no database connection");
   }

@@ -4,6 +4,38 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-15 — Lexical (full-text) search — the lexical half of hybrid retrieval (P1).
+
+### What changed
+- Migration `V3_3_21` (owner `knowledgebase`, forward-only, `ADR-008` / `IF NOT EXISTS`) turns the `document_chunks.content` into the lexical half of the hybrid retrieval the glossary "Retrieval" names. It adds a generated `tsvector` column `search_vector` (`GENERATED ALWAYS AS (to_tsvector('english', content)) STORED`) and a `GIN` index `document_chunks_search_idx` on it. The column is **generated**, so the index recomputes whenever `content` changes — there is never a drift between the stored text and the vector — and the `english` text-search configuration is pinned (the corpus is English notation, so the language is a fixed decision, not a runtime switch; the `english` config lexemises the identifiers the tests look for, e.g. `retention` → `retenti`, and `S10-14` itself). Both the column and the index carry a `COMMENT` attributing them to `S10-15` / `knowledgebase`; the extension stays enabled from the S10-11 `V3_3_20`.
+- `DocumentChunkRow` gains a `rank` component: the two retrieval halves share the record (the nearest-neighbour half fills `distance`, the lexical half fills `rank`; a row from one half never mixes the two scores). `ChunkRowMapper` (vector) leaves `rank` at `0`; the new `KeywordRowMapper` maps the `ts_rank` relevance the lexical query computes.
+- `DocumentChunkRepository.findByKeyword(tenantId, knowledgeBaseId, keyword, limit)` is the lexical read the service drives. The query is the mirror of the S10-14 nearest-neighbour query: `c.tenant_id = ?` (the tenant, invariant 1) and a `documents` join adding `d.knowledge_base_id = ?` (the collection scope) **before** the `@@` match and the `LIMIT` — a cross-tenant or cross-collection keyword query returns an empty list, never a post-filter. The keyword is tokenised with `plainto_tsquery('english', ?)` (not `to_tsquery`), so an untrusted search string is read as natural language and can never throw on a malformed operator — an odd or hostile keyword is a no-match, not an error (invariant 7).
+- `knowledgebase.application.RetrievalService.lexicalSearch(tenantId, knowledgeBaseId, keyword, topK)` is the lexical half of the hybrid retrieval — the complement of `search`. It needs **no** embedding provider (it reads the tenant-scoped lexical index directly), so it also works with no provider configured (`ADR-014` opt-in shape). The candidates carry the FTS relevance as their `ChunkDto#score()` (`rank`, mapped from the repository row); the same `default-top-k` / `max-top-k` bounds apply as `search`, and the lexical half never applies the cosine threshold (that is the vector half's cut). With no database it fails loudly at call time (`IllegalStateException`), exactly like `search`.
+
+### Why
+The S10-14 vector half matches by embedding similarity; it is robust to paraphrase but weak on exact tokens, identifiers and rare proper nouns (an embedding of `retention` and an embedding of `xyzzy-4711` say little about their textual difference). The FTS half matches by exact text, so a keyword query for a term or an ID finds it regardless of embedding geometry — the two halves are genuinely complementary, and the plan's "hybrid search" (`S10-16`) is the fusion of these two independent results. The access predicate lives **inside** the lexical query for the same reason it lives inside the vector query: the search API is per collection, and another tenant's or another collection's chunk must never surface even when its text is the exact keyword — the `(tenant_id, ...)` and `(knowledge_base_id, ...)` predicates before the `@@` and the limit guarantee it (invariant 1, single 403/404 policy applied as an empty result). `english` is pinned because the corpus the local documents and the tests use is English notation, and `to_tsvector` / `plainto_tsquery` must agree on the configuration. `plainto_tsquery` (rather than a caller-supplied `tsquery`) is the safety choice: the caller is an untrusted source for the query, and `plainto_tsquery` can never turn a hostile keyword into an operator-fragile query.
+
+### Verification
+4 DB-free unit tests (`RetrievalServiceTest`, `tests="16"` now), all JUnit-XML-verified (`failures="0" errors="0" skipped="0"`), new since the S10-14 `tests="12"` baseline:
+- `lexical_search_queries_the_tenant_scoped_repository` — the half maps straight to `findByKeyword(tenantId, knowledgeBaseId, keyword, 10)` with the default bound and never touches the `EmbeddingPort`.
+- `lexical_search_respects_the_topk_bound` — a caller `topK=3` is honored exactly, a caller `topK=999` is clamped to `max-top-k` (50).
+- `lexical_search_maps_frs_relevance_to_the_candidate_score` — the FTS relevance surfaces as the candidate `score()`, not a cosine distance.
+- `lexical_search_fails_loudly_without_a_database_connection` — no database ⇒ `IllegalStateException` at call time (no provider needed).
+
+The acceptance — **a lexical query executes on the real `english` FTS index and finds the exact term / ID in the corpus, tenant- and collection-scoped** — is proven end-to-end on `pgvector/pgvector:0.8.6-pg18`:
+- The reworked [`DocumentChunkRepositoryIT`](apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/persistence/DocumentChunkRepositoryIT.java) (`tests="10"` now) adds the lexical adapter probes: `lexical_search_returns_the_exact_term_and_id` (a query for `retention` returns the term's chunks; a query for `555566667777` returns only the chunk carrying that ID token), `lexical_search_is_tenant_scoped` (two tenants share the term; neither sees the other's chunk — invariant 1), `lexical_search_is_scoped_to_one_collection` (two collections of one tenant + a second tenant, identical term — the query only returns the searched collection; a cross-tenant id is an empty result) and `lexical_search_returns_empty_when_nothing_matches`.
+- [`MigrationsTest`](apps/agentflow-app/src/integrationTest/java/com/example/agentflow/MigrationsTest.java) asserts the ordered migration line now ending at `3.3.21` and that the `document_chunks_search_idx` index exists, `search_vector` is a generated `tsvector` (`is_generated = 'ALWAYS'`) carrying its `S10-15` COMMENT.
+
+`:apps:agentflow-app:check` green — unit + architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`) + no-cycles + formatting (`spotless`) + OpenAPI gates; `:apps:agentflow-app:integrationTest --tests 'com.example.agentflow.knowledgebase.*'` green; `git diff --check` clean.
+
+### Not changed
+- No REST endpoint: the lexical search endpoint is a follow-up (`S10-16` wires it).
+- No fusion: `lexicalSearch` and `search` return independently; `S10-16` merges, ranks and deduplicates the two halves (and owns the "no evidence" `InsufficientEvidence` policy, `S10-18`).
+- No new module edge and no new dependency: `findByKeyword` lives in the existing `knowledgebase.persistence` adapter; no ADR.
+- No `english` runtime switch: the language is pinned to `english` at the migration (the corpus is English).
+- No pgvector-jdbc, no change to the vector path: the FTS half is orthogonal to the `vector(768)` nearest-neighbour query.
+
+
 ## S10-14 — Tenant/ACL-filtered vector search (P0).
 
 ### What changed
@@ -30,8 +62,8 @@ The acceptance — **retrieval never returns another tenant's chunks even at max
 `:apps:agentflow-app:check` green — unit + architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`) + no-cycles + formatting (`spotless`) + OpenAPI gates; `:apps:agentflow-app:integrationTest --tests 'com.example.agentflow.knowledgebase.*'` green; `git diff --check` clean.
 
 ### Not changed
-- No REST endpoint: the search API (`POST /api/v1/knowledge-bases/{id}/search`) is a follow-up; the service is the public boundary the controller will drive.
-- No full-text search, no hybrid rank fusion, no citations: `S10-15` / `S10-16` / `S10-17` build on this result (`SearchResult` / `ChunkDto` are the vocabulary they extend); the no-evidence `InsufficientEvidence` policy is `S10-18`.
+- No REST endpoint: the search API (`POST /api/v1/knowledge-bases/{id}/search`) is a follow-up; the service is the public boundary the controller will drive. The lexical half's endpoint is the same follow-up (`S10-16`).
+- The hybrid rank **fusion** and citations still build on this result (`SearchResult` / `ChunkDto` are the vocabulary they extend); the no-evidence `InsufficientEvidence` policy is `S10-18`. The lexical full-text half (`S10-15`) now exists alongside `search` — `RetrievalService.lexicalSearch` over the `english` FTS index — but the two halves return independently; `S10-16` is the fusion.
 - No new module edge: `knowledgebase → ai` (arrow 5 in the module map, the embedding port) was already allowed, so no ADR; no migration (the S10-11 column and the S10-05 table already carry everything the query needs); no contract files.
 - No pgvector-jdbc: the distance is computed in SQL and mapped as `float8`, so the stored `vector` is still never read back.
 

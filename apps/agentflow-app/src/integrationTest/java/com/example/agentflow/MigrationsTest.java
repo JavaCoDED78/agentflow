@@ -73,7 +73,7 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18", "3.3.19", "3.3.20");
+              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21");
     }
   }
 
@@ -807,6 +807,29 @@ class MigrationsTest {
     assertThat(columnComment("document_chunks", "embedding")).contains("S10-11");
   }
 
+  /**
+   * The S10-15 lexical full-text search index is declared at the schema level: a generated {@code
+   * tsvector} {@code search_vector} column over {@code content} (a {@code GENERATED ALWAYS ...
+   * STORED} column, so {@code is_generated = 'ALWAYS'} — it is recomputed at write time and never
+   * drifts from {@code content}) and the {@code GIN} index {@code
+   * document_chunks_search_vector_fts_idx} on it; both carry a COMMENT attributing them to S10-15 /
+   * {@code knowledgebase}. The behavioural guard (the lexical query is tenant/collection-scoped,
+   * proved in {@code DocumentChunkRepositoryIT}) is not a schema fact, so this test asserts only
+   * the schema the migration declares.
+   *
+   * <p>The fact asserted here is generation ({@code is_generated = 'ALWAYS'}), not nullability:
+   * {@code information_schema.columns.is_nullable} reports {@code YES} for a generated column, even
+   * a {@code GENERATED ALWAYS ... STORED} one that can never actually hold NULL, so nullability is
+   * not a meaningful schema fact for it.
+   */
+  @Test
+  void fts_index_exists_and_the_search_vector_is_generated() throws SQLException {
+    assertThat(indexes("document_chunks")).contains("document_chunks_search_vector_fts_idx");
+    assertThat(columnType("document_chunks", "search_vector")).isEqualTo("tsvector");
+    assertThat(generatedColumn("document_chunks", "search_vector")).isEqualTo("ALWAYS");
+    assertThat(columnComment("document_chunks", "search_vector")).contains("S10-15");
+  }
+
   private static Connection connection() throws SQLException {
     return DriverManager.getConnection(
         postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
@@ -888,6 +911,28 @@ class MigrationsTest {
                     + column
                     + "'")) {
       return rs.next() && "YES".equals(rs.getString("is_nullable"));
+    }
+  }
+
+  /**
+   * The {@code is_generated} value of {@code column} on {@code table} from {@code
+   * information_schema.columns} (for example {@code 'ALWAYS'}). Used by the S10-15 FTS index test
+   * to assert the {@code search_vector} tsvector is a {@code GENERATED ALWAYS ... STORED} column
+   * that is recomputed at write time. {@code is_generated} is the meaningful generation fact here —
+   * {@code is_nullable} reports {@code YES} for generated columns, even a {@code GENERATED ALWAYS
+   * ... STORED} one that can never actually hold NULL.
+   */
+  private static String generatedColumn(String table, String column) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT is_generated FROM information_schema.columns "
+                    + "WHERE table_schema = 'public' AND table_name = '"
+                    + table
+                    + "' AND column_name = '"
+                    + column
+                    + "'")) {
+      return rs.next() ? rs.getString("is_generated") : null;
     }
   }
 

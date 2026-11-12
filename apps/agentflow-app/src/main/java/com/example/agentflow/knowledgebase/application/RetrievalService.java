@@ -11,27 +11,34 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * The tenant/ACL-filtered vector retrieval service (S10-14), the public search entry point of the
+ * The tenant/ACL-filtered retrieval service (S10-14 / S10-15), the public search entry point of the
  * {@code knowledgebase} module.
  *
- * <p>One {@link #search} call is three steps, each with a single owner:
+ * <p>It exposes two retrieval halves over the same tenant-scoped {@code document_chunks} data:
  *
  * <ol>
- *   <li><b>Resolve the embedding model.</b> The collection pins its {@code embedding_model} ({@code
- *       knowledge_bases.embedding_model}, S10-05); the query text must be vectorised in exactly the
- *       space the stored {@code vector(768)} chunks live in. A knowledge base the tenant does not
- *       own is indistinguishable from a missing one (invariant 1), so the lookup is by the {@code
- *       (tenant_id, id)} pair and yields an empty {@link SearchResult} instead of an error.
- *   <li><b>Embed the query.</b> One call to the neutral {@code ai} {@link EmbeddingPort} with the
- *       collection's model (the provider's own retry/timeout bounds live in the {@code ai}
- *       resilience layer, never here). The port is opt-in ({@code ADR-014}): with no provider the
- *       service still constructs and fails loudly at call time.
- *   <li><b>Retrieve, bounded.</b> {@link DocumentChunkRepository#findNearest} runs the
- *       nearest-neighbour search with the tenant <em>and</em> collection predicates inside the
- *       query, before top-k (invariant 1 — a post-filter is not permitted, so a foreign chunk can
- *       never surface, no matter how close its embedding). The caller's {@code topK} is clamped to
- *       the configured {@code max-top-k} (a missing one falls back to {@code default-top-k}), and a
- *       candidate whose cosine distance exceeds the configured {@code threshold} is dropped.
+ *   <li><b>Vector (embedding similarity).</b> {@link #search} is three steps, each with a single
+ *       owner:
+ *   <li><b>Lexical (full-text search).</b> {@link #lexicalSearch} (S10-15) is one step: it queries
+ *       the tenant/ACL-scoped FTS index directly for chunks whose text matches a keyword, with the
+ *       access predicate inside the query.
+ * </ol>
+ *
+ * The vector half resolves the collection's {@code embedding_model} ({@code
+ * knowledge_bases.embedding_model}, S10-05); the query text must be vectorised in exactly the space
+ * the stored {@code vector(768)} chunks live in. A knowledge base the tenant does not own is
+ * indistinguishable from a missing one (invariant 1), so the lookup is by the {@code (tenant_id,
+ * id)} pair and yields an empty {@link SearchResult} instead of an error.
+ * <li><b>Embed the query.</b> One call to the neutral {@code ai} {@link EmbeddingPort} with the
+ *     collection's model (the provider's own retry/timeout bounds live in the {@code ai} resilience
+ *     layer, never here). The port is opt-in ({@code ADR-014}): with no provider the service still
+ *     constructs and fails loudly at call time.
+ * <li><b>Retrieve, bounded.</b> {@link DocumentChunkRepository#findNearest} runs the
+ *     nearest-neighbour search with the tenant <em>and</em> collection predicates inside the query,
+ *     before top-k (invariant 1 — a post-filter is not permitted, so a foreign chunk can never
+ *     surface, no matter how close its embedding). The caller's {@code topK} is clamped to the
+ *     configured {@code max-top-k} (a missing one falls back to {@code default-top-k}), and a
+ *     candidate whose cosine distance exceeds the configured {@code threshold} is dropped.
  * </ol>
  *
  * <p>The service is a read: no state changes, no outbox, no Kafka. PostgreSQL is the source of
@@ -149,6 +156,66 @@ public class RetrievalService {
                         row.pageFrom(),
                         row.pageTo(),
                         row.distance(),
+                        row.content()))
+            .toList();
+    return new SearchResult(chunks);
+  }
+
+  /**
+   * Search one tenant-owned knowledge base for the chunks whose {@code content} matches {@code
+   * keyword} — the lexical (full-text) half of the hybrid retrieval (S10-15).
+   *
+   * <p>This is the complement of {@link #search}: {@code search} matches by embedding similarity,
+   * this matches chunks by their exact text. Tenant and knowledge base come from the verified
+   * security context and the request path — never from the caller's body (invariant 1) — and both
+   * predicates run inside {@link DocumentChunkRepository#findByKeyword}, before the relevance
+   * ordering and the limit, so the result can never contain another tenant's or another
+   * collection's chunk. Unlike {@link #search}, this half needs no embedding provider: it reads the
+   * tenant-scoped lexical index directly, so it also works when no provider is configured (the
+   * {@code ADR-014} opt-in shape).
+   *
+   * <p>The candidates carry the FTS relevance as their {@code ChunkDto#score()} (the lexical half's
+   * score; the vector half applies its cosine-distance threshold in {@link #search}, and the fusion
+   * that merges and deduplicates the two halves is {@code S10-16}). The result is capped at the
+   * same {@code topK} bounds as {@link #search}.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param knowledgeBaseId the knowledge base to search
+   * @param keyword the keyword / term to find in the chunk text (tokenised as natural language)
+   * @param topK the maximum number of chunks, or {@code null} for the configured default
+   * @return the matching chunks by descending relevance; empty when the collection is missing
+   *     (including a cross-tenant id) or nothing matches
+   * @throws IllegalArgumentException if an argument is {@code null}
+   * @throws IllegalStateException when no database connection is configured (S01-02)
+   */
+  public SearchResult lexicalSearch(
+      UUID tenantId, UUID knowledgeBaseId, String keyword, Integer topK) {
+    if (tenantId == null) {
+      throw new IllegalArgumentException("tenantId must not be null");
+    }
+    if (knowledgeBaseId == null) {
+      throw new IllegalArgumentException("knowledgeBaseId must not be null");
+    }
+    if (keyword == null) {
+      throw new IllegalArgumentException("keyword must not be null");
+    }
+    if (chunkRepository == null) {
+      throw new IllegalStateException(
+          "retrieval is unavailable: no database connection is configured (S01-02)");
+    }
+    int limit = topK == null ? defaultTopK : Math.min(topK, maxTopK);
+    List<DocumentChunkRow> rows =
+        chunkRepository.findByKeyword(tenantId, knowledgeBaseId, keyword, limit);
+    List<ChunkDto> chunks =
+        rows.stream()
+            .map(
+                row ->
+                    new ChunkDto(
+                        row.id(),
+                        row.documentId(),
+                        row.pageFrom(),
+                        row.pageTo(),
+                        row.rank(),
                         row.content()))
             .toList();
     return new SearchResult(chunks);
