@@ -105,14 +105,19 @@ This adapter is the *primitive*; it persists and reads rows. It is **not** a ret
 does not combine vector with full-text search, apply a relevance threshold, or build citations
 (those are the `S10-13` / `S10-14` layer, below).
 
-## Embedding production (`S10-13`)
+## Embedding production (`S10-12` / `S10-13`)
 
 A chunk's vector is produced through the neutral outbound port `ai.application.EmbeddingPort`
 (embeddings are one `embed(EmbeddingRequest)` returning `float[]` per input; `ADR-014`). The
-`ingestion` module produces the chunk set (`S10-09`), and the indexing path (`S10-13`) embeds each
-chunk and writes the chunk row and its vector in one step through
-`DocumentChunkRepository.insert`. The provider adapter is the only code that knows the embedding
-SDK.
+`ingestion` module produces the chunk set (`S10-09`), and the embedding generation service
+(`S10-12`, `ingestion.application.embed.EmbeddingGenerationService`) batches the chunk texts to the
+port (`agentflow.ingestion.embedding.batch-size`), preserves input order across batches and
+validates every response (one vector per text, uniform width) before returning the aggregated
+`EmbeddingBatchResult`. Provider rate limits and transient faults are retried by the `ai`
+resilience layer (`ai.provider.ResilientEmbeddingModel` over `ProviderResiliencePolicy`), never by
+the caller. The indexing path (`S10-13`) drives this service and writes the chunk row and its
+vector in one step through `DocumentChunkRepository.insert`. The provider adapter is the only code
+that knows the embedding SDK.
 
 ## Planned: the retrieval + grounding layer (`S10-13` / `S10-14`)
 

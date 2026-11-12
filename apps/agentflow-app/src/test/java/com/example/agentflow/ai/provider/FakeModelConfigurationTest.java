@@ -32,6 +32,25 @@ class FakeModelConfigurationTest {
               assertThat(context.getType("chatModelPort")).isEqualTo(FakeModelProvider.class);
               assertThat(context.getBean(FakeModelProvider.class).fixture())
                   .isEqualTo(FakeModelProvider.Fixture.VALID_PLAN);
+              // S10-12: the same opt-in gate also exposes the embedding port, so a CI context can
+              // exercise the embedding pipeline without a real model.
+              assertThat(context).hasBean("embeddingPort");
+              assertThat(context.getType("embeddingPort")).isEqualTo(FakeEmbeddingProvider.class);
+              assertThat(context.getBean(FakeEmbeddingProvider.class).fixture())
+                  .isEqualTo(FakeEmbeddingProvider.Fixture.DETERMINISTIC);
+            });
+  }
+
+  @Test
+  void the_configured_embedding_fixture_mode_is_honored() {
+    runner
+        .withPropertyValues(
+            "agentflow.ai.provider=fake", "agentflow.ai.provider.fake.embedding-mode=rate-limit")
+        .run(
+            context -> {
+              assertThat(context).hasNotFailed();
+              assertThat(context.getBean(FakeEmbeddingProvider.class).fixture())
+                  .isEqualTo(FakeEmbeddingProvider.Fixture.RATE_LIMIT);
             });
   }
 

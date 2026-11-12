@@ -65,7 +65,8 @@ public class ProviderExceptionClassifier {
    */
   private static ProviderFailureReason reasonFor(Throwable t) {
     // The specific 429 / 5xx types are matched before the generic service exception.
-    if (t instanceof ResilientChatModel.ProviderTimeoutException) {
+    if (t instanceof ResilientChatModel.ProviderTimeoutException
+        || t instanceof ResilientEmbeddingModel.ProviderTimeoutException) {
       return ProviderFailureReason.TIMEOUT;
     }
     if (t instanceof RateLimitException) {

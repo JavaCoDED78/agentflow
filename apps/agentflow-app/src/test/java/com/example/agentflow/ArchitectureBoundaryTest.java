@@ -60,7 +60,7 @@ class ArchitectureBoundaryTest {
           "observability",
           "common");
 
-  /** Allowed compile-time targets per module (module-map.md arrows 1-18, self included). */
+  /** Allowed compile-time targets per module (module-map.md arrows 1-19, self included). */
   private static final Map<String, Set<String>> ALLOWED =
       Map.ofEntries(
           Map.entry("identity", Set.of("identity")),
@@ -73,7 +73,7 @@ class ArchitectureBoundaryTest {
               Set.of("toolexecution", "agentcatalog", "audit", "workflowexecution")),
           Map.entry(
               "knowledgebase", Set.of("knowledgebase", "ai", "workflowexecution", "messaging")),
-          Map.entry("ingestion", Set.of("ingestion", "knowledgebase", "messaging")),
+          Map.entry("ingestion", Set.of("ingestion", "knowledgebase", "messaging", "ai")),
           Map.entry("ai", Set.of("ai", "toolexecution", "workflowexecution")),
           Map.entry("usage", Set.of("usage", "ai", "workflowexecution")),
           Map.entry("audit", Set.of("audit", "identity")),
@@ -110,6 +110,6 @@ class ArchitectureBoundaryTest {
   @ArchTest
   static final ArchRule moduleBoundaries =
       CompositeArchRule.of(buildBoundaryRules())
-          .because("docs/architecture/module-map.md dependency table (arrows 1-16)")
+          .because("docs/architecture/module-map.md dependency table (compile edges 1-13, 18, 19)")
           .allowEmptyShould(true);
 }
