@@ -685,6 +685,35 @@ public class AgentFlowProperties {
     private boolean loopEnabled = true;
 
     /**
+     * Whether the ingestion indexing worker (S10-13 — the Kafka consumer of {@code
+     * agentflow.document.ingestion-requested.v1} driving extract → chunk → embed → index) runs in
+     * this process. {@code false} by default: the {@code api} role and the DB-less skeleton never
+     * start a Kafka consumer; the {@code ingestion-worker} role enables it explicitly, not
+     * "everywhere by default" (apps/agentflow-app AGENTS.md). Bound from {@code
+     * agentflow.worker.ingestion-loop-enabled}.
+     */
+    private boolean ingestionLoopEnabled = false;
+
+    /**
+     * The Kafka consumer long-poll timeout of the ingestion indexing worker, in milliseconds
+     * (S10-13): how long one {@code poll} waits for records before the loop re-checks the shutdown
+     * flag. Bounds the graceful-stop latency (a wakeup interrupts the wait anyway). At least 100
+     * ms; a value below 100 fails startup. Bound from {@code
+     * agentflow.worker.ingestion-poll-timeout-ms}.
+     */
+    @Min(value = 100, message = "agentflow.worker.ingestion-poll-timeout-ms must be at least 100")
+    private long ingestionPollTimeoutMs = 1_000L;
+
+    /**
+     * The bounded immediate retry of the ingestion indexing business change (S10-13, the {@code
+     * InboxDedupService} attempt budget): how many times a transiently failing indexing pass is
+     * re-run inside the inbox transaction before the event is held (RETRY / DLQ, S06-11). At least
+     * 1; a value below 1 fails startup. Bound from {@code agentflow.worker.ingestion-max-attempts}.
+     */
+    @Min(value = 1, message = "agentflow.worker.ingestion-max-attempts must be at least 1")
+    private int ingestionMaxAttempts = 3;
+
+    /**
      * The tenants the worker poll loop serves. The loop calls {@code WorkflowWorker#pollOnce} for
      * each of these on every cadence; an empty list serves nothing until a tenant source is wired.
      * This is the local-skeleton placeholder for the eventual per-tenant Kafka-consumer driver: the
@@ -717,6 +746,53 @@ public class AgentFlowProperties {
      */
     public void setLoopEnabled(boolean loopEnabled) {
       this.loopEnabled = loopEnabled;
+    }
+
+    /**
+     * @return whether the ingestion indexing worker runs in this process (default {@code false})
+     */
+    public boolean isIngestionLoopEnabled() {
+      return ingestionLoopEnabled;
+    }
+
+    /**
+     * @param ingestionLoopEnabled whether the ingestion indexing worker runs in this process
+     *     (default {@code false}; the {@code ingestion-worker} role enables it)
+     */
+    public void setIngestionLoopEnabled(boolean ingestionLoopEnabled) {
+      this.ingestionLoopEnabled = ingestionLoopEnabled;
+    }
+
+    /**
+     * @return the Kafka consumer long-poll timeout of the ingestion indexing worker, in
+     *     milliseconds (default {@code 1000})
+     */
+    public long getIngestionPollTimeoutMs() {
+      return ingestionPollTimeoutMs;
+    }
+
+    /**
+     * @param ingestionPollTimeoutMs the Kafka consumer long-poll timeout in milliseconds (at least
+     *     100)
+     */
+    public void setIngestionPollTimeoutMs(long ingestionPollTimeoutMs) {
+      this.ingestionPollTimeoutMs = ingestionPollTimeoutMs;
+    }
+
+    /**
+     * @return the bounded immediate retry of the ingestion indexing business change (default {@code
+     *     3})
+     */
+    public int getIngestionMaxAttempts() {
+      return ingestionMaxAttempts;
+    }
+
+    /**
+     * @param ingestionMaxAttempts the bounded immediate retry of the ingestion indexing business
+     *     change (at least 1)
+     */
+    public void setIngestionMaxAttempts(int ingestionMaxAttempts) {
+      this.ingestionMaxAttempts = ingestionMaxAttempts;
     }
 
     /**
@@ -1591,6 +1667,11 @@ public class AgentFlowProperties {
     @Valid private final Embedding embedding = new Embedding();
 
     /**
+     * Indexing idempotency parameters (S10-13), bound from {@code agentflow.ingestion.indexing.*}.
+     */
+    @Valid private final Indexing indexing = new Indexing();
+
+    /**
      * @return the maximum number of pages read from a PDF (default {@code 100})
      */
     public int getMaxPages() {
@@ -1627,6 +1708,13 @@ public class AgentFlowProperties {
     }
 
     /**
+     * @return the indexing idempotency parameters (S10-13)
+     */
+    public Indexing getIndexing() {
+      return indexing;
+    }
+
+    /**
      * Chunk-embedding batching parameters (S10-12), bound from {@code
      * agentflow.ingestion.embedding.*}. These back the {@code EmbeddingGenerationService} the
      * ingestion worker runs on a chunk set. As with the extraction limits, the value lives in
@@ -1649,10 +1737,42 @@ public class AgentFlowProperties {
       }
 
       /**
-       * @param batchSize the maximum chunk texts per embedding call (at least 1)
+       * @param batchSize the maximum number of texts per {@link EmbeddingPort} call (at least 1)
        */
       public void setBatchSize(int batchSize) {
         this.batchSize = batchSize;
+      }
+    }
+
+    /**
+     * Indexing idempotency parameters (S10-13), bound from {@code agentflow.ingestion.indexing.*}.
+     * These back the {@code IngestionService} indexing pass. The redelivery policy decides what a
+     * redelivered {@code ingestion-requested} event does with an already-indexed document: {@code
+     * skip} (the default) leaves the existing index untouched and the pass is a no-op; {@code
+     * update} re-embeds and overwrites the chunk rows in place. The value lives in configuration,
+     * not code, and an unknown value fails the wiring at startup.
+     */
+    public static class Indexing {
+
+      /**
+       * The redelivery policy name (see {@code ingestion.domain.RedeliveryPolicy}). Held as a
+       * string so the global {@code config} package does not import the {@code ingestion.domain}
+       * enum; the {@code IngestionConfiguration} bean maps it to the domain policy.
+       */
+      private String redeliveryPolicy = "skip";
+
+      /**
+       * @return the redelivery policy name (default {@code "skip"})
+       */
+      public String getRedeliveryPolicy() {
+        return redeliveryPolicy;
+      }
+
+      /**
+       * @param redeliveryPolicy the redelivery policy name ({@code "skip"} or {@code "update"})
+       */
+      public void setRedeliveryPolicy(String redeliveryPolicy) {
+        this.redeliveryPolicy = redeliveryPolicy;
       }
     }
   }

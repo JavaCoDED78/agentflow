@@ -264,6 +264,11 @@ every example uses a placeholder UUID and a zero UUID — never a real id, tenan
 
 ### `document.indexed.v1`
 
+Published by the `ingestion` indexing worker (S10-13) when a pass completes — the `PROCESSING →
+INDEXED` transition and this outbox record commit in the same transaction. The payload is
+correlation metadata only: opaque ids, the status, the pipeline version and the chunk count — never
+a secret, a prompt or a document fragment (invariant 8).
+
 ```json
 {
   "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
@@ -276,7 +281,11 @@ every example uses a placeholder UUID and a zero UUID — never a real id, tenan
   "correlationId": "11111111-2222-3333-4444-555566667777",
   "causationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "payload": {
-    "status": "INDEXED"
+    "documentId": "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+    "knowledgeBaseId": "9b2c...",
+    "status": "INDEXED",
+    "pipelineVersion": "character-boundary:500:50",
+    "chunkCount": 12
   }
 }
 ```

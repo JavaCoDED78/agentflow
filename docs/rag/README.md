@@ -30,25 +30,28 @@ Both directions are bound by three invariants that shape every line of the pipel
 ## The pipeline (implemented vs. planned)
 
 The diagram separates the two. **Implemented** steps exist in code (`S10-11` storage + query
-primitive, `S09` planner). **Planned** steps (`S10-13` / `S10-14`) are described in prose below and
-are *not* yet in the code.
+primitive, `S10-12` embedding batching, `S10-13` the indexing path, `S09` planner). **Planned**
+steps (`S10-14`) are described in prose below and are *not* yet in the code.
 
 ```mermaid
 flowchart TB
     subgraph Impl["Implemented in code"]
         Repo["knowledgebase.persistence<br/>DocumentChunkRepository<br/>insert · findNearest<br/>(S10-11)"]
         Embed["ai.application<br/>EmbeddingPort · embed → float[]<br/>(S09-01)"]
+        Ing["ingestion.application<br/>IngestionService + EmbeddingGenerationService<br/>claim → embed → ON CONFLICT upsert<br/>(S10-12 / S10-13)"]
         Planner["ai.application<br/>PlannerService · propose<br/>(ADR-006, S09-06)"]
         Catalogue["ai.prompt<br/>PromptCatalogue · SYSTEM policy<br/>+ USER untrusted content"]
     end
-    subgraph Planned["Planned — S10-13 / S10-14"]
+    subgraph Planned["Planned — S10-14"]
         Ret["RetrievalService<br/>vector + hybrid FTS<br/>relevance threshold"]
         Cit["assemble citations from<br/>real chunks only (never invented)<br/>empty → InsufficientEvidence"]
     end
     Doc["document_chunks.embedding<br/>vector(768) · nomic-embed-text"]
 
     %% Indexing path (writing vectors)
-    Embed -->|"768-d vector"| Repo
+    Ing -->|"batched embed calls"| Embed
+    Embed -->|"768-d vector"| Ing
+    Ing -->|"chunk row + vector"| Repo
     Repo --> Doc
 
     %% Retrieval path (reading vectors)
@@ -103,7 +106,8 @@ flowchart TB
 
 This adapter is the *primitive*; it persists and reads rows. It is **not** a retrieval service — it
 does not combine vector with full-text search, apply a relevance threshold, or build citations
-(those are the `S10-13` / `S10-14` layer, below).
+(those are the `S10-14` layer, below). The indexing path that writes through it is `S10-13`,
+implemented.
 
 ## Embedding production (`S10-12` / `S10-13`)
 
@@ -115,16 +119,17 @@ port (`agentflow.ingestion.embedding.batch-size`), preserves input order across 
 validates every response (one vector per text, uniform width) before returning the aggregated
 `EmbeddingBatchResult`. Provider rate limits and transient faults are retried by the `ai`
 resilience layer (`ai.provider.ResilientEmbeddingModel` over `ProviderResiliencePolicy`), never by
-the caller. The indexing path (`S10-13`) drives this service and writes the chunk row and its
-vector in one step through `DocumentChunkRepository.insert`. The provider adapter is the only code
-that knows the embedding SDK.
+the caller. The indexing path (`S10-13`) drives this service and persists each chunk row with its
+vector through `knowledgebase.application.ChunkIndexingService` — an `ON CONFLICT` upsert on the
+`(document_id, chunk_index, pipeline_version)` unique key, so a redelivered event never duplicates
+a chunk. The provider adapter is the only code that knows the embedding SDK.
 
-## Planned: the retrieval + grounding layer (`S10-13` / `S10-14`)
+## Planned: the retrieval + grounding layer (`S10-14`)
 
 The following is the target the glossary §7 and `module-api.md` name; it is **not yet in the code**
 (no `RetrievalService`, no `InsufficientEvidence`, no `CitationDto`, `SearchRequest`, `SearchResult`
-or `ChunkDto`). This section describes those steps so the RAG guide is complete, not because they
-run today.
+or `ChunkDto`). The indexing path (`S10-13`) is implemented and described above; this section
+describes the retrieval steps so the RAG guide is complete, not because they run today.
 
 - **Retrieval (`RetrievalService`).** Calls `DocumentChunkRepository.findNearest` for the vector
   half and a full-text search for the text half, then *hybrid* combines the two, applies a
@@ -147,7 +152,12 @@ run today.
   (4 tests) and by `MigrationsTest` (the pgvector extension and the `embedding vector(768)` column)
   on `pgvector/pgvector:0.8.6-pg18` — the exact image Compose and Testcontainers use, never `H2`
   (`AGENTS.md`). `:apps:agentflow-app:check` is green (unit + architecture + formatting + OpenAPI).
-- **Planned (`S10-13` / `S10-14`).** The retrieval + grounding layer must add its own integration
+- **Implemented (`S10-13`).** The indexing path is covered by
+  `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/ingestion/IngestionIndexingIT.java`
+  (8 tests) on the same `pgvector/pgvector:0.8.6-pg18` image: a redelivered ingestion event
+  creates no duplicate logical chunks, the SKIP/UPDATE redelivery policy is honored, and a
+  transient provider fault leaves the document requeued with the event held.
+- **Planned (`S10-14`).** The retrieval + grounding layer must add its own integration
   tests on the same real-PostgreSQL image, covering the mandatory negative scenarios from
   `AGENTS.md`: tenant isolation (a cross-tenant query returns empty), prompt injection in a
   retrieved document, and **empty retrieval without invented citations**. These tests are a
@@ -159,6 +169,7 @@ run today.
 |---|---|---|
 | `embedding` column + nearest-neighbour primitive | `knowledgebase` | `DocumentChunkRepository`, migration `V3_3_20` |
 | Embedding production (`float[]`) | `ai` | `EmbeddingPort` (`ADR-014`) |
+| Indexing pipeline (claim → embed → idempotent upsert) | `ingestion` | `IngestionService`, `EmbeddingGenerationService`, `knowledgebase.application.ChunkIndexingService` (`S10-12` / `S10-13`) |
 | Planner (propose; never execute), prompt separation | `ai` | `PlannerService`, `PromptCatalogue` (`ADR-006`) |
 | Citation value object | `toolexecution` | `Citation` (`S08-06`) |
 | Planned retrieval service, citations, hybrid FTS | `knowledgebase` | `module-api.md`, glossary §7 |

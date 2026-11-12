@@ -1,12 +1,18 @@
 package com.example.agentflow.knowledgebase.persistence;
 
+import com.example.agentflow.knowledgebase.domain.DocumentUploadStatus;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -97,6 +103,167 @@ public class DocumentRepository {
           bindString(ps, 9, createdBy);
         });
   }
+
+  /**
+   * Read one document by the {@code (tenant_id, id)} pair, joined with the embedding model pinned
+   * on its parent knowledge base (S10-13). The tenant predicate is part of the query itself
+   * (invariant 1): another tenant's document is indistinguishable from a missing one, so a forged
+   * or cross-tenant id yields {@link Optional#empty()}.
+   *
+   * @param tenantId the owning tenant (from the stored event, re-checked here against PostgreSQL)
+   * @param documentId the document id
+   * @return the indexing read model, or empty when no such tenant-owned document exists
+   */
+  public Optional<DocumentIndexRow> findIndexRowByIdAndTenant(UUID tenantId, UUID documentId) {
+    List<DocumentIndexRow> rows =
+        jdbc.query(
+            "SELECT d.id, d.tenant_id, d.knowledge_base_id, d.object_key, d.filename, "
+                + "d.mime_type, d.size_bytes, d.sha256, d.status, d.pipeline_version, "
+                + "k.embedding_model "
+                + "FROM "
+                + TABLE
+                + " d JOIN knowledge_bases k ON k.id = d.knowledge_base_id "
+                + "WHERE d.tenant_id = ? AND d.id = ?",
+            indexRowMapper,
+            tenantId,
+            documentId);
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+  }
+
+  /**
+   * Atomically claim a document for indexing (S10-13): a conditional {@code QUEUED/UPLOADED ->
+   * PROCESSING} update guarded by the {@code status} column and the optimistic {@code version}
+   * counter. The guard is the single-writer fence: exactly one worker can move the row out of a
+   * claimable state, so a concurrent duplicate delivery (at-least-once, ADR-003) or a second worker
+   * finds zero rows and skips. The status vocabulary is pinned by the {@code
+   * documents_status_check} constraint; the allowed from-states are bound as enum names (never
+   * caller-typed SQL).
+   *
+   * <p>This is the {@code worker.claim} transition of {@code document-lifecycle.md}. The lease
+   * columns the lifecycle document describes ({@code lease_owner}/{@code lease_until}/{@code
+   * lease_epoch}) are a recorded follow-up: the claim today is the conditional status update, which
+   * is sufficient for the inbox-transactional indexing (a crashed worker's transaction rolls back,
+   * releasing the claim).
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @param fromStates the states the claim may move out of (never empty)
+   * @return {@code true} when this call claimed the document (exactly one row transitioned)
+   */
+  public boolean claimForIndexing(
+      UUID tenantId, UUID documentId, Set<DocumentUploadStatus> fromStates) {
+    if (fromStates.isEmpty()) {
+      throw new IllegalArgumentException("fromStates must not be empty");
+    }
+    String placeholders = fromStates.stream().map(s -> "?").collect(Collectors.joining(", "));
+    List<String> stateNames = fromStates.stream().map(Enum::name).collect(Collectors.toList());
+    Object[] args = new Object[2 + stateNames.size()];
+    args[0] = tenantId;
+    args[1] = documentId;
+    for (int i = 0; i < stateNames.size(); i++) {
+      args[2 + i] = stateNames.get(i);
+    }
+    int updated =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET status = 'PROCESSING', version = version + 1, updated_at = now() "
+                + "WHERE tenant_id = ? AND id = ? AND status IN ("
+                + placeholders
+                + ")",
+            args);
+    return updated > 0;
+  }
+
+  /**
+   * Move a claimed document {@code PROCESSING -> INDEXED} (the {@code document.indexed} transition
+   * applied by the worker's transaction), recording the extraction diagnostic (S10-08). Guarded by
+   * {@code status = 'PROCESSING'} so only the claiming worker completes it; zero rows means the
+   * document is no longer in the claimed state and the caller treats the completion as a no-op.
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @param pageCount the extracted page count, or {@code null} to leave the column untouched
+   * @return {@code true} when the transition applied
+   */
+  public boolean markIndexed(UUID tenantId, UUID documentId, Integer pageCount) {
+    int updated =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET status = 'INDEXED', version = version + 1, updated_at = now(), "
+                + "page_count = COALESCE(?, page_count) "
+                + "WHERE tenant_id = ? AND id = ? AND status = 'PROCESSING'",
+            pageCount,
+            tenantId,
+            documentId);
+    return updated > 0;
+  }
+
+  /**
+   * Move a claimed document {@code PROCESSING -> FAILED} with the safe, machine-readable error code
+   * and redacted summary (S10-08: never the raw exception text or a document fragment). Guarded by
+   * {@code status = 'PROCESSING'} like every working transition.
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @param errorCode the safe machine-readable failure token (never {@code null})
+   * @param errorSummary the short redacted failure summary (never {@code null})
+   * @return {@code true} when the transition applied
+   */
+  public boolean markFailed(UUID tenantId, UUID documentId, String errorCode, String errorSummary) {
+    int updated =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET status = 'FAILED', version = version + 1, updated_at = now(), "
+                + "error_code = ?, error_summary = ? "
+                + "WHERE tenant_id = ? AND id = ? AND status = 'PROCESSING'",
+            errorCode,
+            errorSummary,
+            tenantId,
+            documentId);
+    return updated > 0;
+  }
+
+  /**
+   * Release a claimed document back {@code PROCESSING -> QUEUED} after a transient failure (the
+   * retry edge of {@code document-lifecycle.md}), so a later delivery re-drives it. Guarded by
+   * {@code status = 'PROCESSING'}.
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @return {@code true} when the release applied
+   */
+  public boolean releaseToQueued(UUID tenantId, UUID documentId) {
+    int updated =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET status = 'QUEUED', version = version + 1, updated_at = now() "
+                + "WHERE tenant_id = ? AND id = ? AND status = 'PROCESSING'",
+            tenantId,
+            documentId);
+    return updated > 0;
+  }
+
+  /**
+   * Maps the joined {@code documents} + {@code knowledge_bases} read to {@link DocumentIndexRow}.
+   */
+  private final RowMapper<DocumentIndexRow> indexRowMapper =
+      (rs, rowNum) ->
+          new DocumentIndexRow(
+              rs.getObject("id", UUID.class),
+              rs.getObject("tenant_id", UUID.class),
+              rs.getObject("knowledge_base_id", UUID.class),
+              rs.getString("object_key"),
+              rs.getString("filename"),
+              rs.getString("mime_type"),
+              rs.getLong("size_bytes"),
+              rs.getString("sha256"),
+              DocumentUploadStatus.valueOf(rs.getString("status")),
+              rs.getString("pipeline_version"),
+              rs.getString("embedding_model"));
 
   /** Binds a nullable {@code UUID} so an absent value is stored as SQL {@code NULL}. */
   private static void bindNullableUuid(PreparedStatement ps, int index, UUID value)
