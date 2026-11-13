@@ -1,13 +1,18 @@
 package com.example.agentflow.knowledgebase.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.example.agentflow.knowledgebase.domain.DocumentContentType;
 import com.example.agentflow.knowledgebase.domain.DocumentUploadStatus;
+import com.example.agentflow.knowledgebase.persistence.DocumentLookupRow;
 import com.example.agentflow.knowledgebase.persistence.DocumentRepository;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
@@ -19,6 +24,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Unit tests for the {@code S10-06} upload / enqueue flow, {@link DocumentService}.
@@ -48,13 +55,14 @@ class DocumentServiceTest {
 
   @Mock private DocumentRepository documentRepository;
   @Mock private OutboxService outboxService;
+  @Mock private DocumentTransitionService documentTransitionService;
 
   private DocumentService service;
   private ValidatedUpload validated;
 
   @BeforeEach
   void setUp() {
-    service = new DocumentService(documentRepository, outboxService);
+    service = new DocumentService(documentRepository, outboxService, documentTransitionService);
     validated =
         new ValidatedUpload(
             "report.pdf",
@@ -71,7 +79,7 @@ class DocumentServiceTest {
    * server-generated {@code object_key} and the validated filename / type / size / checksum.
    */
   @Test
-  void uploadCommitsTheDocumentRowTenantScopedInUpLoaded() {
+  void upload_commits_the_document_row_tenant_scoped_in_up_loaded() {
     DocumentDto result = service.upload(TENANT, KNOWLEDGE_BASE, validated, "actor@example.com");
 
     verify(documentRepository)
@@ -95,7 +103,7 @@ class DocumentServiceTest {
    * the durable trigger that moves the document {@code UPLOADED -> QUEUED} on the worker.
    */
   @Test
-  void uploadAppendsTheIngestionRequestedEventToTheOutbox() {
+  void upload_appends_the_ingestion_requested_event_to_the_outbox() {
     ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
 
     service.upload(TENANT, KNOWLEDGE_BASE, validated, null);
@@ -119,7 +127,7 @@ class DocumentServiceTest {
    * done by the ingestion worker on the event the flow just enqueued.
    */
   @Test
-  void uploadReturnsTheAsyncUpLoadedStatus() {
+  void upload_returns_the_async_up_loaded_status() {
     DocumentDto result = service.upload(TENANT, KNOWLEDGE_BASE, validated, null);
 
     assertThat(result.status()).isEqualTo(DocumentUploadStatus.UPLOADED);
@@ -134,7 +142,7 @@ class DocumentServiceTest {
    * this test would catch it.
    */
   @Test
-  void rowAndEventAreWrittenTogetherInOneFlow() {
+  void row_and_event_are_written_together_in_one_flow() {
     service.upload(TENANT, KNOWLEDGE_BASE, validated, null);
 
     verify(documentRepository)
@@ -158,9 +166,139 @@ class DocumentServiceTest {
    * reaching into the document state machine ({@code S10-01}…{@code S10-13}).
    */
   @Test
-  void uploadDoesNotTransitionTheDocumentQueued() {
+  void upload_does_not_transition_the_document_queued() {
     DocumentDto result = service.upload(TENANT, KNOWLEDGE_BASE, validated, null);
 
     assertThat(result.status()).isNotEqualTo(DocumentUploadStatus.QUEUED);
+  }
+
+  // --- S10-19: duplicate upload (content SHA-256) and manual retry (FAILED) ---
+
+  /**
+   * Duplicate upload (S10-19): a re-upload whose payload SHA-256 matches an existing tenant-owned
+   * row is content-identical — {@link #upload} returns that existing document with no new row and
+   * no new event. The idempotency key is {@code (tenant_id, sha256)} (plan §8.2).
+   */
+  @Test
+  void upload_returns_existing_document_on_duplicate_tenant_scoped_checksum() {
+    DocumentLookupRow existing =
+        new DocumentLookupRow(
+            UUID.fromString("11111111-1111-1111-1111-111111111111"),
+            KNOWLEDGE_BASE,
+            DocumentUploadStatus.QUEUED);
+    when(documentRepository.findByTenantAndSha256(TENANT, CHECKSUM))
+        .thenReturn(Optional.of(existing));
+
+    DocumentDto result = service.upload(TENANT, KNOWLEDGE_BASE, validated, "actor@example.com");
+
+    // Returns the existing document unchanged ...
+    assertThat(result.documentId()).isEqualTo(existing.documentId());
+    assertThat(result.knowledgeBaseId()).isEqualTo(existing.knowledgeBaseId());
+    assertThat(result.status()).isEqualTo(DocumentUploadStatus.QUEUED);
+    // ... without inserting a new row or enqueuing a new event (the duplicate is absorbed).
+    verify(documentRepository, never())
+        .insert(any(), any(), any(), any(), any(), any(), anyLong(), any(), any());
+    verify(outboxService, never()).enqueue(any());
+    // ... and the duplicate lookup is the gate (tenant-scoped, invariant 1).
+    verify(documentRepository).findByTenantAndSha256(TENANT, CHECKSUM);
+  }
+
+  /**
+   * Duplicate upload is tenant-scoped (invariant 1): a content-identical payload from a different
+   * tenant is indistinguishable from a missing one, so it is a fresh upload, never a hit.
+   */
+  @Test
+  void upload_on_other_tenant_identical_checksum_is_fresh_upload() {
+    when(documentRepository.findByTenantAndSha256(TENANT, CHECKSUM)).thenReturn(Optional.empty());
+
+    DocumentDto result = service.upload(TENANT, KNOWLEDGE_BASE, validated, null);
+
+    assertThat(result.status()).isEqualTo(DocumentUploadStatus.UPLOADED);
+    verify(documentRepository)
+        .insert(any(), eq(TENANT), any(), anyString(), any(), any(), anyLong(), any(), any());
+  }
+
+  /**
+   * Manual retry (S10-19): a {@code FAILED} document is released back to {@code QUEUED} and its
+   * {@code ingestion-requested} event is re-enqueued in one transaction, so the next delivery
+   * re-drives it. The re-enqueued event keeps the correlation chain (correlationId = document id,
+   * tenant-scoped) and uses a fresh event id.
+   */
+  @Test
+  void retry_failed_releases_failed_to_queued_and_reenqueues() {
+    UUID documentId = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    DocumentLookupRow failed =
+        new DocumentLookupRow(documentId, KNOWLEDGE_BASE, DocumentUploadStatus.FAILED);
+    when(documentRepository.findByTenantAndId(TENANT, documentId)).thenReturn(Optional.of(failed));
+
+    DocumentDto result = service.retryFailed(TENANT, documentId, "actor@example.com");
+
+    assertThat(result.status()).isEqualTo(DocumentUploadStatus.QUEUED);
+    assertThat(result.knowledgeBaseId()).isEqualTo(KNOWLEDGE_BASE);
+    // Released to QUEUED ...
+    verify(documentTransitionService).releaseFailedToQueued(TENANT, documentId);
+    // ... and a fresh ingestion-requested event is re-enqueued, tenant-scoped and
+    // correlation-complete.
+    ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+    verify(outboxService).enqueue(event.capture());
+    OutboxEvent queued = event.getValue();
+    assertThat(queued.tenantId()).isEqualTo(TENANT);
+    assertThat(queued.aggregateType()).isEqualTo("document");
+    assertThat(queued.aggregateId()).isEqualTo(documentId);
+    assertThat(queued.eventId()).isNotNull();
+    assertThat(queued.topic()).isEqualTo("agentflow.document.ingestion-requested.v1");
+  }
+
+  /** A document that is not {@code FAILED} has nothing to retry: {@code retryFailed} rejects it. */
+  @Test
+  void retry_failed_on_non_failed_document_is_rejected() {
+    UUID documentId = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    DocumentLookupRow indexed =
+        new DocumentLookupRow(documentId, KNOWLEDGE_BASE, DocumentUploadStatus.INDEXED);
+    when(documentRepository.findByTenantAndId(TENANT, documentId)).thenReturn(Optional.of(indexed));
+
+    ResponseStatusException ex =
+        assertThrows(
+            ResponseStatusException.class, () -> service.retryFailed(TENANT, documentId, null));
+
+    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    // Nothing released, nothing re-enqueued.
+    verify(documentTransitionService, never()).releaseFailedToQueued(any(), any());
+    verify(outboxService, never()).enqueue(any());
+  }
+
+  /**
+   * Cross-tenant / forged retry target is a {@code 404}: the document is re-checked against {@code
+   * (tenant_id, id)} (invariant 1), so a missing tenant-owned document is indistinguishable from
+   * any other missing one.
+   */
+  @Test
+  void retry_failed_on_missing_tenant_owned_document_is_not_found() {
+    UUID documentId = UUID.fromString("22222222-3333-4444-5555-666677778888");
+    when(documentRepository.findByTenantAndId(TENANT, documentId)).thenReturn(Optional.empty());
+
+    ResponseStatusException ex =
+        assertThrows(
+            ResponseStatusException.class, () -> service.retryFailed(TENANT, documentId, null));
+
+    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    verify(documentTransitionService, never()).releaseFailedToQueued(any(), any());
+  }
+
+  /**
+   * Manual retry is unavailable without a database, and fails loudly with {@code 503} rather than
+   * silently dropping the release (S01-02). The repository is present (a mock) but the transition
+   * writer is absent.
+   */
+  @Test
+  void retry_failed_fails_loudly_without_transition_writer() {
+    DocumentService noDb = new DocumentService(documentRepository, outboxService, null);
+    UUID documentId = UUID.fromString("11111111-1111-1111-1111-111111111111");
+
+    ResponseStatusException ex =
+        assertThrows(
+            ResponseStatusException.class, () -> noDb.retryFailed(TENANT, documentId, null));
+
+    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
   }
 }

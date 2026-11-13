@@ -43,7 +43,7 @@ class TikaDocumentParserTest {
 
   @Test
   @DisplayName("normal single-page PDF yields the text, the page count and no error")
-  void normalPdfExtractsTextAndPageCount() throws Exception {
+  void normal_pdf_extracts_text_and_page_count() throws Exception {
     ExtractionResult result =
         parser.parse("sample.pdf", "application/pdf", singlePagePdf("S10-07"));
 
@@ -56,7 +56,7 @@ class TikaDocumentParserTest {
 
   @Test
   @DisplayName("a blank payload yields EMPTY, not an error")
-  void blankPayloadIsEmpty() {
+  void blank_payload_is_empty() {
     ExtractionResult result = parser.parse("empty.pdf", "application/pdf", new byte[0]);
 
     assertThat(result.status()).isEqualTo(ExtractionResult.Status.EMPTY);
@@ -66,7 +66,7 @@ class TikaDocumentParserTest {
 
   @Test
   @DisplayName("plain text is extracted with page count 0")
-  void plainTextExtracted() {
+  void plain_text_extracted() {
     byte[] text = "hello world\nsecond line".getBytes(StandardCharsets.UTF_8);
     ExtractionResult result = parser.parse("notes.txt", "text/plain", text);
 
@@ -81,7 +81,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("pages beyond maxPages are not read and truncated reports a partial extraction")
-    void truncatesToMaxPages() throws Exception {
+    void truncates_to_max_pages() throws Exception {
       TikaDocumentParser small = new TikaDocumentParser(5, MAX_CHARS);
       ExtractionResult result = small.parse("many.pdf", "application/pdf", multiPagePdf(10));
 
@@ -92,7 +92,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("a document within the limits is not truncated")
-    void withinLimitsIsNotTruncated() throws Exception {
+    void within_limits_is_not_truncated() throws Exception {
       ExtractionResult result = parser.parse("one.pdf", "application/pdf", singlePagePdf("short"));
 
       assertThat(result.pageCount()).isEqualTo(1);
@@ -106,7 +106,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("a corrupt PDF (bad cross-reference) is classified CORRUPT, never recovered")
-    void corruptPdfIsCorrupt() {
+    void corrupt_pdf_is_corrupt() {
       ExtractionResult result = parser.parse("bad.pdf", "application/pdf", corruptPdf());
 
       assertThat(result.status()).isEqualTo(ExtractionResult.Status.FAILED);
@@ -117,7 +117,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("a password-protected PDF is classified ENCRYPTED")
-    void encryptedPdfIsEncrypted() throws Exception {
+    void encrypted_pdf_is_encrypted() throws Exception {
       ExtractionResult result =
           parser.parse("locked.pdf", "application/pdf", encryptedPdf("secret"));
 
@@ -133,7 +133,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("non-positive limits are rejected by the constructor")
-    void nonPositiveLimitsRejected() {
+    void non_positive_limits_rejected() {
       assertThatThrownBy(() -> new TikaDocumentParser(0, MAX_CHARS))
           .isInstanceOf(IllegalArgumentException.class);
       assertThatThrownBy(() -> new TikaDocumentParser(MAX_PAGES, 0))
@@ -147,7 +147,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("a successful extraction reports the parser version, page and char counts")
-    void parserVersionReportedOnSuccess() throws Exception {
+    void parser_version_reported_on_success() throws Exception {
       ExtractionResult result =
           parser.parse("sample.pdf", "application/pdf", singlePagePdf("S10-08"));
 
@@ -160,7 +160,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("a partial extraction (page limit hit) is a partial success, not a failure")
-    void partialSuccessCarriesParserVersion() throws Exception {
+    void partial_success_carries_parser_version() throws Exception {
       TikaDocumentParser small = new TikaDocumentParser(5, MAX_CHARS);
       ExtractionResult result = small.parse("many.pdf", "application/pdf", multiPagePdf(10));
 
@@ -171,7 +171,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("a failure reports the parser version and a summary without raw file fragments")
-    void failureReportsParserVersionAndSafeSummary() {
+    void failure_reports_parser_version_and_safe_summary() {
       ExtractionResult corrupt = parser.parse("bad.pdf", "application/pdf", corruptPdf());
 
       assertThat(corrupt.isFailure()).isTrue();
@@ -187,7 +187,7 @@ class TikaDocumentParserTest {
 
     @Test
     @DisplayName("an empty payload reports the parser version and is not an error")
-    void emptyReportsParserVersion() {
+    void empty_reports_parser_version() {
       ExtractionResult empty = parser.parse("empty.pdf", "application/pdf", new byte[0]);
 
       assertThat(empty.isEmpty()).isTrue();

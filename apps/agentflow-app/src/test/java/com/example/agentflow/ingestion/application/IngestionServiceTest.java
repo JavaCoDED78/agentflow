@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
@@ -118,7 +119,7 @@ class IngestionServiceTest {
         1024L,
         "sha256-" + DOCUMENT,
         status,
-        "v1",
+        PIPELINE_VERSION,
         "nomic-embed-text");
   }
 
@@ -153,7 +154,7 @@ class IngestionServiceTest {
             eq(TENANT), eq(DOCUMENT), eq(PIPELINE_VERSION), chunks.capture(), eq(false), isNull());
     assertThat(chunks.getValue()).hasSize(1);
     assertThat(chunks.getValue().get(0).embedding()).hasSize(768);
-    verify(transitionService).markIndexed(TENANT, DOCUMENT, 1);
+    verify(transitionService).markIndexed(TENANT, DOCUMENT, 1, PIPELINE_VERSION);
 
     ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
     verify(outboxService).enqueue(event.capture());
@@ -263,7 +264,7 @@ class IngestionServiceTest {
         skipService.index(new IngestionEventKey(TENANT, DOCUMENT), INGESTION_EVENT);
 
     assertThat(result.status()).isEqualTo("INDEXED");
-    verify(transitionService).markIndexed(TENANT, DOCUMENT, 0);
+    verify(transitionService).markIndexed(TENANT, DOCUMENT, 0, PIPELINE_VERSION);
     verify(chunkIndexingService, never())
         .index(any(), any(), any(), anyList(), anyBoolean(), any());
     ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
@@ -361,7 +362,7 @@ class IngestionServiceTest {
             () -> service.index(new IngestionEventKey(TENANT, DOCUMENT), INGESTION_EVENT))
         .isInstanceOf(RuntimeException.class)
         .hasMessageContaining("provider unavailable");
-    verify(transitionService, never()).markIndexed(any(), any(), anyInt());
+    verify(transitionService, never()).markIndexed(any(), any(), anyInt(), anyString());
     verify(transitionService, never()).markFailed(any(), any(), any(), any());
     verify(outboxService, never()).enqueue(any());
   }
