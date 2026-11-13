@@ -16,7 +16,11 @@ import com.example.agentflow.ai.application.EmbeddingResponse;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRepository;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRow;
 import com.example.agentflow.knowledgebase.persistence.KnowledgeBaseRepository;
+import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.search.Search;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -42,10 +46,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
  *       and is clamped above it;
  *   <li>candidates beyond the configured cosine-distance threshold are dropped, boundary values
  *       kept, and the chunks keep the repository's ascending-distance order with their scores;
+ *   <li>the hybrid search ({@code S10-16}) fuses the vector and lexical halves, deduplicates by
+ *       chunk id and caps the fused result at the configured maximum;
  *   <li>a missing — including cross-tenant — knowledge base yields an empty result without ever
  *       calling the embedding port or the chunk repository; and
  *   <li>with no database or no embedding provider the service fails loudly at call time (S01-02 /
  *       {@code ADR-014}).
+ *   <li>the hybrid search records its latency and half result counts on meters that carry no tenant
+ *       or document label (invariant 9).
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -65,7 +73,8 @@ class RetrievalServiceTest {
   @BeforeEach
   void setUp() {
     service =
-        new RetrievalService(chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5);
+        new RetrievalService(
+            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null);
   }
 
   /**
@@ -231,7 +240,8 @@ class RetrievalServiceTest {
   /** S01-02: no database — the service exists and fails loudly at call time. */
   @Test
   void search_fails_loudly_without_a_database_connection() {
-    RetrievalService noDatabase = new RetrievalService(null, null, embeddingPort, 10, 50, 0.5);
+    RetrievalService noDatabase =
+        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null);
 
     assertThatThrownBy(
             () -> noDatabase.search(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
@@ -292,7 +302,7 @@ class RetrievalServiceTest {
   @Test
   void lexical_search_fails_loudly_without_a_database_connection() {
     RetrievalService noDatabase =
-        new RetrievalService(null, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5);
+        new RetrievalService(null, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null);
 
     assertThatThrownBy(() -> noDatabase.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", null))
         .isInstanceOf(IllegalStateException.class)
@@ -303,7 +313,7 @@ class RetrievalServiceTest {
   @Test
   void search_fails_loudly_without_an_embedding_provider() {
     RetrievalService noProvider =
-        new RetrievalService(chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5);
+        new RetrievalService(chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5, null);
 
     assertThatThrownBy(
             () -> noProvider.search(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
@@ -328,7 +338,7 @@ class RetrievalServiceTest {
     assertThatThrownBy(
             () ->
                 new RetrievalService(
-                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 9, 0.5))
+                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 9, 0.5, null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("maxTopK");
   }
@@ -339,14 +349,190 @@ class RetrievalServiceTest {
     assertThatThrownBy(
             () ->
                 new RetrievalService(
-                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 2.5))
+                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 2.5, null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("threshold");
     assertThatThrownBy(
             () ->
                 new RetrievalService(
-                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, -0.1))
+                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, -0.1, null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("threshold");
+  }
+
+  // --- hybrid (rank-fusion) half (S10-16) ---------------------------------------------------
+
+  private static DocumentChunkRow vectorChunkRow(UUID chunkId, String content, double distance) {
+    return new DocumentChunkRow(
+        chunkId,
+        TENANT,
+        UUID.randomUUID(),
+        "v1",
+        0,
+        1,
+        2,
+        content,
+        "hash",
+        "tester",
+        OffsetDateTime.now(),
+        distance,
+        0.0);
+  }
+
+  private static DocumentChunkRow lexicalChunkRow(
+      UUID chunkId, String content, double frsRelevance) {
+    return new DocumentChunkRow(
+        chunkId,
+        TENANT,
+        UUID.randomUUID(),
+        "v1",
+        0,
+        1,
+        2,
+        content,
+        "hash",
+        "tester",
+        OffsetDateTime.now(),
+        0.0,
+        frsRelevance);
+  }
+
+  /**
+   * The two halves are fused and deduplicated by chunk id: a chunk present in both halves is
+   * emitted once and outranks one matched by only one half (reciprocal-rank fusion).
+   */
+  @Test
+  void hybrid_search_fuses_and_deduplicates_the_two_halves() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+
+    UUID overlap = UUID.randomUUID();
+    UUID vectorOnly = UUID.randomUUID();
+    UUID lexicalOnly = UUID.randomUUID();
+
+    // Vector half ranked by distance: overlap first, then a vector-only chunk.
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(10)))
+        .thenReturn(
+            List.of(
+                vectorChunkRow(overlap, "overlap", 0.1),
+                vectorChunkRow(vectorOnly, "vector only", 0.2)));
+    // Lexical half ranked by FTS relevance: overlap first, then a lexical-only chunk.
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), eq(10)))
+        .thenReturn(
+            List.of(
+                lexicalChunkRow(overlap, "overlap", 0.9),
+                lexicalChunkRow(lexicalOnly, "lexical only", 0.3)));
+
+    SearchResult result =
+        service.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null));
+
+    // Three distinct chunks after dedup; the overlap chunk is first (matched by both halves).
+    assertThat(result.chunks()).hasSize(3);
+    assertThat(result.chunks().stream().map(ChunkDto::id).toList()).doesNotHaveDuplicates();
+    assertThat(result.chunks().get(0).id()).isEqualTo(overlap);
+    assertThat(result.chunks().stream().filter(c -> c.id().equals(overlap)).count()).isEqualTo(1);
+  }
+
+  /**
+   * The fused result is capped at the configured maximum, so one request can never pull more than
+   * that many fragments from the two halves combined.
+   */
+  @Test
+  void hybrid_search_caps_the_fused_result_at_the_configured_maximum() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+
+    List<DocumentChunkRow> manyVector = new ArrayList<>();
+    List<DocumentChunkRow> manyLexical = new ArrayList<>();
+    for (int i = 0; i < 60; i++) {
+      manyVector.add(vectorChunkRow(UUID.randomUUID(), "v" + i, 0.1));
+      manyLexical.add(lexicalChunkRow(UUID.randomUUID(), "l" + i, 0.1));
+    }
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(50)))
+        .thenReturn(manyVector);
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(manyLexical);
+
+    SearchResult result = service.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", 50));
+
+    assertThat(result.chunks()).hasSize(50);
+  }
+
+  /**
+   * Invariant 1: a cross-tenant / missing collection yields an empty result even for the hybrid —
+   * the vector half finds no model and the lexical half is tenant/ACL scoped.
+   */
+  @Test
+  void hybrid_search_returns_empty_for_a_cross_tenant_or_missing_collection() {
+    when(knowledgeBaseRepository.findEmbeddingModelByIdAndTenant(TENANT, KNOWLEDGE_BASE))
+        .thenReturn(Optional.empty());
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    SearchResult result =
+        service.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null));
+
+    assertThat(result.chunks()).isEmpty();
+  }
+
+  /**
+   * With no embedding provider the hybrid degrades to the lexical half only: still deduplicated and
+   * capped, and the embedding port is never touched.
+   */
+  @Test
+  void hybrid_search_degrades_to_the_lexical_half_without_an_embedding_provider() {
+    RetrievalService noProvider =
+        new RetrievalService(chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5, null);
+
+    DocumentChunkRow a = lexicalChunkRow(UUID.randomUUID(), "lexical hit", 0.7);
+    DocumentChunkRow b = lexicalChunkRow(UUID.randomUUID(), "lexical two", 0.4);
+    when(chunkRepository.findByKeyword(any(), any(), any(), anyInt())).thenReturn(List.of(a, b));
+
+    SearchResult result =
+        noProvider.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null));
+
+    assertThat(result.chunks()).hasSize(2);
+    verify(embeddingPort, never()).embed(any());
+  }
+
+  /** S01-02: no database connection — the hybrid fails loudly at call time, before either half. */
+  @Test
+  void hybrid_search_fails_loudly_without_a_database_connection() {
+    RetrievalService noDatabase =
+        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null);
+
+    assertThatThrownBy(
+            () -> noDatabase.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("no database connection");
+  }
+
+  /**
+   * The hybrid records its call count, half result count and latency on meters that carry no tenant
+   * or document label (invariant 9).
+   */
+  @Test
+  void hybrid_search_records_the_meter_without_any_tenant_or_document_label() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    RetrievalService svc =
+        new RetrievalService(
+            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, registry);
+
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+    when(chunkRepository.findByKeyword(any(), any(), any(), anyInt()))
+        .thenReturn(List.of(lexicalChunkRow(UUID.randomUUID(), "lexical hit", 0.7)));
+
+    svc.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null));
+
+    Search hybrid = registry.find(RetrievalService.METRIC_HYBRID);
+    List<Meter> hybridMeters = hybrid.meters().stream().toList();
+    assertThat(hybridMeters).hasSize(1);
+    assertThat(hybridMeters.get(0).getId().getTags()).isEmpty();
+    assertThat(registry.find(RetrievalService.METRIC_HALF_RESULTS).meters()).isNotEmpty();
+    assertThat(registry.find(RetrievalService.METRIC_DURATION).meters()).isNotEmpty();
   }
 }

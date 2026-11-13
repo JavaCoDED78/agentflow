@@ -178,7 +178,7 @@ API: `POST /api/v1/knowledge-bases`, `POST /api/v1/knowledge-bases/{id}/document
 
 | Concept | Shape | Meaning |
 |---|---|---|
-| **Retrieval** | tenant/ACL-filtered vector (pgvector) + FTS (full-text) hybrid | Retrieval applies the tenant/ACL predicate **before** top-k, as part of the query, not as a post-filter. |
+| **Retrieval** | tenant/ACL-filtered vector (pgvector) + FTS (full-text), fused by reciprocal-rank (`S10-16`) | The two halves run independently (the vector half only with an embedding provider, the lexical half always); the fusion deduplicates by chunk id and caps the result, and its metrics carry no tenant/document label. Retrieval applies the tenant/ACL predicate **before** top-k, as part of the query, not as a post-filter. |
 | **Citation** | response field set: `documentId`, `chunkId`, page/section, score | A grounded reference to a single retrieved chunk. Only real retrieved chunks are cited; empty retrieval reports "insufficient evidence" — never invented citations. |
 
 ---
