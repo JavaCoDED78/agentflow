@@ -39,6 +39,13 @@ import java.util.stream.Collectors;
  *       reciprocal-rank {@link RankFusion}, deduplicates by chunk id, caps the result at {@code
  *       max-top-k}, and records the latency and the half result counts — without any document text
  *       (invariants 7/8/9). With no embedding provider it degrades to the lexical half only.
+ *   <li><b>No-evidence policy (S10-18).</b> {@link #groundedAnswer} runs the hybrid retrieval and
+ *       builds the real {@link CitationDto} citations for what it returned (S10-17), then lets the
+ *       {@link GroundingPolicy} decide whether to {@link GroundedAnswer.Grounded report a
+ *       grounding} (a non-empty, above-bar retrieval — each citation resolves to a chunk the caller
+ *       can see) or {@link GroundedAnswer.InsufficientEvidence report an evidence gap} (an empty or
+ *       below-bar retrieval ⇒ the caller answers "no relevant source" and never invents a citation,
+ *       invariants 1/7).
  * </ol>
  *
  * The vector half resolves the collection's {@code embedding_model} ({@code
@@ -88,6 +95,14 @@ public class RetrievalService {
   private final Timer duration;
 
   /**
+   * The no-evidence policy (S10-18): decide whether the citations the grounding returns are enough
+   * to {@link GroundedAnswer.Grounded report a grounding} or to {@link
+   * GroundedAnswer.InsufficientEvidence report an evidence gap}. {@code null} means "the default
+   * policy" (any non-empty retrieval grounds the answer — {@link GroundingPolicy#DEFAULT}).
+   */
+  private final GroundingPolicy groundingPolicy;
+
+  /**
    * @param chunkRepository the tenant/ACL-scoped {@code document_chunks} read path, or {@code null}
    *     when no database is configured (S01-02)
    * @param knowledgeBaseRepository the {@code knowledge_bases} read path, or {@code null} under the
@@ -102,6 +117,9 @@ public class RetrievalService {
    * @param meterRegistry the Micrometer registry the hybrid meters are registered on; {@code null}
    *     is treated as "no shared registry" and the meters are registered on a throwaway one (no
    *     hybrid observability — the metering is opt-in)
+   * @param groundingPolicy the no-evidence policy (S10-18) to report for an empty/below-bar
+   *     retrieval; {@code null} means the default policy (any non-empty retrieval grounds the
+   *     answer)
    */
   public RetrievalService(
       DocumentChunkRepository chunkRepository,
@@ -110,10 +128,12 @@ public class RetrievalService {
       int defaultTopK,
       int maxTopK,
       double threshold,
-      MeterRegistry meterRegistry) {
+      MeterRegistry meterRegistry,
+      GroundingPolicy groundingPolicy) {
     this.chunkRepository = chunkRepository;
     this.knowledgeBaseRepository = knowledgeBaseRepository;
     this.embeddingPort = embeddingPort;
+    this.groundingPolicy = groundingPolicy == null ? GroundingPolicy.DEFAULT : groundingPolicy;
     if (defaultTopK < 1) {
       throw new IllegalArgumentException("defaultTopK must be at least 1, was " + defaultTopK);
     }
@@ -377,6 +397,56 @@ public class RetrievalService {
           "retrieval is unavailable: no database connection is configured (S01-02)");
     }
     return CitationBuilder.cite(hybridSearch(tenantId, knowledgeBaseId, request));
+  }
+
+  /**
+   * Build the no-evidence decision for an RAG call (S10-18): run the hybrid retrieval, build the
+   * real {@link CitationDto} citations for what it returned (S10-17), and let the {@link
+   * GroundingPolicy} decide whether to {@link GroundedAnswer.Grounded report a grounding} or {@link
+   * GroundedAnswer.InsufficientEvidence report an evidence gap}.
+   *
+   * <p>It is the {@code knowledgebase} entry point a caller feeds to the model: a non-empty
+   * retrieval (at least {@code minimum-citations} fused chunks) yields {@code Grounded(citations)}
+   * — one {@link CitationDto} per chunk, each resolving to a fragment the caller can see (invariant
+   * 1, the two halves' predicates run inside the SQL). An empty retrieval, or one below the policy
+   * bar, yields {@code InsufficientEvidence(searchId)} — the caller answers "I have no relevant
+   * source" and never invents a citation (invariant 1 / 7).
+   *
+   * <p>It is the reporting half of the RAG loop on top of {@link #citations}: the retrieval decides
+   * whether the list is empty, this policy decides what to report for it. A {@code null} argument
+   * is a contract failure, and with no database configured it fails loudly at call time (S01-02),
+   * exactly like {@link #citations}.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param knowledgeBaseId the knowledge base to search
+   * @param request the query text (used as the vector query and the lexical keyword) and the
+   *     optional {@code topK}
+   * @param searchId the id of the RAG call this grounding belongs to (correlation only)
+   * @return {@code Grounded(citations)} when the policy found evidence, otherwise {@code
+   *     InsufficientEvidence(searchId)} — never a fabricated citation for an empty result
+   * @throws IllegalArgumentException if an argument is {@code null}
+   * @throws IllegalStateException when no database connection is configured (S01-02)
+   */
+  public GroundedAnswer groundedAnswer(
+      UUID tenantId, UUID knowledgeBaseId, SearchRequest request, UUID searchId) {
+    if (tenantId == null) {
+      throw new IllegalArgumentException("tenantId must not be null");
+    }
+    if (knowledgeBaseId == null) {
+      throw new IllegalArgumentException("knowledgeBaseId must not be null");
+    }
+    if (request == null) {
+      throw new IllegalArgumentException("request must not be null");
+    }
+    if (searchId == null) {
+      throw new IllegalArgumentException("searchId must not be null");
+    }
+    if (chunkRepository == null || knowledgeBaseRepository == null) {
+      throw new IllegalStateException(
+          "retrieval is unavailable: no database connection is configured (S01-02)");
+    }
+    GroundingPolicy policy = groundingPolicy != null ? groundingPolicy : GroundingPolicy.DEFAULT;
+    return policy.decide(citations(tenantId, knowledgeBaseId, request), searchId);
   }
 
   /**

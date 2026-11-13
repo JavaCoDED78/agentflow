@@ -36,7 +36,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * the other's chunks, and retrieval is scoped to one knowledge base inside the tenant. The suite
  * also pins the bounded behaviour on top of the nearest-neighbour ordering: the relevance threshold
  * drops distant candidates, a requested {@code topK} caps the result, and a chunk whose embedding
- * is {@code NULL} (not yet indexed) never surfaces.
+ * is {@code NULL} (not yet indexed) never surfaces. It closes with the {@code S10-18} no-evidence
+ * acceptance: {@code groundedAnswer} grounds in the calling tenant's own fragments and reports an
+ * evidence gap for an empty / cross-tenant retrieval, never fabricating a citation.
  */
 @Testcontainers
 class RetrievalServiceIT {
@@ -77,7 +79,14 @@ class RetrievalServiceIT {
     meterRegistry = new SimpleMeterRegistry();
     service =
         new RetrievalService(
-            chunkRepository, knowledgeBaseRepository, queryEmbedding, 10, 50, 0.5, meterRegistry);
+            chunkRepository,
+            knowledgeBaseRepository,
+            queryEmbedding,
+            10,
+            50,
+            0.5,
+            meterRegistry,
+            null);
   }
 
   /** The tenant/knowledge-base/document chain a chunk fixture needs. */
@@ -412,5 +421,42 @@ class RetrievalServiceIT {
         service.citations(
             tenantA.tenantId(), tenantB.knowledgeBaseId(), new SearchRequest("x", null));
     assertThat(forB).isEmpty();
+  }
+
+  /**
+   * The S10-18 no-evidence acceptance on real data: {@link RetrievalService#groundedAnswer} reports
+   * a {@link GroundedAnswer.Grounded} — one citation per fused chunk, each resolving to the calling
+   * tenant's <em>own</em> chunk and carrying the document label — when the hybrid retrieval returns
+   * evidence, and a {@link GroundedAnswer.InsufficientEvidence} gap (with the call's {@code
+   * searchId}) for an empty or cross-tenant retrieval, never a fabricated citation (invariant 1).
+   */
+  @Test
+  void groundedAnswer_grounds_in_the_calling_tenants_own_evidence_or_reports_a_gap() {
+    Fixture tenantA = tenantWithKnowledgeBaseAndDocument("ret-ground-a");
+    Fixture tenantB = tenantWithKnowledgeBaseAndDocument("ret-ground-b");
+    UUID chunkA = insertChunk(tenantA.tenantId(), tenantA.documentId(), 0, "x");
+    insertChunk(tenantB.tenantId(), tenantB.documentId(), 0, "x");
+    UUID search = uuid();
+    String documentName =
+        jdbc.queryForObject(
+            "SELECT filename FROM documents WHERE id = ?", String.class, tenantA.documentId());
+
+    // Non-empty hybrid retrieval → a grounding in the real, tenant-scoped citations.
+    GroundedAnswer grounded =
+        service.groundedAnswer(
+            tenantA.tenantId(), tenantA.knowledgeBaseId(), new SearchRequest("x", null), search);
+    assertThat(grounded).isInstanceOf(GroundedAnswer.Grounded.class);
+    CitationDto citation = ((GroundedAnswer.Grounded) grounded).citations().get(0);
+    assertThat(citation.chunkId()).isEqualTo(chunkA);
+    assertThat(citation.documentId()).isEqualTo(tenantA.documentId());
+    assertThat(citation.documentName()).isEqualTo(documentName);
+    assertThat(citation.snippet()).isNotBlank();
+
+    // An empty (cross-tenant) retrieval is an evidence gap carrying the call's searchId.
+    GroundedAnswer gap =
+        service.groundedAnswer(
+            tenantA.tenantId(), tenantB.knowledgeBaseId(), new SearchRequest("x", null), search);
+    assertThat(gap).isInstanceOf(GroundedAnswer.InsufficientEvidence.class);
+    assertThat(((GroundedAnswer.InsufficientEvidence) gap).searchId()).isEqualTo(search);
   }
 }

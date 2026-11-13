@@ -2,6 +2,7 @@ package com.example.agentflow.knowledgebase.application.config;
 
 import com.example.agentflow.ai.application.EmbeddingPort;
 import com.example.agentflow.config.AgentFlowProperties;
+import com.example.agentflow.knowledgebase.application.GroundingPolicy;
 import com.example.agentflow.knowledgebase.application.RetrievalService;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRepository;
 import com.example.agentflow.knowledgebase.persistence.KnowledgeBaseRepository;
@@ -41,6 +42,9 @@ public class RetrievalConfiguration {
    *     embedding provider is configured
    * @param meterRegistryProvider the provider of the {@link MeterRegistry} the hybrid meters are
    *     registered on; the service tolerates it being absent (no hybrid observability)
+   * @param groundingPolicyProvider the provider of the no-evidence policy (S10-18); empty when none
+   *     is configured, in which case the service uses {@link GroundingPolicy#DEFAULT} (any
+   *     non-empty retrieval grounds the answer)
    * @return the service bound from {@code agentflow.retrieval.*}
    */
   @Bean
@@ -49,7 +53,8 @@ public class RetrievalConfiguration {
       ObjectProvider<DocumentChunkRepository> chunkRepositoryProvider,
       ObjectProvider<KnowledgeBaseRepository> knowledgeBaseRepositoryProvider,
       ObjectProvider<EmbeddingPort> embeddingPortProvider,
-      ObjectProvider<MeterRegistry> meterRegistryProvider) {
+      ObjectProvider<MeterRegistry> meterRegistryProvider,
+      ObjectProvider<GroundingPolicy> groundingPolicyProvider) {
     AgentFlowProperties.Retrieval retrieval = properties.getRetrieval();
     return new RetrievalService(
         chunkRepositoryProvider.getIfAvailable(),
@@ -58,6 +63,7 @@ public class RetrievalConfiguration {
         retrieval.getDefaultTopK(),
         retrieval.getMaxTopK(),
         retrieval.getThreshold(),
-        meterRegistryProvider.getIfAvailable());
+        meterRegistryProvider.getIfAvailable(),
+        groundingPolicyProvider.getIfAvailable());
   }
 }

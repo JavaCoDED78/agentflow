@@ -53,7 +53,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
  *   <li>with no database or no embedding provider the service fails loudly at call time (S01-02 /
  *       {@code ADR-014}).
  *   <li>the hybrid search records its latency and half result counts on meters that carry no tenant
- *       or document label (invariant 9).
+ *       or document label (invariant 9); and
+ *   <li>the no-evidence policy (S10-18): {@code groundedAnswer} reports a grounding for a non-empty
+ *       hybrid retrieval (each citation resolves to a real retrieved chunk) and {@code
+ *       InsufficientEvidence(searchId)} for an empty / below-bar one, never inventing a citation —
+ *       cross-tenant retrieval is an evidence gap (invariant 1); and
+ *   <li>with no database or no embedding provider the service fails loudly at call time (S01-02 /
+ *       {@code ADR-014}).
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -63,6 +69,7 @@ class RetrievalServiceTest {
   private static final UUID KNOWLEDGE_BASE =
       UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
   private static final String MODEL = "nomic-embed-text";
+  private static final UUID SEARCH = UUID.randomUUID();
 
   @Mock private DocumentChunkRepository chunkRepository;
   @Mock private KnowledgeBaseRepository knowledgeBaseRepository;
@@ -74,7 +81,7 @@ class RetrievalServiceTest {
   void setUp() {
     service =
         new RetrievalService(
-            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null);
+            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null, null);
   }
 
   /**
@@ -243,7 +250,7 @@ class RetrievalServiceTest {
   @Test
   void search_fails_loudly_without_a_database_connection() {
     RetrievalService noDatabase =
-        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null);
+        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null, null);
 
     assertThatThrownBy(
             () -> noDatabase.search(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
@@ -305,7 +312,7 @@ class RetrievalServiceTest {
   @Test
   void lexical_search_fails_loudly_without_a_database_connection() {
     RetrievalService noDatabase =
-        new RetrievalService(null, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null);
+        new RetrievalService(null, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null, null);
 
     assertThatThrownBy(() -> noDatabase.lexicalSearch(TENANT, KNOWLEDGE_BASE, "retention", null))
         .isInstanceOf(IllegalStateException.class)
@@ -316,7 +323,8 @@ class RetrievalServiceTest {
   @Test
   void search_fails_loudly_without_an_embedding_provider() {
     RetrievalService noProvider =
-        new RetrievalService(chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5, null);
+        new RetrievalService(
+            chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5, null, null);
 
     assertThatThrownBy(
             () -> noProvider.search(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
@@ -341,7 +349,14 @@ class RetrievalServiceTest {
     assertThatThrownBy(
             () ->
                 new RetrievalService(
-                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 9, 0.5, null))
+                    chunkRepository,
+                    knowledgeBaseRepository,
+                    embeddingPort,
+                    10,
+                    9,
+                    0.5,
+                    null,
+                    null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("maxTopK");
   }
@@ -352,13 +367,27 @@ class RetrievalServiceTest {
     assertThatThrownBy(
             () ->
                 new RetrievalService(
-                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 2.5, null))
+                    chunkRepository,
+                    knowledgeBaseRepository,
+                    embeddingPort,
+                    10,
+                    50,
+                    2.5,
+                    null,
+                    null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("threshold");
     assertThatThrownBy(
             () ->
                 new RetrievalService(
-                    chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, -0.1, null))
+                    chunkRepository,
+                    knowledgeBaseRepository,
+                    embeddingPort,
+                    10,
+                    50,
+                    -0.1,
+                    null,
+                    null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("threshold");
   }
@@ -489,7 +518,8 @@ class RetrievalServiceTest {
   @Test
   void hybrid_search_degrades_to_the_lexical_half_without_an_embedding_provider() {
     RetrievalService noProvider =
-        new RetrievalService(chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5, null);
+        new RetrievalService(
+            chunkRepository, knowledgeBaseRepository, null, 10, 50, 0.5, null, null);
 
     DocumentChunkRow a = lexicalChunkRow(UUID.randomUUID(), "lexical hit", 0.7);
     DocumentChunkRow b = lexicalChunkRow(UUID.randomUUID(), "lexical two", 0.4);
@@ -506,7 +536,7 @@ class RetrievalServiceTest {
   @Test
   void hybrid_search_fails_loudly_without_a_database_connection() {
     RetrievalService noDatabase =
-        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null);
+        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null, null);
 
     assertThatThrownBy(
             () -> noDatabase.hybridSearch(TENANT, KNOWLEDGE_BASE, new SearchRequest("q", null)))
@@ -523,7 +553,7 @@ class RetrievalServiceTest {
     SimpleMeterRegistry registry = new SimpleMeterRegistry();
     RetrievalService svc =
         new RetrievalService(
-            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, registry);
+            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, registry, null);
 
     stubOwnedKnowledgeBase();
     when(embeddingPort.embed(any()))
@@ -539,5 +569,189 @@ class RetrievalServiceTest {
     assertThat(hybridMeters.get(0).getId().getTags()).isEmpty();
     assertThat(registry.find(RetrievalService.METRIC_HALF_RESULTS).meters()).isNotEmpty();
     assertThat(registry.find(RetrievalService.METRIC_DURATION).meters()).isNotEmpty();
+  }
+
+  // --- no-evidence policy (S10-18) ------------------------------------------------------------
+
+  /**
+   * The grounding runs the hybrid retrieval and reports a grounding when it returns real citations.
+   */
+  @Test
+  void groundedAnswer_grounds_when_the_hybrid_returns_evidence() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+    UUID document = UUID.randomUUID();
+    DocumentChunkRow row = row(document, "retention fragment", 0, 0.2);
+    UUID chunkId = row.id();
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(10)))
+        .thenReturn(List.of(row));
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    GroundedAnswer.Grounded answer =
+        (GroundedAnswer.Grounded)
+            service.groundedAnswer(
+                TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH);
+
+    assertThat(answer).isInstanceOf(GroundedAnswer.Grounded.class);
+    assertThat(answer.citations()).hasSize(1);
+    CitationDto citation = answer.citations().get(0);
+    assertThat(citation.documentId()).isEqualTo(document);
+    assertThat(citation.chunkId()).isEqualTo(chunkId);
+    assertThat(citation.documentName()).isEqualTo("fixture-doc");
+    assertThat(citation.pageFrom()).isEqualTo(1);
+    assertThat(citation.pageTo()).isEqualTo(2);
+    assertThat(citation.snippet()).isEqualTo("retention fragment");
+  }
+
+  /** S10-18: an empty retrieval is reported as an evidence gap, never a fabricated citation. */
+  @Test
+  void groundedAnswer_reports_insufficient_evidence_for_an_empty_retrieval() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(10)))
+        .thenReturn(List.of());
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    GroundedAnswer answer =
+        service.groundedAnswer(
+            TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH);
+
+    assertThat(answer).isInstanceOf(GroundedAnswer.InsufficientEvidence.class);
+    assertThat(((GroundedAnswer.InsufficientEvidence) answer).searchId()).isEqualTo(SEARCH);
+  }
+
+  /**
+   * Invariant 1: a cross-tenant / missing collection yields an evidence gap — the hybrid finds no
+   * model and the lexical half is scoped, so `groundedAnswer` never grounds in another tenant's
+   * document.
+   */
+  @Test
+  void groundedAnswer_reports_insufficient_evidence_for_a_cross_tenant_or_missing_collection() {
+    when(knowledgeBaseRepository.findEmbeddingModelByIdAndTenant(TENANT, KNOWLEDGE_BASE))
+        .thenReturn(Optional.empty());
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    GroundedAnswer answer =
+        service.groundedAnswer(
+            TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH);
+
+    assertThat(answer).isInstanceOf(GroundedAnswer.InsufficientEvidence.class);
+  }
+
+  /** The policy bar is applied: one chunk is not enough when {@code minimum-citations} is 2. */
+  @Test
+  void groundedAnswer_applies_the_minimum_citations_bar() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(10)))
+        .thenReturn(List.of(row(UUID.randomUUID(), "one chunk", 0, 0.2)));
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    RetrievalService bar =
+        new RetrievalService(
+            chunkRepository,
+            knowledgeBaseRepository,
+            embeddingPort,
+            10,
+            50,
+            0.5,
+            null,
+            new GroundingPolicy(2));
+
+    assertThat(
+            bar.groundedAnswer(
+                TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH))
+        .isInstanceOf(GroundedAnswer.InsufficientEvidence.class);
+  }
+
+  @Test
+  void groundedAnswer_grounds_when_the_bar_is_met() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(10)))
+        .thenReturn(
+            List.of(
+                row(UUID.randomUUID(), "first", 0, 0.2), row(UUID.randomUUID(), "second", 1, 0.3)));
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    RetrievalService bar =
+        new RetrievalService(
+            chunkRepository,
+            knowledgeBaseRepository,
+            embeddingPort,
+            10,
+            50,
+            0.5,
+            null,
+            new GroundingPolicy(2));
+
+    assertThat(
+            bar.groundedAnswer(
+                TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH))
+        .isInstanceOf(GroundedAnswer.Grounded.class);
+  }
+
+  @Test
+  void a_null_grounding_policy_defaults_to_any_non_empty_retrieval_grounding() {
+    stubOwnedKnowledgeBase();
+    when(embeddingPort.embed(any()))
+        .thenReturn(new EmbeddingResponse(MODEL, List.of(vector768()), null));
+    when(chunkRepository.findNearest(eq(TENANT), eq(KNOWLEDGE_BASE), any(float[].class), eq(10)))
+        .thenReturn(List.of(row(UUID.randomUUID(), "one chunk", 0, 0.2)));
+    when(chunkRepository.findByKeyword(eq(TENANT), eq(KNOWLEDGE_BASE), any(String.class), anyInt()))
+        .thenReturn(List.of());
+
+    RetrievalService defaultPolicy =
+        new RetrievalService(
+            chunkRepository, knowledgeBaseRepository, embeddingPort, 10, 50, 0.5, null, null);
+
+    assertThat(
+            defaultPolicy.groundedAnswer(
+                TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH))
+        .isInstanceOf(GroundedAnswer.Grounded.class);
+  }
+
+  /** S01-02: no database — `groundedAnswer` fails loudly at call time, before any retrieval. */
+  @Test
+  void groundedAnswer_fails_loudly_without_a_database_connection() {
+    RetrievalService noDatabase =
+        new RetrievalService(null, null, embeddingPort, 10, 50, 0.5, null, null);
+
+    assertThatThrownBy(
+            () ->
+                noDatabase.groundedAnswer(
+                    TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("no database connection");
+  }
+
+  /** Entry-point argument guards are contract failures (IllegalArgumentException). */
+  @Test
+  void groundedAnswer_rejects_null_arguments() {
+    assertThatThrownBy(
+            () ->
+                service.groundedAnswer(
+                    null, KNOWLEDGE_BASE, new SearchRequest("retention", null), SEARCH))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                service.groundedAnswer(TENANT, null, new SearchRequest("retention", null), SEARCH))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> service.groundedAnswer(TENANT, KNOWLEDGE_BASE, null, SEARCH))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                service.groundedAnswer(
+                    TENANT, KNOWLEDGE_BASE, new SearchRequest("retention", null), null))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

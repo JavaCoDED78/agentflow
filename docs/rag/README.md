@@ -33,8 +33,7 @@ The diagram separates the two. **Implemented** steps exist in code (`S10-11` sto
 primitive, `S10-12` embedding batching, `S10-13` the indexing path, `S10-14` the tenant/ACL-
 filtered vector retrieval service, `S10-15` the lexical (full-text) half over the PostgreSQL FTS
 index, `S10-16` the hybrid rank fusion, `S10-17` citation assembly from real retrieved chunks only,
-`S09` planner). **Planned** steps (`S10-18` the no-evidence policy) are described in prose below
-and are *not* yet in the code.
+`S10-18` the no-evidence policy, `S09` planner).
 
 ```mermaid
 flowchart TB
@@ -48,9 +47,7 @@ flowchart TB
         Cite["knowledgebase.application<br/>CitationBuilder + CitationDto<br/>one citation per real chunk<br/>· documentName label · snippet<br/>(S10-17)"]
         Planner["ai.application<br/>PlannerService · propose<br/>(ADR-006, S09-06)"]
         Catalogue["ai.prompt<br/>PromptCatalogue · SYSTEM policy<br/>+ USER untrusted content"]
-    end
-    subgraph Planned["Planned — S10-18"]
-        NoEvid["assemble the empty<br/>retrieval response —<br/>empty retrieval → InsufficientEvidence<br/>(no invented citation; S10-18)"]
+        NoEvid["knowledgebase.application<br/>GroundedAnswer · GroundingPolicy<br/>empty/below-bar retrieval → InsufficientEvidence<br/>never an invented citation (S10-18)"]
     end
     Doc["document_chunks.embedding<br/>vector(768) · nomic-embed-text"]
 
@@ -120,9 +117,10 @@ This adapter is the *primitive*; it persists and reads rows. The retrieval servi
 (`S10-14`, below) adds the collection scope, the top-k bound and the relevance threshold on top.
 The service also exposes the lexical half — `RetrievalService.lexicalSearch` over the S10-15 FTS
 index, mirroring `findNearest` with `c.tenant_id = ?` and `d.knowledge_base_id = ?` before the
-`@@` match and the limit — but the two halves still return independently. The fusion (`S10-16`) is implemented, below;
-the citation layer (`S10-17`) is implemented below too; only the no-evidence policy (`S10-18`)
-remains planned. The indexing path that writes through it is `S10-13`, implemented.
+`@@` match and the limit — but the two halves still return independently. The fusion (`S10-16`) is
+implemented, below; the citation layer (`S10-17`) is implemented below too; the no-evidence policy
+(`S10-18`) is implemented below it. The indexing path that writes through it is `S10-13`,
+implemented.
 
 ## Embedding production (`S10-12` / `S10-13`)
 
@@ -212,12 +210,27 @@ response-field set. It is implemented on top of the hybrid fusion (`S10-16`); th
   never execution and never permission — the backend re-checks the tool registry and the caller's
   scopes before any step runs (`S09-07`).
 
-## Planned: no-evidence policy (`S10-18`)
+## Implemented: no-evidence policy (`S10-18`)
 
-- **No-evidence policy (`S10-18`).** An empty retrieval (both halves empty) returns an empty
-  `SearchResult`; the `S10-18` layer reports it as `InsufficientEvidence`, so the model never
-  invents a citation. `S10-17` already returns the empty `SearchResult` unchanged; `S10-18` decides
-  what to *report* for it — the retrieval ground work is `S10-17`, the reporting policy is `S10-18`.
+- **No-evidence policy (`S10-18`).** `knowledgebase.application.GroundedAnswer` is the sealed
+  no-evidence decision the module reports for an RAG call: either one `Grounded` to the real
+  retrieved citations (each resolving to a chunk the caller can see — invariant 1) or one
+  `InsufficientEvidence` (carrying the call's `searchId`) when there is nothing to ground in. Sealed
+  on purpose, so a consumer is exhaustive without a `default` branch and cannot invent a third
+  outcome (a fabricated citation for an empty result). `knowledgebase.application.GroundingPolicy`
+  is the pure, DB-free policy that decides from the citations: any non-empty retrieval grounds by
+  default (`minimum-citations = 0`), and a higher bar can require *that many* or more chunks — the
+  effective bar is `max(1, minimum-citations)`, so `0 = any non-empty`, `N >= 1 = N or more`.
+  `RetrievalService#groundedAnswer(tenantId, knowledgeBaseId, SearchRequest, UUID)` is the entry
+  point that runs the hybrid retrieval + citation layer + policy as one tenant-scoped call: an empty
+  (or below the `minimum-citations` bar) retrieval reports `InsufficientEvidence(searchId)`, never
+  an invented citation. The `minimum-citations` bar (configured under `agentflow.retrieval.*`,
+  default `0`) keeps the policy honest when a single weakly-relevant chunk is returned. The
+  `citations` the policy reads are already tenant- and collection-scoped, so the policy never
+  invents a source; the retrieved fragments are untrusted content, fed to the model as `USER`
+  content only (invariant 7). `S10-17` does the retrieval-ground work (returning the empty
+  `SearchResult`); `S10-18` decides what to *report* for it — the two steps are distinct, both
+  implemented.
 
 ## Verification
 
@@ -266,11 +279,19 @@ response-field set. It is implemented on top of the hybrid fusion (`S10-16`); th
   citation carries the parent `filename`, resolves to the calling tenant's own chunk, and a
   cross-tenant retrieval yields an empty list). It is compiled and ready to run but needs
   PostgreSQL/Testcontainers, which are not available in this environment.
-- **Planned (`S10-18`).** The no-evidence policy must add its own integration test on the same
-  real-PostgreSQL image, covering the remaining mandatory negative scenario from `AGENTS.md`:
-  **empty retrieval without invented citations**. The citation layer (`S10-17`) already returns the
-  empty `SearchResult` unchanged; the `S10-18` probe would cover the *reporting* of that empty result
-  as `InsufficientEvidence` (not the retrieval), so `S10-17` / `S10-18` are distinct steps.
+- **Implemented (`S10-18`).** The DB-free policy + result are covered by the unit suites —
+  `GroundedAnswerTest` (7: the two sealed variants, the `Grounded` defensive copy / null guard, the
+  `InsufficientEvidence` null guard) and `GroundingPolicyTest` (7: the `0 = any non-empty` default,
+  the `N >= 1` bar, the empty / below-bar gap, the null-argument guards). The integration acceptance —
+  `groundedAnswer` grounds in the calling tenant's own fragments and reports `InsufficientEvidence`
+  (with the call's `searchId`) for an empty / cross-tenant retrieval, never an invented citation — is
+  pinned by one new probe in `RetrievalServiceIT`
+  (`groundedAnswer_grounds_in_the_calling_tenants_own_evidence_or_reports_a_gap`, on the same
+  `pgvector/pgvector:0.8.6-pg18` image), driving the real service + repositories over
+  Flyway-migrated schema. The citation layer (`S10-17`) returns the empty `SearchResult` unchanged;
+  `S10-18` reports it as `InsufficientEvidence` — distinct steps, both implemented.
+  `RetrievalServiceIT` (11) / `RetrievalServiceTest` (30) are JUnit-XML-verified
+  (`failures="0"` `errors="0"` `skipped="0"`); `:apps:agentflow-app:check` green.
 
 ## Ownership and references
 
@@ -290,7 +311,8 @@ response-field set. It is implemented on top of the hybrid fusion (`S10-16`); th
   terms, one concept — one name).
 - [`architecture/module-map.md`](../architecture/module-map.md) — bounded contexts and owners.
 - [`architecture/module-api.md`](../architecture/module-api.md) — the public API per module,
-  including the citation types (`CitationDto`, `CitationBuilder`) the retrieval layer extends.
+  including the citation types (`CitationDto`, `CitationBuilder`) and the no-evidence types
+  (`GroundedAnswer`, `GroundingPolicy`) the retrieval layer extends.
 - [`architecture/document-lifecycle.md`](../architecture/document-lifecycle.md) — the
   `UPLOADED → QUEUED → PROCESSING → INDEXED` lifecycle a chunk and its embedding ride on.
 - [`adr/ADR-006-untrusted-planner.md`](../adr/ADR-006-untrusted-planner.md),
