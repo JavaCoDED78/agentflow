@@ -74,7 +74,8 @@ docs/
 │   └── README.md                      ← tool authoring guide (S08-15)
 ├── ai/                                README.md ← AI integration guide (S09-15); provider-configuration.md ← S09-15; real-provider-contract-test.md ← S09-12; rag/ README.md ← RAG pipeline (S10-11 follow-up)
 ├── evaluation/
-│   └── README.md                      ← Planner baseline eval cases (S09-14)
+│   ├── README.md                      ← Planner baseline eval cases (S09-14)
+│   └── rag/                           README.md ← how the RAG eval works (S10-20); corpus.md ← the fixed sample documents, questions and reference pages/chunks (S10-20)
 ├── observability/                     ⚠ planned (S13) — standards, metric catalogue, SLOs
 └── load-tests/                        ⚠ planned — k6 scenarios, reports, environment description
 ```
