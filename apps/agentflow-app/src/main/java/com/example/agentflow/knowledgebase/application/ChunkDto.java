@@ -15,6 +15,12 @@ import java.util.UUID;
  * retrieval payload itself. The score is a count-only observability signal, never the text — see
  * {@link RetrievalService#hybridSearch}).
  *
+ * <p>{@link #documentName()} is the parent document's {@code filename} (its safe, sanitised display
+ * name) the repository resolves from the {@code documents} join — the label the glossary §8 fixes
+ * for a citation's document reference. It is populated on every element the service returns
+ * (S10-17) and is trusted document metadata (not the untrusted {@code #content()}); it is never
+ * logged.
+ *
  * <p>{@link #score()} is <b>half-specific</b>: the vector half ({@code search}) fills it with the
  * cosine distance ({@code embedding <=> query}), {@code 0} = identical, lower is closer; the
  * lexical half ({@code lexicalSearch}) fills it with the FTS {@code ts_rank}, higher is closer; the
@@ -24,6 +30,9 @@ import java.util.UUID;
  *
  * @param id the chunk id (the persisted {@code document_chunks.id})
  * @param documentId the parent document (FK {@code documents.id})
+ * @param documentName the parent document's {@code filename} (its safe, sanitised display name);
+ *     resolved by the repository from the {@code documents} join, populated on every returned
+ *     element (S10-17)
  * @param pageFrom the first page the fragment spans (>= 1)
  * @param pageTo the last page the fragment spans (>= {@code pageFrom})
  * @param score the retrieval score for the half that produced this instance: the cosine distance
@@ -33,13 +42,20 @@ import java.util.UUID;
  * @param content the fragment text (untrusted content — never logged)
  */
 public record ChunkDto(
-    UUID id, UUID documentId, int pageFrom, int pageTo, double score, String content) {
+    UUID id,
+    UUID documentId,
+    String documentName,
+    int pageFrom,
+    int pageTo,
+    double score,
+    String content) {
 
   /**
    * Canonical constructor.
    *
    * @param id the chunk id; must not be {@code null}
    * @param documentId the parent document id; must not be {@code null}
+   * @param documentName the parent document's display name; must not be {@code null}
    * @param pageFrom the first page the fragment spans
    * @param pageTo the last page the fragment spans
    * @param score the cosine distance (>= 0)
@@ -53,6 +69,9 @@ public record ChunkDto(
     }
     if (documentId == null) {
       throw new IllegalArgumentException("documentId must not be null");
+    }
+    if (documentName == null) {
+      throw new IllegalArgumentException("documentName must not be null");
     }
     if (content == null) {
       throw new IllegalArgumentException("content must not be null");

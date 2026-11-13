@@ -72,7 +72,7 @@ public class DocumentChunkRepository {
           + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::vector, ?)";
 
   private static final String FIND_NEAREST_SQL =
-      "SELECT c.id, c.tenant_id, c.document_id, c.pipeline_version, c.chunk_index, c.page_from, "
+      "SELECT c.id, c.tenant_id, c.document_id, d.filename AS filename, c.pipeline_version, c.chunk_index, c.page_from, "
           + "c.page_to, c.content, c.content_hash, c.created_by, c.created_at, "
           + "c.embedding <=> ?::vector AS distance "
           + "FROM "
@@ -92,7 +92,7 @@ public class DocumentChunkRepository {
    */
   private static final String FIND_KEYWORD_SQL =
       "WITH matched AS ("
-          + "SELECT c.id, c.tenant_id, c.document_id, c.pipeline_version, c.chunk_index, c.page_from, "
+          + "SELECT c.id, c.tenant_id, c.document_id, d.filename AS filename, c.pipeline_version, c.chunk_index, c.page_from, "
           + "c.page_to, c.content, c.content_hash, c.created_by, c.created_at, "
           + "ts_rank(c.search_vector, plainto_tsquery('english', ?)) AS rank "
           + "FROM "
@@ -101,7 +101,7 @@ public class DocumentChunkRepository {
           + "WHERE c.tenant_id = ? AND d.knowledge_base_id = ? "
           + "AND c.search_vector @@ plainto_tsquery('english', ?)"
           + ") "
-          + "SELECT id, tenant_id, document_id, pipeline_version, chunk_index, page_from, page_to, "
+          + "SELECT id, tenant_id, document_id, filename, pipeline_version, chunk_index, page_from, page_to, "
           + "content, content_hash, created_by, created_at, rank FROM matched "
           + "ORDER BY rank DESC LIMIT ?";
 
@@ -193,6 +193,10 @@ public class DocumentChunkRepository {
    * {@code float8} {@code distance} column, so the caller receives the score without reading the
    * stored {@code vector} back; {@code limit} caps the candidate set (the {@code S10-14} retrieval
    * layer applies its own relevance threshold on top).
+   *
+   * <p>The {@code documents} join resolves the parent document's {@code filename} ({@code
+   * d.filename AS filename}) as {@link DocumentChunkRow#documentName()}, so the future citation
+   * layer can build a citation from each row without a second lookup.
    *
    * @param tenantId the owning tenant (from the verified security context)
    * @param knowledgeBaseId the knowledge base to search (a cross-tenant id yields an empty list —
@@ -443,6 +447,7 @@ public class DocumentChunkRepository {
           rs.getObject("id", UUID.class),
           rs.getObject("tenant_id", UUID.class),
           rs.getObject("document_id", UUID.class),
+          rs.getString("filename"),
           rs.getString("pipeline_version"),
           rs.getInt("chunk_index"),
           rs.getInt("page_from"),
@@ -460,7 +465,10 @@ public class DocumentChunkRepository {
    * Maps one {@code document_chunks} row to a {@link DocumentChunkRow} for the lexical full-text
    * search (S10-15): the plain columns plus the {@code float8} {@code rank} the query computed as
    * {@code ts_rank}; {@code distance} is left at {@code 0} because the lexical half has no cosine
-   * distance. No {@code vector} column is mapped.
+   * distance. The {@code documents} join also resolves the parent document's {@code filename}
+   * ({@code filename AS filename}) into {@link DocumentChunkRow#documentName()}, so the future
+   * citation layer can build a citation from this row without a second lookup. No {@code vector}
+   * column is mapped.
    */
   private static final class KeywordRowMapper implements RowMapper<DocumentChunkRow> {
 
@@ -470,6 +478,7 @@ public class DocumentChunkRepository {
           rs.getObject("id", UUID.class),
           rs.getObject("tenant_id", UUID.class),
           rs.getObject("document_id", UUID.class),
+          rs.getString("filename"),
           rs.getString("pipeline_version"),
           rs.getInt("chunk_index"),
           rs.getInt("page_from"),

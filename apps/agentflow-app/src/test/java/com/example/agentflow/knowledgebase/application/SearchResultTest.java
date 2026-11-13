@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 class SearchResultTest {
 
   private static ChunkDto chunk(String content) {
-    return new ChunkDto(UUID.randomUUID(), UUID.randomUUID(), 1, 1, 0.1, content);
+    return new ChunkDto(UUID.randomUUID(), UUID.randomUUID(), "doc", 1, 1, 0.1, content);
   }
 
   @Test

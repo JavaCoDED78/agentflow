@@ -16,6 +16,11 @@ import java.util.UUID;
  * vector} back (the plain PostgreSQL driver cannot map a {@code vector} column to {@code float[]}
  * without pgvector-jdbc, which this task does not add).
  *
+ * <p>It also carries the parent document's {@code filename} ({@link #documentName()}) — the safe,
+ * sanitised display name the glossary §8 fixes for a citation's document label — resolved by the
+ * retrieval query from the {@code documents} join so the future citation layer ({@code S10-17}) can
+ * build a citation from this row without a second lookup.
+ *
  * <p>Two relevance concepts share the record so the two retrieval halves do not need two records:
  * the nearest-neighbour query (S10-14) fills {@link #distance()} with the cosine distance and
  * leaves {@link #rank()} at {@code 0}; the lexical full-text search (S10-15) fills {@link #rank()}
@@ -30,6 +35,7 @@ public record DocumentChunkRow(
     UUID id,
     UUID tenantId,
     UUID documentId,
+    String documentName,
     String pipelineVersion,
     int chunkIndex,
     int pageFrom,
@@ -45,6 +51,9 @@ public record DocumentChunkRow(
    * @param id the chunk id (the persisted {@code document_chunks.id})
    * @param tenantId the owning tenant (FK {@code tenants.id}); the isolation key on retrieval
    * @param documentId the parent document (FK {@code documents.id})
+   * @param documentName the parent document's {@code filename} (its safe, sanitised display name);
+   *     resolved by the retrieval query from the {@code documents} join so the citation layer can
+   *     build a citation from this row without a second lookup
    * @param pipelineVersion the chunking pipeline version that produced the chunk
    * @param chunkIndex the zero-based position within the document's chunk set
    * @param pageFrom the first page the fragment spans (>= 1)

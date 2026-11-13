@@ -378,4 +378,39 @@ class RetrievalServiceIT {
     assertThat(result.chunks()).hasSize(1);
     assertThat(result.chunks().get(0).documentId()).isEqualTo(tenantA.documentId());
   }
+
+  /**
+   * The S10-17 acceptance on real data: {@link RetrievalService#citations} builds one citation per
+   * fused chunk, each carrying the parent document's display name, and every citation resolves to
+   * the calling tenant's <em>own</em> chunk — never to another tenant's document. An empty
+   * (cross-tenant) retrieval yields no citation at all, never an invented one.
+   */
+  @Test
+  void citations_resolve_to_the_calling_tenants_own_fragment() {
+    Fixture tenantA = tenantWithKnowledgeBaseAndDocument("ret-cite-a");
+    Fixture tenantB = tenantWithKnowledgeBaseAndDocument("ret-cite-b");
+    UUID chunkA = insertChunk(tenantA.tenantId(), tenantA.documentId(), 0, "x");
+    insertChunk(tenantB.tenantId(), tenantB.documentId(), 0, "x");
+    String documentName =
+        jdbc.queryForObject(
+            "SELECT filename FROM documents WHERE id = ?", String.class, tenantA.documentId());
+
+    List<CitationDto> forA =
+        service.citations(
+            tenantA.tenantId(), tenantA.knowledgeBaseId(), new SearchRequest("x", null));
+
+    // One citation per fused chunk, resolving to A's own chunk and carrying the document label.
+    assertThat(forA).hasSize(1);
+    CitationDto citation = forA.get(0);
+    assertThat(citation.chunkId()).isEqualTo(chunkA);
+    assertThat(citation.documentId()).isEqualTo(tenantA.documentId());
+    assertThat(citation.documentName()).isEqualTo(documentName);
+    assertThat(citation.score()).isGreaterThanOrEqualTo(0.0);
+
+    // An empty (cross-tenant) retrieval yields no citation at all — never an invented one.
+    List<CitationDto> forB =
+        service.citations(
+            tenantA.tenantId(), tenantB.knowledgeBaseId(), new SearchRequest("x", null));
+    assertThat(forB).isEmpty();
+  }
 }

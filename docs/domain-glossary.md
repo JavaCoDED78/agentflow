@@ -179,7 +179,7 @@ API: `POST /api/v1/knowledge-bases`, `POST /api/v1/knowledge-bases/{id}/document
 | Concept | Shape | Meaning |
 |---|---|---|
 | **Retrieval** | tenant/ACL-filtered vector (pgvector) + FTS (full-text), fused by reciprocal-rank (`S10-16`) | The two halves run independently (the vector half only with an embedding provider, the lexical half always); the fusion deduplicates by chunk id and caps the result, and its metrics carry no tenant/document label. Retrieval applies the tenant/ACL predicate **before** top-k, as part of the query, not as a post-filter. |
-| **Citation** | response field set: `documentId`, `chunkId`, page/section, score | A grounded reference to a single retrieved chunk. Only real retrieved chunks are cited; empty retrieval reports "insufficient evidence" — never invented citations. |
+| **Citation** | response field set: `documentId`, `chunkId`, `documentName` (parent document display name), `pageFrom` / `pageTo`, `score`, `snippet` — implemented (`S10-17`, `knowledgebase.application.CitationDto` / `CitationBuilder.cite(SearchResult)`, one per real chunk) | A grounded reference to a single retrieved chunk, built only from retrieval's own output. Only real retrieved chunks are cited — the `documentId` + `chunkId` resolve to the *same* tenant- and collection-scoped chunk the retrieval returned (invariant 1, the citation cannot point at another tenant's document); empty retrieval yields no citation, and the no-evidence policy (`S10-18`) reports *insufficient evidence*, never an invented one. `snippet` is untrusted document text (sent to the model as `USER` content, never logged); `documentName` is the trusted parent-document display name. |
 
 ---
 
