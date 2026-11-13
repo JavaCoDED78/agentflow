@@ -5,6 +5,7 @@ import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.knowledgebase.application.RetrievalService;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRepository;
 import com.example.agentflow.knowledgebase.persistence.KnowledgeBaseRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,6 +39,8 @@ public class RetrievalConfiguration {
    *     empty under the same condition
    * @param embeddingPortProvider the provider of the {@link EmbeddingPort} seam; empty when no
    *     embedding provider is configured
+   * @param meterRegistryProvider the provider of the {@link MeterRegistry} the hybrid meters are
+   *     registered on; the service tolerates it being absent (no hybrid observability)
    * @return the service bound from {@code agentflow.retrieval.*}
    */
   @Bean
@@ -45,7 +48,8 @@ public class RetrievalConfiguration {
       AgentFlowProperties properties,
       ObjectProvider<DocumentChunkRepository> chunkRepositoryProvider,
       ObjectProvider<KnowledgeBaseRepository> knowledgeBaseRepositoryProvider,
-      ObjectProvider<EmbeddingPort> embeddingPortProvider) {
+      ObjectProvider<EmbeddingPort> embeddingPortProvider,
+      ObjectProvider<MeterRegistry> meterRegistryProvider) {
     AgentFlowProperties.Retrieval retrieval = properties.getRetrieval();
     return new RetrievalService(
         chunkRepositoryProvider.getIfAvailable(),
@@ -53,6 +57,7 @@ public class RetrievalConfiguration {
         embeddingPortProvider.getIfAvailable(),
         retrieval.getDefaultTopK(),
         retrieval.getMaxTopK(),
-        retrieval.getThreshold());
+        retrieval.getThreshold(),
+        meterRegistryProvider.getIfAvailable());
   }
 }

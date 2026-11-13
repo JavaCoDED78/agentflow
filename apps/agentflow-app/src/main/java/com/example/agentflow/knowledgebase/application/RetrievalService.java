@@ -6,22 +6,39 @@ import com.example.agentflow.ai.application.EmbeddingResponse;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRepository;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRow;
 import com.example.agentflow.knowledgebase.persistence.KnowledgeBaseRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * The tenant/ACL-filtered retrieval service (S10-14 / S10-15), the public search entry point of the
  * {@code knowledgebase} module.
  *
- * <p>It exposes two retrieval halves over the same tenant-scoped {@code document_chunks} data:
+ * <p>It exposes two retrieval halves over the same tenant-scoped {@code document_chunks} data, plus
+ * a hybrid that fuses them:
  *
  * <ol>
  *   <li><b>Vector (embedding similarity).</b> {@link #search} is three steps, each with a single
- *       owner:
+ *       owner: resolve the collection's {@code embedding_model} (invariant 1 — a cross-tenant
+ *       collection is indistinguishable from a missing one), embed the query through the neutral
+ *       {@code ai} {@link EmbeddingPort} (opt-in, {@code ADR-014}), and retrieve, bounded and
+ *       thresholded, through {@link DocumentChunkRepository#findNearest} (the access predicate runs
+ *       inside the query, before top-k).
  *   <li><b>Lexical (full-text search).</b> {@link #lexicalSearch} (S10-15) is one step: it queries
  *       the tenant/ACL-scoped FTS index directly for chunks whose text matches a keyword, with the
- *       access predicate inside the query.
+ *       access predicate inside the query. It needs no embedding provider.
+ *   <li><b>Hybrid (S10-16).</b> {@link #hybridSearch} runs both halves and fuses them with a simple
+ *       reciprocal-rank {@link RankFusion}, deduplicates by chunk id, caps the result at {@code
+ *       max-top-k}, and records the latency and the half result counts — without any document text
+ *       (invariants 7/8/9). With no embedding provider it degrades to the lexical half only.
  * </ol>
  *
  * The vector half resolves the collection's {@code embedding_model} ({@code
@@ -50,12 +67,25 @@ import java.util.UUID;
  */
 public class RetrievalService {
 
+  /** Hybrid-search call counter (invariant 9: no tenant / document label). */
+  static final String METRIC_HYBRID = "agentflow.knowledgebase.retrieval.hybrid";
+
+  /** Hybrid-search result-count counter, one increment per raw result both halves produce. */
+  static final String METRIC_HALF_RESULTS = "agentflow.knowledgebase.retrieval.half-results";
+
+  /** Hybrid-search latency timer, in seconds. */
+  static final String METRIC_DURATION = "agentflow.knowledgebase.retrieval.duration";
+
   private final DocumentChunkRepository chunkRepository;
   private final KnowledgeBaseRepository knowledgeBaseRepository;
   private final EmbeddingPort embeddingPort;
   private final int defaultTopK;
   private final int maxTopK;
   private final double threshold;
+  private final MeterRegistry meterRegistry;
+  private final Counter hybridCalls;
+  private final Counter halfResults;
+  private final Timer duration;
 
   /**
    * @param chunkRepository the tenant/ACL-scoped {@code document_chunks} read path, or {@code null}
@@ -69,6 +99,9 @@ public class RetrievalService {
    *     defaultTopK})
    * @param threshold the maximum cosine distance a candidate may have to stay in the result,
    *     bounded to {@code [0.0, 2.0]}
+   * @param meterRegistry the Micrometer registry the hybrid meters are registered on; {@code null}
+   *     is treated as "no shared registry" and the meters are registered on a throwaway one (no
+   *     hybrid observability — the metering is opt-in)
    */
   public RetrievalService(
       DocumentChunkRepository chunkRepository,
@@ -76,7 +109,8 @@ public class RetrievalService {
       EmbeddingPort embeddingPort,
       int defaultTopK,
       int maxTopK,
-      double threshold) {
+      double threshold,
+      MeterRegistry meterRegistry) {
     this.chunkRepository = chunkRepository;
     this.knowledgeBaseRepository = knowledgeBaseRepository;
     this.embeddingPort = embeddingPort;
@@ -94,6 +128,21 @@ public class RetrievalService {
     this.defaultTopK = defaultTopK;
     this.maxTopK = maxTopK;
     this.threshold = threshold;
+    this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
+    this.hybridCalls =
+        Counter.builder(METRIC_HYBRID)
+            .description("Hybrid retrievals performed (S10-16); one increment per hybrid search")
+            .register(this.meterRegistry);
+    this.halfResults =
+        Counter.builder(METRIC_HALF_RESULTS)
+            .description(
+                "Raw results produced by the two hybrid retrieval halves (S10-16), summed; "
+                    + "carries no document text or tenant")
+            .register(this.meterRegistry);
+    this.duration =
+        Timer.builder(METRIC_DURATION)
+            .description("Hybrid retrieval latency, seconds")
+            .register(this.meterRegistry);
   }
 
   /**
@@ -222,8 +271,122 @@ public class RetrievalService {
   }
 
   /**
-   * @return the result size a search falls back to when the caller names no {@code topK}
+   * Search one tenant-owned knowledge base for the chunks closest to {@code request} by
+   * <em>both</em> embedding similarity and lexical match, fusing the two independent halves into
+   * one result (S10-16).
+   *
+   * <p>This is the hybrid retrieval the glossary §7 "Retrieval" names (the vector + FTS {@code
+   * hybrid}). It runs the vector half ({@link #search}) and the lexical half ({@link
+   * #lexicalSearch}) independently over the same tenant-scoped index and fuses them:
+   *
+   * <ol>
+   *   <li><b>Fusion.</b> Each half contributes its ordered chunk ids; {@link RankFusion} scores
+   *       every chunk by the reciprocal of its rank in each half it appears in (reciprocal-rank
+   *       fusion), so a chunk matched by <em>both</em> halves outranks one matched by one, and the
+   *       two different score scales (cosine distance vs. {@code ts_rank}) are never compared.
+   *   <li><b>Deduplication.</b> A chunk present in both halves is emitted once, keyed by chunk id.
+   *   <li><b>Limit.</b> The fused result is capped at {@code max-top-k}, so one request can never
+   *       pull more than that many fragments out of the index.
+   * </ol>
+   *
+   * <p>Tenant and knowledge base come from the verified security context and the request path —
+   * never from the caller's body (invariant 1) — and every candidate is already scoped to one
+   * tenant and one collection by the two halves, so the fused result is tenant- and
+   * collection-safe. The vector half only runs when an {@link EmbeddingPort} is configured; with no
+   * provider the hybrid degrades to the lexical half (still deduplicated and capped), so hybrid
+   * search is never entirely unavailable just because the embedding provider is off.
+   *
+   * <p>Observability (invariants 8/9): on a successful fusion the service records, on meters with
+   * <b>no tenant / document / prompt label</b>, the call count, the raw result count both halves
+   * produced and the elapsed latency (seconds). No document text, chunk text or identifier is ever
+   * passed to the meters.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param knowledgeBaseId the knowledge base to search
+   * @param request the query text (used as the vector query and the lexical keyword) and the
+   *     optional {@code topK}
+   * @return the fused, deduplicated, capped chunks ordered by fused relevance (higher score first);
+   *     empty when the collection is missing (including a cross-tenant id) or nothing matches
+   * @throws IllegalArgumentException if an argument is {@code null}
+   * @throws IllegalStateException when no database connection is configured (S01-02)
    */
+  public SearchResult hybridSearch(UUID tenantId, UUID knowledgeBaseId, SearchRequest request) {
+    if (tenantId == null) {
+      throw new IllegalArgumentException("tenantId must not be null");
+    }
+    if (knowledgeBaseId == null) {
+      throw new IllegalArgumentException("knowledgeBaseId must not be null");
+    }
+    if (request == null) {
+      throw new IllegalArgumentException("request must not be null");
+    }
+    if (chunkRepository == null || knowledgeBaseRepository == null) {
+      throw new IllegalStateException(
+          "retrieval is unavailable: no database connection is configured (S01-02)");
+    }
+    long startedNanos = System.nanoTime();
+    SearchResult vectorResult =
+        embeddingPort != null ? search(tenantId, knowledgeBaseId, request) : SearchResult.empty();
+    // Lexical half: always. It needs no embedding provider.
+    SearchResult lexicalResult =
+        lexicalSearch(tenantId, knowledgeBaseId, request.query(), request.topK());
+    int vectorCount = vectorResult.chunks().size();
+    int lexicalCount = lexicalResult.chunks().size();
+    SearchResult result = fuse(vectorResult, lexicalResult);
+    recordMetrics(vectorCount, lexicalCount, startedNanos);
+    return result;
+  }
+
+  /**
+   * Fuse the two halves and cap the result. Deduplicates by chunk id (a chunk in both halves is
+   * emitted once), orders by the reciprocal-rank fused score (see {@link RankFusion}) and caps at
+   * {@code max-top-k}. Each fused {@link ChunkDto} carries the fused relevance as its {@code score}
+   * (higher is better); its content / pages / document come from whichever half produced it (they
+   * are identical for the same chunk id).
+   */
+  private SearchResult fuse(SearchResult vector, SearchResult lexical) {
+    List<ChunkDto> vectorChunks = vector.chunks();
+    List<ChunkDto> lexicalChunks = lexical.chunks();
+
+    Map<UUID, ChunkDto> byId = new HashMap<>(vectorChunks.size() + lexicalChunks.size());
+    byId.putAll(vectorChunks.stream().collect(Collectors.toMap(ChunkDto::id, c -> c)));
+    byId.putAll(lexicalChunks.stream().collect(Collectors.toMap(ChunkDto::id, c -> c)));
+
+    List<List<UUID>> rankedIds =
+        List.of(
+            vectorChunks.stream().map(ChunkDto::id).collect(Collectors.toList()),
+            lexicalChunks.stream().map(ChunkDto::id).collect(Collectors.toList()));
+
+    List<ChunkDto> fused = new ArrayList<>();
+    for (RankFusion.FusedCandidate candidate : RankFusion.fuse(rankedIds)) {
+      if (fused.size() >= maxTopK) {
+        break;
+      }
+      ChunkDto base = byId.get(candidate.chunkId());
+      if (base != null) {
+        fused.add(
+            new ChunkDto(
+                base.id(),
+                base.documentId(),
+                base.pageFrom(),
+                base.pageTo(),
+                candidate.score(),
+                base.content()));
+      }
+    }
+    return new SearchResult(fused);
+  }
+
+  /**
+   * Record the hybrid retrieval latency and the half result counts on the no-label meters
+   * (invariant 9).
+   */
+  private void recordMetrics(int vectorCount, int lexicalCount, long startedNanos) {
+    duration.record(java.time.Duration.ofNanos(System.nanoTime() - startedNanos));
+    hybridCalls.increment();
+    halfResults.increment(vectorCount + lexicalCount);
+  }
+
   public int defaultTopK() {
     return defaultTopK;
   }

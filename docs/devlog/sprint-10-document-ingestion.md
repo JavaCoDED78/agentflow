@@ -4,6 +4,62 @@
 # Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations
 
 
+## S10-16 — Hybrid fusion of the two retrieval halves (P1).
+
+### What changed
+- `RetrievalService.hybridSearch(tenantId, knowledgeBaseId, SearchRequest)` runs the two retrieval
+  halves **independently** and fuses them. The vector half runs `DocumentChunkRepository.findNearest`
+  (`S10-14`) — but only when an embedding provider is configured (`ai.application.EmbeddingPort`, the
+  `ADR-014` opt-in seam); the lexical half runs `RetrievalService.lexicalSearch` (`S10-15`) over the
+  `english` FTS index **whenever one is present**. The two `SearchResult`s are combined by
+  `RankFusion.fuse` — a *pure* utility (`no Spring, no database, no I/O`): it deduplicates by chunk
+  id and ranks by reciprocal-rank fusion, score = `1 / (K + rank)` summed over the halves each chunk
+  appears in (K=1), then the service caps the fused list at `maxTopK`. The result is deterministic:
+  a fixed query set always yields the same ordered, deduplicated, capped `SearchResult`.
+- The vector half degrades to nothing when there is no provider, so a tenant without a model is
+  served by the lexical half alone — neither half is a single point of failure. The fusion operates
+  on **chunk ids only**; it never touches `ChunkDto.content` (invariants 7/8).
+- Three fusion meters, registered on a `MeterRegistry` the constructor accepts (opt-in — `null`
+  means "no shared registry", so the meters are registered on a throwaway `SimpleMeterRegistry`):
+  `agentflow.knowledgebase.retrieval.hybrid` (one increment per hybrid call), `agentflow.knowledgebase.retrieval.half-results`
+  (one increment per raw result both halves produce), and `agentflow.knowledgebase.retrieval.duration`
+  (a `Timer`, in seconds). None carries a `tenantId`, document id, or chunk-text label (invariant 9);
+  they follow the `WorkflowRecoveryScheduler` `MeterRegistry`/`Counter`/`Timer` convention.
+
+### Why
+The two halves return two *incompatible* relevance scores (cosine distance vs `ts_rank`); the fusion
+is score-based over **ranks** only, so the cosine and `ts_rank` numbers are never compared or
+averaged. Each chunk gets one `1/(K+rank)` contribution per half it appears in, so a chunk in both
+half-rankings outranks one in a single half, and within a half an earlier position scores higher.
+`K=1` (not the web-search `K=60`) keeps the small fused set's rank ordering meaningful — at `60` the
+within-half rank differences collapse to noise and only presence survives. `max-top-k` bounds each
+half's candidate list, so the fused set is at most `2 · maxTop-k` before dedup, and the cap then
+returns the top `maxTop-k` fused. Fusion metrics give an operator a handle on hybrid recall and
+latency without leaking high-cardinality identifiers (invariant 9) or untrusted document text
+(invariants 7/8).
+
+### Verification
+`RetrievalServiceTest` now `tests="22"` (the 16 from `S10-15`, plus 6 fusion probes: fuse + dedup +
+cap to `maxTopK`; the empty cross-tenant/missing collection; the lexical-only degradation without an
+embedding provider; the fail-loud shape with no database; and a meter assertion that the fusion
+`Counter`s/`Timer` exist with **zero** tenant/document labels), over the deterministic in-memory
+corpus. [`RetrievalServiceIT`](apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/application/RetrievalServiceIT.java) (9 tests now)
+adds the hybrid acceptance on the real `pgvector/pgvector:0.8.6-pg18` image, driving the real service
+and the Flyway-migrated schema: `hybrid_search_fuses_the_halves_without_duplicate_chunks` — a query
+matching in both halves returns a deduplicated, capped set ordered by fused rank — and
+`hybrid_search_never_returns_another_tenants_chunks` — tenant isolation holds through the fusion, and
+the hybrid meters record with no tenant / document tag. `:apps:agentflow-app:check` green — unit
++ architecture (`ArchitectureBoundaryTest`, `PackageDependencyGraphTest`, `NoCyclicModuleDependenciesTest`)
++ no-cycles + formatting (`spotless`) + OpenAPI gates; `:apps:agentflow-app:integrationTest --tests 'com.example.agentflow.knowledgebase.*'`
+green.
+
+### Not changed
+- No new migration, no REST endpoint (the fused search is a follow-up controller), no contract files.
+- No new module edge: `RetrievalService` only reads its own `knowledgebase` repositories and the
+  `ai` `EmbeddingPort` (already allowed). The fusion lives in `knowledgebase.application`, not a new
+  package, so there is no architecture-ADR — `S10-16` does not change module ownership; citations
+  (`S10-17`) and the no-evidence policy (`S10-18`) remain planned.
+
 ## S10-15 — Lexical (full-text) search — the lexical half of hybrid retrieval (P1).
 
 ### What changed

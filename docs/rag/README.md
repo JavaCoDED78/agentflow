@@ -5,7 +5,7 @@ answer is grounded in a tenant's own indexed documents instead of the model's tr
 separates what the code does today from what the plan fixes later, so a reader never mistakes a
 planned step for an implemented one.
 
-The shared terms live in [`domain-glossary.md`](../domain-glossary.md) (§7: *Retrieval*, *Citation*,
+The shared terms live in [`domain-glossary.md`](../domain-glossary.md) (§8: *Retrieval*, *Citation*,
 *Embedding*); the module boundaries that own each step live in
 [`architecture/module-map.md`](../architecture/module-map.md) and
 [`architecture/module-api.md`](../architecture/module-api.md).
@@ -32,7 +32,7 @@ Both directions are bound by three invariants that shape every line of the pipel
 The diagram separates the two. **Implemented** steps exist in code (`S10-11` storage + query
 primitive, `S10-12` embedding batching, `S10-13` the indexing path, `S10-14` the tenant/ACL-
 filtered vector retrieval service, `S10-15` the lexical (full-text) half over the PostgreSQL FTS
-index, `S09` planner). **Planned** steps (`S10-16` hybrid rank fusion, `S10-17` citations,
+index, `S10-16` the hybrid rank fusion, `S09` planner). **Planned** steps (`S10-17` citations,
 `S10-18` the no-evidence policy) are described in prose below and are *not* yet in the code.
 
 ```mermaid
@@ -43,11 +43,11 @@ flowchart TB
         Ing["ingestion.application<br/>IngestionService + EmbeddingGenerationService<br/>claim → embed → ON CONFLICT upsert<br/>(S10-12 / S10-13)"]
         Ret["knowledgebase.application<br/>RetrievalService (S10-14)<br/>vector half: tenant + KB predicate in-query · top-k bound · threshold"]
         Lex["knowledgebase.application<br/>RetrievalService.lexicalSearch (S10-15)<br/>lexical half: ts_rank over the English FTS index · tenant + KB predicate in-query"]
+        Hybrid["knowledgebase.application<br/>RetrievalService.hybridSearch (S10-16)<br/>reciprocal-rank fusion · dedup by id · cap at maxTopK · no-label meters"]
         Planner["ai.application<br/>PlannerService · propose<br/>(ADR-006, S09-06)"]
         Catalogue["ai.prompt<br/>PromptCatalogue · SYSTEM policy<br/>+ USER untrusted content"]
     end
-    subgraph Planned["Planned — S10-16 … S10-18"]
-        Hybrid["hybrid fusion<br/>vector + FTS rank fusion<br/>only the S10-16 step"]
+    subgraph Planned["Planned — S10-17 … S10-18"]
         Cit["assemble citations from<br/>real chunks only (never invented)<br/>empty → InsufficientEvidence (S10-17 / S10-18)"]
     end
     Doc["document_chunks.embedding<br/>vector(768) · nomic-embed-text"]
@@ -118,8 +118,8 @@ This adapter is the *primitive*; it persists and reads rows. The retrieval servi
 (`S10-14`, below) adds the collection scope, the top-k bound and the relevance threshold on top.
 The service also exposes the lexical half — `RetrievalService.lexicalSearch` over the S10-15 FTS
 index, mirroring `findNearest` with `c.tenant_id = ?` and `d.knowledge_base_id = ?` before the
-`@@` match and the limit — but the two halves still return independently. Only the fusion (`S10-16`)
-and citations (`S10-17`) remain planned. The indexing path that writes through it is `S10-13`, implemented.
+`@@` match and the limit — but the two halves still return independently. The fusion (`S10-16`) is implemented, below;
+only the citations (`S10-17`) remain planned. The indexing path that writes through it is `S10-13`, implemented.
 
 ## Embedding production (`S10-12` / `S10-13`)
 
@@ -161,19 +161,32 @@ query through the `ai` `EmbeddingPort`, and returns the closest chunks as `Chunk
 The public vocabulary (`SearchRequest`, `SearchResult`, `ChunkDto`) is what the citation layer
 extends, and the fragment text is untrusted content — never logged (invariants 7/8).
 
-## Planned: hybrid fusion, citations and grounding (`S10-16` … `S10-18`)
+## Implemented: hybrid fusion (`S10-16`)
 
-The following is the target the glossary §7 and `module-api.md` name. The fusion, citations and
-no-evidence layers are **not yet in the code** (no `InsufficientEvidence`, no `CitationDto`). The
-vector half (`S10-14`) and the lexical half (`S10-15`) are implemented and described above; this
-section describes the remaining fusion steps so the RAG guide is complete, not because they run
-today.
+`RetrievalService.hybridSearch` runs the vector half (`S10-14`, `findNearest`) and the lexical half
+(`S10-15`, `lexicalSearch`) independently and fuses the two partial results. The vector half runs
+only when an embedding provider is configured (the `ai` `EmbeddingPort`); the lexical half runs over
+the S10-15 FTS index whenever one is present, so a tenant without a model still returns the closest
+chunks by `ts_rank` — the two halves are deliberately independent so neither is a single point of
+failure. The fusion is score-based over *ranks*: each partial result is position-ranked, each chunk
+receives `1 / (K + rank)` per half it appears in (reciprocal-rank fusion, K=1), the fused ids are
+deduplicated by id, and the result is capped to `maxTopK`. The raw cosine distance and `ts_rank`
+numbers are never compared or averaged — two incompatible score scales, so only their ranks combine.
+An empty retrieval (both halves empty) returns an empty `SearchResult`; the model never invents a
+citation (`S10-18`). The fused ids map back to their `ChunkDto`s; no metric carries a tenant,
+document id, or chunk text (invariant 9; chunk content is untrusted, invariant 7/8).
+
+## Planned: citations and grounding (`S10-17` … `S10-18`)
+
+The following is the target the glossary §8 and `module-api.md` name. The citations and no-evidence
+layers are **not yet in the code** (no `InsufficientEvidence`, no `CitationDto`). The vector half
+(`S10-14`), the lexical half (`S10-15`) and the hybrid fusion (`S10-16`) are implemented and
+described above; this section describes the remaining steps so the RAG guide is complete, not because
+they run today.
 
 - **Full-text search (lexical half, `S10-15`).** A `tsvector`/`ts_rank` lexical half over a
   PostgreSQL `english` FTS index, driven by `RetrievalService.lexicalSearch` — the complement of
   the vector half, returning the closest chunks by `ts_rank` relevance. Implemented.
-- **Hybrid fusion (`S10-16`).** Fuses the two independent halves by a simple rank fusion over the
-  `ts_rank` and cosine scores the two halves return, deduplicated and capped — still **planned**.
 - **Citations (`S10-17`).** Builds each citation from a *real* retrieved chunk — the response-field
   set the glossary names (`documentId`, `chunkId`, page/section, `score`).
 - **No-evidence policy (`S10-18`).** An empty retrieval returns `InsufficientEvidence`; the model
@@ -213,11 +226,19 @@ today.
   finds the exact term `retention` and an ID-like token `555566667777` in the corpus, and is
   tenant- and collection-scoped; `MigrationsTest` asserts the `document_chunks_search_idx` index and
   the generated `search_vector` `tsvector` (`is_generated = 'ALWAYS'`) with its `S10-15` COMMENT.
-- **Planned (`S10-16` … `S10-18`).** The hybrid fusion, citation and no-evidence layers must add
-  their own integration tests on the same real-PostgreSQL image, covering the mandatory negative
-  scenarios from `AGENTS.md` that are still open: prompt injection in a retrieved document, and
+- **Implemented (`S10-16`).** The hybrid fusion is covered by
+  `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/knowledgebase/application/RetrievalServiceIT.java`
+  (a query matching in both halves returns a deduplicated, capped set ordered by fused rank; the
+  lexical half alone serves the no-embedding-provider case; the fused result and its metrics carry
+  no tenant, document id, or chunk text) and by
+  `apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/application/RetrievalServiceTest.java`
+  (6 fusion probes over the deterministic in-memory corpus, plus a meter assertion that the fusion
+  counters and Timer exist with zero tenant/document labels).
+- **Planned (`S10-17` … `S10-18`).** The citation and no-evidence layers must add their own
+  integration tests on the same real-PostgreSQL image, covering the mandatory negative scenarios from
+  `AGENTS.md` that are still open: prompt injection in a retrieved document, and
   **empty retrieval without invented citations**. These tests are a requirement of those steps, not
-  a claim about `S10-14` / `S10-15`.
+  a claim about `S10-14` / `S10-15` / `S10-16`.
 
 ## Ownership and references
 
@@ -228,11 +249,12 @@ today.
 | Embedding production (`float[]`) | `ai` | `EmbeddingPort` (`ADR-014`) |
 | Indexing pipeline (claim → embed → idempotent upsert) | `ingestion` | `IngestionService`, `EmbeddingGenerationService`, `knowledgebase.application.ChunkIndexingService` (`S10-12` / `S10-13`) |
 | Vector + lexical retrieval (tenant/ACL-filtered, bounded) | `knowledgebase` | `RetrievalService` (`S10-14` / `S10-15`) |
+| Hybrid fusion (dedup, cap, reciprocal-rank; no-label meters) | `knowledgebase` | `RetrievalService.hybridSearch` (`S10-16`) |
 | Planner (propose; never execute), prompt separation | `ai` | `PlannerService`, `PromptCatalogue` (`ADR-006`) |
 | Citation value object | `toolexecution` | `Citation` (`S08-06`) |
-| Planned hybrid fusion, citations, no-evidence policy | `knowledgebase` | `module-api.md`, glossary §7 |
+| Citations + no-evidence policy | `knowledgebase` | `module-api.md`, glossary §8 |
 
-- [`domain-glossary.md`](../domain-glossary.md) §7 — *Retrieval*, *Citation*, *Embedding* (shared
+- [`domain-glossary.md`](../domain-glossary.md) §8 — *Retrieval*, *Citation*, *Embedding* (shared
   terms, one concept — one name).
 - [`architecture/module-map.md`](../architecture/module-map.md) — bounded contexts and owners.
 - [`architecture/module-api.md`](../architecture/module-api.md) — the public API per module,

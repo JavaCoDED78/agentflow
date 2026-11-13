@@ -8,19 +8,28 @@ import java.util.UUID;
  *
  * <p>Carries the full (document, chunk) binding the glossary §7 fixes for grounding and the future
  * citation ({@code S10-17}): which document the fragment belongs to, which pages it spans, the
- * fragment text and the cosine {@link #score()} it was retrieved at. The {@link #content()} is
+ * fragment text and the {@link #score()} it was retrieved at. The {@link #content()} is
  * <b>untrusted document text</b> (invariant 7 — prompt-injection surface): the caller feeds it to a
  * model only as {@code USER} content, and it is never logged, hashed or otherwise written to logs,
  * metrics or traces (invariant 8 — "redacted" from every observability surface, not from the
- * retrieval payload itself).
+ * retrieval payload itself. The score is a count-only observability signal, never the text — see
+ * {@link RetrievalService#hybridSearch}).
+ *
+ * <p>{@link #score()} is <b>half-specific</b>: the vector half ({@code search}) fills it with the
+ * cosine distance ({@code embedding <=> query}), {@code 0} = identical, lower is closer; the
+ * lexical half ({@code lexicalSearch}) fills it with the FTS {@code ts_rank}, higher is closer; the
+ * hybrid fusion ({@code hybridSearch}, S10-16) fills it with the reciprocal-rank fused score
+ * (higher is better). The direction is therefore not fixed by the type — it is fixed by which
+ * retrieval half produced the instance.
  *
  * @param id the chunk id (the persisted {@code document_chunks.id})
  * @param documentId the parent document (FK {@code documents.id})
  * @param pageFrom the first page the fragment spans (>= 1)
  * @param pageTo the last page the fragment spans (>= {@code pageFrom})
- * @param score the cosine distance ({@code embedding <=> query}) the chunk was returned at: {@code
- *     0} = identical to the query vector, lower is closer; only chunks within the configured
- *     relevance threshold are returned
+ * @param score the retrieval score for the half that produced this instance: the cosine distance
+ *     (vector half, lower is closer), the FTS relevance (lexical half, higher is closer), or the
+ *     reciprocal-rank fused relevance (hybrid half, higher is better); always a finite value {@code
+ *     >= 0}
  * @param content the fragment text (untrusted content — never logged)
  */
 public record ChunkDto(

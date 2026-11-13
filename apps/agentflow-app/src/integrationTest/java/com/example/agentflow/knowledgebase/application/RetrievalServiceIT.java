@@ -6,6 +6,8 @@ import com.example.agentflow.ai.application.EmbeddingPort;
 import com.example.agentflow.ai.application.EmbeddingResponse;
 import com.example.agentflow.knowledgebase.persistence.DocumentChunkRepository;
 import com.example.agentflow.knowledgebase.persistence.KnowledgeBaseRepository;
+import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -45,6 +47,9 @@ class RetrievalServiceIT {
 
   private static JdbcTemplate jdbc;
   private static RetrievalService service;
+  private static DocumentChunkRepository chunkRepository;
+  private static KnowledgeBaseRepository knowledgeBaseRepository;
+  private static SimpleMeterRegistry meterRegistry;
 
   @BeforeAll
   static void migrateAndWire() throws SQLException {
@@ -59,8 +64,8 @@ class RetrievalServiceIT {
         new DriverManagerDataSource(
             postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     jdbc = new JdbcTemplate(dataSource);
-    DocumentChunkRepository chunkRepository = new DocumentChunkRepository(jdbc);
-    KnowledgeBaseRepository knowledgeBaseRepository = new KnowledgeBaseRepository(jdbc);
+    chunkRepository = new DocumentChunkRepository(jdbc);
+    knowledgeBaseRepository = new KnowledgeBaseRepository(jdbc);
     // Deterministic stand-in for the provider: every call answers the +x unit vector, so the
     // query vector (and thus every distance) is fully controlled by the fixture embeddings.
     EmbeddingPort queryEmbedding =
@@ -69,8 +74,10 @@ class RetrievalServiceIT {
           query[0] = 1f;
           return new EmbeddingResponse(request.model(), List.of(query), null);
         };
+    meterRegistry = new SimpleMeterRegistry();
     service =
-        new RetrievalService(chunkRepository, knowledgeBaseRepository, queryEmbedding, 10, 50, 0.5);
+        new RetrievalService(
+            chunkRepository, knowledgeBaseRepository, queryEmbedding, 10, 50, 0.5, meterRegistry);
   }
 
   /** The tenant/knowledge-base/document chain a chunk fixture needs. */
@@ -320,5 +327,55 @@ class RetrievalServiceIT {
         service.search(fixture.tenantId(), fixture.knowledgeBaseId(), new SearchRequest("q", null));
 
     assertThat(result.chunks()).isEmpty();
+  }
+
+  /**
+   * The S10-16 hybrid acceptance on real data: a chunk whose text matches the query is found by
+   * both halves and deduplicated, a chunk matched by one half only is kept, and the fused result
+   * carries no duplicate chunk ids.
+   */
+  @Test
+  void hybrid_search_fuses_the_halves_without_duplicate_chunks() {
+    Fixture fixture = tenantWithKnowledgeBaseAndDocument("ret-hybrid");
+    insertChunk(fixture.tenantId(), fixture.documentId(), 0, "x"); // both halves
+    insertChunk(fixture.tenantId(), fixture.documentId(), 1, "tilt"); // vector half only
+    insertChunk(fixture.tenantId(), fixture.documentId(), 2, "tilt2"); // vector half only
+
+    SearchResult result =
+        service.hybridSearch(
+            fixture.tenantId(), fixture.knowledgeBaseId(), new SearchRequest("x", null));
+
+    // "x" is matched by both halves and emitted once (dedup); the two vector-only chunks are kept.
+    assertThat(result.chunks()).hasSize(3);
+    assertThat(result.chunks().stream().map(ChunkDto::id).toList()).doesNotHaveDuplicates();
+    assertThat(result.chunks().stream().map(ChunkDto::content).toList()).contains("x");
+    // The chunk matched by both halves outranks the vector-only chunks (reciprocal-rank fusion).
+    assertThat(result.chunks().get(0).content()).isEqualTo("x");
+    // The hybrid meter recorded, carrying no tenant or document label (invariant 9).
+    assertThat(meterRegistry.find(RetrievalService.METRIC_HYBRID).meters()).isNotEmpty();
+    List<Meter> hybridMeters =
+        meterRegistry.find(RetrievalService.METRIC_HYBRID).meters().stream().toList();
+    assertThat(hybridMeters).hasSize(1);
+    assertThat(hybridMeters.get(0).getId().getTags()).isEmpty();
+    assertThat(meterRegistry.find(RetrievalService.METRIC_DURATION).meters()).isNotEmpty();
+  }
+
+  /**
+   * The hybrid search is tenant-scoped on real data: it never returns another tenant's chunk, even
+   * though that tenant's collection holds an identical "x" chunk (the maximally close case).
+   */
+  @Test
+  void hybrid_search_never_returns_another_tenants_chunks() {
+    Fixture tenantA = tenantWithKnowledgeBaseAndDocument("ret-hybrid-a");
+    Fixture tenantB = tenantWithKnowledgeBaseAndDocument("ret-hybrid-b");
+    insertChunk(tenantA.tenantId(), tenantA.documentId(), 0, "x");
+    insertChunk(tenantB.tenantId(), tenantB.documentId(), 0, "x");
+
+    SearchResult result =
+        service.hybridSearch(
+            tenantA.tenantId(), tenantA.knowledgeBaseId(), new SearchRequest("x", null));
+
+    assertThat(result.chunks()).hasSize(1);
+    assertThat(result.chunks().get(0).documentId()).isEqualTo(tenantA.documentId());
   }
 }
