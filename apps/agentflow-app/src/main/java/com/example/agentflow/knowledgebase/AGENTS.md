@@ -66,12 +66,13 @@ separate; this layer only validates, it owns no row.
 com.example.agentflow.knowledgebase/               ← public API boundary
 ├── domain/          pure model + invariants        internal
 ├── application/     use cases, transactions         public services + DTOs
+├── evaluation/      RAG eval corpus + runner        internal (S10-20)
 ├── web/             controllers + API DTOs          internal
 ├── persistence/     repositories, mappers, SQL       internal
 └── worker/          Kafka listeners                 internal
 ```
 
-`persistence`, `web`, `worker` and `domain` are internal: another module must not import them
+`persistence`, `web`, `worker`, `domain` and `evaluation` are internal: another module must not import them
 (enforced by the architecture test, `S02-08` / `S02-09`).
 
 ## Rules
