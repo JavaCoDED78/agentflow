@@ -32,8 +32,9 @@ Both directions are bound by three invariants that shape every line of the pipel
 The diagram separates the two. **Implemented** steps exist in code (`S10-11` storage + query
 primitive, `S10-12` embedding batching, `S10-13` the indexing path, `S10-14` the tenant/ACL-
 filtered vector retrieval service, `S10-15` the lexical (full-text) half over the PostgreSQL FTS
-index, `S10-16` the hybrid rank fusion, `S09` planner). **Planned** steps (`S10-17` citations,
-`S10-18` the no-evidence policy) are described in prose below and are *not* yet in the code.
+index, `S10-16` the hybrid rank fusion, `S10-17` citation assembly from real retrieved chunks only,
+`S09` planner). **Planned** steps (`S10-18` the no-evidence policy) are described in prose below
+and are *not* yet in the code.
 
 ```mermaid
 flowchart TB
@@ -44,11 +45,12 @@ flowchart TB
         Ret["knowledgebase.application<br/>RetrievalService (S10-14)<br/>vector half: tenant + KB predicate in-query · top-k bound · threshold"]
         Lex["knowledgebase.application<br/>RetrievalService.lexicalSearch (S10-15)<br/>lexical half: ts_rank over the English FTS index · tenant + KB predicate in-query"]
         Hybrid["knowledgebase.application<br/>RetrievalService.hybridSearch (S10-16)<br/>reciprocal-rank fusion · dedup by id · cap at maxTopK · no-label meters"]
+        Cite["knowledgebase.application<br/>CitationBuilder + CitationDto<br/>one citation per real chunk<br/>· documentName label · snippet<br/>(S10-17)"]
         Planner["ai.application<br/>PlannerService · propose<br/>(ADR-006, S09-06)"]
         Catalogue["ai.prompt<br/>PromptCatalogue · SYSTEM policy<br/>+ USER untrusted content"]
     end
-    subgraph Planned["Planned — S10-17 … S10-18"]
-        Cit["assemble citations from<br/>real chunks only (never invented)<br/>empty → InsufficientEvidence (S10-17 / S10-18)"]
+    subgraph Planned["Planned — S10-18"]
+        NoEvid["assemble the empty<br/>retrieval response —<br/>empty retrieval → InsufficientEvidence<br/>(no invented citation; S10-18)"]
     end
     Doc["document_chunks.embedding<br/>vector(768) · nomic-embed-text"]
 
@@ -119,7 +121,8 @@ This adapter is the *primitive*; it persists and reads rows. The retrieval servi
 The service also exposes the lexical half — `RetrievalService.lexicalSearch` over the S10-15 FTS
 index, mirroring `findNearest` with `c.tenant_id = ?` and `d.knowledge_base_id = ?` before the
 `@@` match and the limit — but the two halves still return independently. The fusion (`S10-16`) is implemented, below;
-only the citations (`S10-17`) remain planned. The indexing path that writes through it is `S10-13`, implemented.
+the citation layer (`S10-17`) is implemented below too; only the no-evidence policy (`S10-18`)
+remains planned. The indexing path that writes through it is `S10-13`, implemented.
 
 ## Embedding production (`S10-12` / `S10-13`)
 
@@ -176,27 +179,45 @@ An empty retrieval (both halves empty) returns an empty `SearchResult`; the mode
 citation (`S10-18`). The fused ids map back to their `ChunkDto`s; no metric carries a tenant,
 document id, or chunk text (invariant 9; chunk content is untrusted, invariant 7/8).
 
-## Planned: citations and grounding (`S10-17` … `S10-18`)
+## Implemented: citations (`S10-17`)
 
-The following is the target the glossary §8 and `module-api.md` name. The citations and no-evidence
-layers are **not yet in the code** (no `InsufficientEvidence`, no `CitationDto`). The vector half
-(`S10-14`), the lexical half (`S10-15`) and the hybrid fusion (`S10-16`) are implemented and
-described above; this section describes the remaining steps so the RAG guide is complete, not because
-they run today.
+This is the implementation the glossary &sect;8 and `module-api.md` name for the citation
+response-field set. It is implemented on top of the hybrid fusion (`S10-16`); the vector half
+(`S10-14`), the lexical half (`S10-15`) and the hybrid fusion (`S10-16`) are described above.
 
-- **Full-text search (lexical half, `S10-15`).** A `tsvector`/`ts_rank` lexical half over a
-  PostgreSQL `english` FTS index, driven by `RetrievalService.lexicalSearch` — the complement of
-  the vector half, returning the closest chunks by `ts_rank` relevance. Implemented.
-- **Citations (`S10-17`).** Builds each citation from a *real* retrieved chunk — the response-field
-  set the glossary names (`documentId`, `chunkId`, page/section, `score`).
-- **No-evidence policy (`S10-18`).** An empty retrieval returns `InsufficientEvidence`; the model
-  never invents a citation.
-- **Grounding the model.** Feeds the retrieved chunks and their citations to the planner as the
-  untrusted `USER` content. The planner (`S09-06`) already separates a fixed `SYSTEM` policy from a
-  single untrusted `USER` message (`ai.prompt.PromptCatalogue`); the retrieval layer is what fills
-  that `USER` message with retrieved fragments. A model reference is never execution and never
-  permission — the backend re-checks the tool registry and the caller's scopes before any step runs
-  (`S09-07`).
+- **Citations (`S10-17`).** Builds one `CitationDto` per *real* retrieved chunk through the pure
+  `knowledgebase.application.CitationBuilder.cite(SearchResult)` (no Spring, no database, no I/O —
+  the `knowledgebase` counterpart of `RankFusion`), extended with the parent document's display
+  name (`documentName`) and the fragment text (`snippet`) the planner / finalizer renders next to an
+  answer. The response-field set is `documentId`, `chunkId`, `documentName`, `pageFrom` / `pageTo`,
+  `score` and `snippet`.
+- **Only real retrieved chunks are cited.** `CitationBuilder.cite` maps each retrieved `ChunkDto` to
+  one `CitationDto` in the retrieved order the retrieval halves already ranked, and never emits a
+  citation for a chunk the caller cannot see: an empty `SearchResult` yields an empty list, and every
+  citation's `chunkId()` resolves to the same tenant- and collection-scoped chunk the retrieval
+  returned (invariant 1 — the two halves' predicates run inside the SQL, so a citation cannot point
+  at another tenant's document). The retrieval entry point `RetrievalService#citations(tenantId,
+  knowledgeBaseId, SearchRequest)` wires the two together over the hybrid half (`hybridSearch`); it
+  throws `IllegalArgumentException` on a null argument and `IllegalStateException` when no database
+  is configured (S01-02).
+- **Untrusted vs. trusted fields.** `snippet` is untrusted document text (invariant 7 — prompt
+  injection surface): it is fed to the model only as `USER` content and never logged, hashed or
+  written to logs, metrics or traces (invariant 8). `documentName` is the trusted parent document's
+  safe, sanitised display name (its `filename`, resolved by the repository join on the vector and
+  lexical reads — S10-14 / S10-15), so a citation is built from each row without a second lookup.
+- **Grounding the model.** `RetrievalService#citations` feeds the retrieved chunks and their
+  citations to the planner as the untrusted `USER` content. The planner (`S09-06`) already separates
+  a fixed `SYSTEM` policy from a single untrusted `USER` message (`ai.prompt.PromptCatalogue`); the
+  retrieval layer is what fills that `USER` message with retrieved fragments. A model reference is
+  never execution and never permission — the backend re-checks the tool registry and the caller's
+  scopes before any step runs (`S09-07`).
+
+## Planned: no-evidence policy (`S10-18`)
+
+- **No-evidence policy (`S10-18`).** An empty retrieval (both halves empty) returns an empty
+  `SearchResult`; the `S10-18` layer reports it as `InsufficientEvidence`, so the model never
+  invents a citation. `S10-17` already returns the empty `SearchResult` unchanged; `S10-18` decides
+  what to *report* for it — the retrieval ground work is `S10-17`, the reporting policy is `S10-18`.
 
 ## Verification
 
@@ -234,11 +255,22 @@ they run today.
   `apps/agentflow-app/src/test/java/com/example/agentflow/knowledgebase/application/RetrievalServiceTest.java`
   (6 fusion probes over the deterministic in-memory corpus, plus a meter assertion that the fusion
   counters and Timer exist with zero tenant/document labels).
-- **Planned (`S10-17` … `S10-18`).** The citation and no-evidence layers must add their own
-  integration tests on the same real-PostgreSQL image, covering the mandatory negative scenarios from
-  `AGENTS.md` that are still open: prompt injection in a retrieved document, and
-  **empty retrieval without invented citations**. These tests are a requirement of those steps, not
-  a claim about `S10-14` / `S10-15` / `S10-16`.
+- **Implemented (`S10-17`).** The citation layer is covered by the DB-free unit suites —
+  `CitationDtoTest` (4) and `CitationBuilderTest` (4, the one-citation-per-chunk / empty-result /
+  resolves-to-same-chunk / null-contract probes), plus `ChunkDtoTest` (4) / `SearchResultTest` (4) /
+  `RetrievalServiceTest` (22) which now assert `documentName` propagates through `search` /
+  `hybridSearch` — all JUnit-XML-verified (`failures="0" errors="0" skipped="0"`);
+  `:apps:agentflow-app:check` green. The acceptance — **each citation resolves to the calling
+  tenant's own source fragment** — is pinned by one new probe in
+  `RetrievalServiceIT` (`citations_resolve_to_the_calling_tenants_own_fragment`, 1 test: the built
+  citation carries the parent `filename`, resolves to the calling tenant's own chunk, and a
+  cross-tenant retrieval yields an empty list). It is compiled and ready to run but needs
+  PostgreSQL/Testcontainers, which are not available in this environment.
+- **Planned (`S10-18`).** The no-evidence policy must add its own integration test on the same
+  real-PostgreSQL image, covering the remaining mandatory negative scenario from `AGENTS.md`:
+  **empty retrieval without invented citations**. The citation layer (`S10-17`) already returns the
+  empty `SearchResult` unchanged; the `S10-18` probe would cover the *reporting* of that empty result
+  as `InsufficientEvidence` (not the retrieval), so `S10-17` / `S10-18` are distinct steps.
 
 ## Ownership and references
 
@@ -258,7 +290,7 @@ they run today.
   terms, one concept — one name).
 - [`architecture/module-map.md`](../architecture/module-map.md) — bounded contexts and owners.
 - [`architecture/module-api.md`](../architecture/module-api.md) — the public API per module,
-  including the planned retrieval types.
+  including the citation types (`CitationDto`, `CitationBuilder`) the retrieval layer extends.
 - [`architecture/document-lifecycle.md`](../architecture/document-lifecycle.md) — the
   `UPLOADED → QUEUED → PROCESSING → INDEXED` lifecycle a chunk and its embedding ride on.
 - [`adr/ADR-006-untrusted-planner.md`](../adr/ADR-006-untrusted-planner.md),

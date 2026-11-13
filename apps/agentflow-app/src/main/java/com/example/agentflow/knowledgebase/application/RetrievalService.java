@@ -202,6 +202,7 @@ public class RetrievalService {
                     new ChunkDto(
                         row.id(),
                         row.documentId(),
+                        row.documentName(),
                         row.pageFrom(),
                         row.pageTo(),
                         row.distance(),
@@ -262,6 +263,7 @@ public class RetrievalService {
                     new ChunkDto(
                         row.id(),
                         row.documentId(),
+                        row.documentName(),
                         row.pageFrom(),
                         row.pageTo(),
                         row.rank(),
@@ -338,11 +340,55 @@ public class RetrievalService {
   }
 
   /**
+   * Build the citations the retrieved evidence supports (S10-17): one citation per fused chunk, the
+   * knowledgebase layer's citation step over {@link #hybridSearch}.
+   *
+   * <p>It runs the hybrid retrieval and builds a citation for every chunk it returned, so each
+   * citation resolves to a <em>real retrieved chunk</em> — never to another tenant's document,
+   * because the chunks the hybrid returns are already tenant- and collection-scoped (invariant 1,
+   * the two halves' predicates run inside the SQL). An empty retrieval (a missing or cross-tenant
+   * collection, or a non-match) yields an empty list; reporting {@code InsufficientEvidence} for
+   * that empty list is the no-evidence policy (S10-18), not this layer.
+   *
+   * <p>Observability (invariants 7/8/9): the hybrid call records its own no-label meters; this step
+   * adds nothing to the meters and never logs the retrieved text.
+   *
+   * @param tenantId the owning tenant (from the verified security context)
+   * @param knowledgeBaseId the knowledge base to search
+   * @param request the query text (used as the vector query and the lexical keyword) and the
+   *     optional {@code topK}
+   * @return one citation per fused chunk, in fused order; empty when the collection is missing
+   *     (including a cross-tenant id) or nothing matches — never an invented citation
+   * @throws IllegalArgumentException if an argument is {@code null}
+   * @throws IllegalStateException when no database connection is configured (S01-02)
+   */
+  public List<CitationDto> citations(UUID tenantId, UUID knowledgeBaseId, SearchRequest request) {
+    if (tenantId == null) {
+      throw new IllegalArgumentException("tenantId must not be null");
+    }
+    if (knowledgeBaseId == null) {
+      throw new IllegalArgumentException("knowledgeBaseId must not be null");
+    }
+    if (request == null) {
+      throw new IllegalArgumentException("request must not be null");
+    }
+    if (chunkRepository == null || knowledgeBaseRepository == null) {
+      throw new IllegalStateException(
+          "retrieval is unavailable: no database connection is configured (S01-02)");
+    }
+    return CitationBuilder.cite(hybridSearch(tenantId, knowledgeBaseId, request));
+  }
+
+  /**
    * Fuse the two halves and cap the result. Deduplicates by chunk id (a chunk in both halves is
    * emitted once), orders by the reciprocal-rank fused score (see {@link RankFusion}) and caps at
-   * {@code max-top-k}. Each fused {@link ChunkDto} carries the fused relevance as its {@code score}
-   * (higher is better); its content / pages / document come from whichever half produced it (they
-   * are identical for the same chunk id).
+   * {@code max-top-k}.
+   *
+   * <p>Each fused {@link ChunkDto} carries the fused relevance as its {@code score} (higher is
+   * better); its content / pages / {@code documentName} / document come from whichever half
+   * produced it (they are identical for the same chunk id). The {@code documentName} is the parent
+   * document's safe display name, so a future citation built from a fused element already has the
+   * document label the glossary §8 fixes (S10-17).
    */
   private SearchResult fuse(SearchResult vector, SearchResult lexical) {
     List<ChunkDto> vectorChunks = vector.chunks();
@@ -368,6 +414,7 @@ public class RetrievalService {
             new ChunkDto(
                 base.id(),
                 base.documentId(),
+                base.documentName(),
                 base.pageFrom(),
                 base.pageTo(),
                 candidate.score(),

@@ -98,6 +98,7 @@ class RetrievalServiceTest {
         UUID.randomUUID(),
         TENANT,
         documentId,
+        "fixture-doc",
         "v1",
         chunkIndex,
         1,
@@ -140,6 +141,7 @@ class RetrievalServiceTest {
     assertThat(result.chunks().get(0).content()).isEqualTo("closer fragment");
     assertThat(result.chunks().get(0).score()).isEqualTo(0.1);
     assertThat(result.chunks().get(0).documentId()).isEqualTo(document);
+    assertThat(result.chunks().get(0).documentName()).isEqualTo("fixture-doc");
     assertThat(result.chunks().get(0).pageFrom()).isEqualTo(1);
     assertThat(result.chunks().get(0).pageTo()).isEqualTo(2);
     assertThat(result.chunks().get(1).content()).isEqualTo("further fragment");
@@ -280,6 +282,7 @@ class RetrievalServiceTest {
             UUID.randomUUID(),
             TENANT,
             UUID.randomUUID(),
+            "fixture-doc",
             "v1",
             0,
             1,
@@ -367,6 +370,7 @@ class RetrievalServiceTest {
         chunkId,
         TENANT,
         UUID.randomUUID(),
+        "fixture-doc",
         "v1",
         0,
         1,
@@ -385,6 +389,7 @@ class RetrievalServiceTest {
         chunkId,
         TENANT,
         UUID.randomUUID(),
+        "fixture-doc",
         "v1",
         0,
         1,
