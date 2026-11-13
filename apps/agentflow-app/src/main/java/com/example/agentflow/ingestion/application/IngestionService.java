@@ -161,10 +161,18 @@ public final class IngestionService {
                             + key.documentId()
                             + " for the tenant of the ingestion event"));
 
+    // The document must be reindexed in place when it is indexed under a different chunking /
+    // embedding pipeline version than the current one (the S10-19 reindex trigger: the document
+    // must always reflect the pipeline version backing it, so a retuned pipeline re-embeds the
+    // chunks under the new version). A redelivery under the UPDATE policy (updatesOnConflict)
+    // reindexes regardless of the version.
+    boolean reindexOnVersionChange = !chunker.pipelineVersion().equals(document.pipelineVersion());
     if (!documentTransitionService.claimForIndexing(
-        key.tenantId(), key.documentId(), redeliveryPolicy.updatesOnConflict())) {
-      // Not claimable: already indexed (SKIP policy), claimed by another worker, or a terminal
-      // state. A no-op, never a second transition — the redelivery is absorbed here.
+        key.tenantId(),
+        key.documentId(),
+        redeliveryPolicy.updatesOnConflict() || reindexOnVersionChange)) {
+      // Not claimable: already indexed under the current pipeline version (nothing to reindex),
+      // claimed by another worker, or a terminal state. A no-op, never a second transition.
       return new IngestionStatusDto(
           document.documentId(), document.status(), document.pipelineVersion());
     }
@@ -185,15 +193,17 @@ public final class IngestionService {
           "EXTRACTION_" + extraction.error().code().name(),
           extraction.error().summary());
     }
+    String pipelineVersion = chunker.pipelineVersion();
+
     if (extraction.isEmpty()) {
       // An empty payload is not an error (S10-07): the document completes with zero chunks — it
       // is indexed, and retrieval simply finds nothing in it.
-      return complete(key, document, ingestionEventId, extraction.pageCount(), 0);
+      return complete(key, document, ingestionEventId, extraction.pageCount(), 0, pipelineVersion);
     }
 
     List<DocumentChunk> chunks = chunker.chunk(extraction);
     if (chunks.isEmpty()) {
-      return complete(key, document, ingestionEventId, extraction.pageCount(), 0);
+      return complete(key, document, ingestionEventId, extraction.pageCount(), 0, pipelineVersion);
     }
 
     EmbeddingBatchResult embeddings =
@@ -231,7 +241,13 @@ public final class IngestionService {
             toIndex,
             redeliveryPolicy.updatesOnConflict(),
             null);
-    return complete(key, document, ingestionEventId, extraction.pageCount(), indexed.written());
+    return complete(
+        key,
+        document,
+        ingestionEventId,
+        extraction.pageCount(),
+        indexed.written(),
+        pipelineVersion);
   }
 
   /**
@@ -247,7 +263,8 @@ public final class IngestionService {
 
   /**
    * Complete the pass: mark the document {@code INDEXED} (recording the extracted page count, the
-   * S10-08 diagnostic) and enqueue the {@code document.indexed.v1} event in the same transaction
+   * S10-08 diagnostic) and the {@code pipeline_version} that produced the index (the {@code S10-19}
+   * reindex trigger), then enqueue the {@code document.indexed.v1} event in the same transaction
    * (invariant 3 — the outbox record commits with the state change).
    */
   private IngestionStatusDto complete(
@@ -255,8 +272,10 @@ public final class IngestionService {
       DocumentView document,
       UUID ingestionEventId,
       int pageCount,
-      int chunkCount) {
-    documentTransitionService.markIndexed(key.tenantId(), key.documentId(), pageCount);
+      int chunkCount,
+      String pipelineVersion) {
+    documentTransitionService.markIndexed(
+        key.tenantId(), key.documentId(), pageCount, pipelineVersion);
     UUID eventId = UUID.randomUUID();
     outboxService.enqueue(
         OutboxEvent.pending(
@@ -267,12 +286,11 @@ public final class IngestionService {
             "document",
             document.documentId(),
             key.tenantId(),
-            indexedPayloadJson(document, chunkCount),
+            indexedPayloadJson(document, chunkCount, pipelineVersion),
             CorrelationHeaders.of(
                     document.documentId().toString(), ingestionEventId.toString(), null)
                 .toJson()));
-    return new IngestionStatusDto(
-        document.documentId(), STATUS_INDEXED_RESULT, document.pipelineVersion());
+    return new IngestionStatusDto(document.documentId(), STATUS_INDEXED_RESULT, pipelineVersion);
   }
 
   /**
@@ -281,7 +299,8 @@ public final class IngestionService {
    * fragment, invariant 8). The values are UUIDs, numbers and fixed tokens, so a plain string build
    * is valid JSON and needs no serializer.
    */
-  private static String indexedPayloadJson(DocumentView document, int chunkCount) {
+  private static String indexedPayloadJson(
+      DocumentView document, int chunkCount, String pipelineVersion) {
     return "{\"documentId\":\""
         + document.documentId()
         + "\",\"knowledgeBaseId\":\""
@@ -289,7 +308,7 @@ public final class IngestionService {
         + "\",\"status\":\""
         + STATUS_INDEXED
         + "\",\"pipelineVersion\":\""
-        + document.pipelineVersion()
+        + pipelineVersion
         + "\",\"chunkCount\":"
         + chunkCount
         + "}";

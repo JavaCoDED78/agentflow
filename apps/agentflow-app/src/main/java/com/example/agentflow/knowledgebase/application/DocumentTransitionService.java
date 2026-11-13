@@ -76,18 +76,30 @@ public class DocumentTransitionService {
 
   /**
    * Complete a claimed document: {@code PROCESSING -> INDEXED}, recording the extracted page count
-   * (the S10-08 diagnostic) when known.
+   * (the S10-08 diagnostic) when known and the {@code pipeline_version} that produced the index.
+   *
+   * <p>The recorded {@code pipeline_version} is the reindex trigger the schema declares ({@code
+   * S10-19}): the document must always reflect the chunking/embedding pipeline version currently
+   * backing it, so a retuned pipeline (a new {@code pipeline_version} label) is detectable as the
+   * reason to reindex.
    *
    * @param tenantId the owning tenant
    * @param documentId the document id
    * @param pageCount the extracted page count, or {@code null} to leave the column untouched
+   * @param pipelineVersion the pipeline version the just-completed pass indexed under (never {@code
+   *     null} or blank)
    * @return {@code true} when the transition applied; {@code false} when the document was no longer
    *     claimed (a no-op, never a second transition)
+   * @throws IllegalArgumentException when {@code pipelineVersion} is {@code null} or blank
    * @throws IllegalStateException when no database connection is configured (S01-02)
    */
-  public boolean markIndexed(UUID tenantId, UUID documentId, Integer pageCount) {
+  public boolean markIndexed(
+      UUID tenantId, UUID documentId, Integer pageCount, String pipelineVersion) {
     requireRepository();
-    return documentRepository.markIndexed(tenantId, documentId, pageCount);
+    if (pipelineVersion == null || pipelineVersion.isBlank()) {
+      throw new IllegalArgumentException("pipelineVersion must not be null or blank");
+    }
+    return documentRepository.markIndexed(tenantId, documentId, pageCount, pipelineVersion);
   }
 
   /**
@@ -120,6 +132,25 @@ public class DocumentTransitionService {
   public boolean releaseToQueued(UUID tenantId, UUID documentId) {
     requireRepository();
     return documentRepository.releaseToQueued(tenantId, documentId);
+  }
+
+  /**
+   * Release a {@code FAILED} document back to {@code QUEUED} for a manual re-drive (the {@code
+   * S10-19} retry edge). Guarded by {@code status = 'FAILED'}: only a document in the terminal
+   * failed state is released, so a call on a document in any other state affects zero rows and
+   * reports {@code false} (nothing to retry) — the manual retry is a no-op on a document that is
+   * not failed. The {@code DocumentService.retryFailed} command drives this and re-enqueues the
+   * {@code ingestion-requested} event in the same transaction.
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @return {@code true} when the release applied; {@code false} when the document was not {@code
+   *     FAILED}
+   * @throws IllegalStateException when no database connection is configured (S01-02)
+   */
+  public boolean releaseFailedToQueued(UUID tenantId, UUID documentId) {
+    requireRepository();
+    return documentRepository.requeueFailedToQueued(tenantId, documentId);
   }
 
   private void requireRepository() {

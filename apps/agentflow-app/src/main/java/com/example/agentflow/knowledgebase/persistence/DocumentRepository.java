@@ -177,24 +177,111 @@ public class DocumentRepository {
 
   /**
    * Move a claimed document {@code PROCESSING -> INDEXED} (the {@code document.indexed} transition
-   * applied by the worker's transaction), recording the extraction diagnostic (S10-08). Guarded by
-   * {@code status = 'PROCESSING'} so only the claiming worker completes it; zero rows means the
-   * document is no longer in the claimed state and the caller treats the completion as a no-op.
+   * applied by the worker's transaction), recording the extraction diagnostic (S10-08) and the
+   * pipeline version that produced the index.
+   *
+   * <p>The {@code pipeline_version} column is the reindex trigger the schema declares ({@code
+   * S10-19}): it records the deterministic chunking/embedding pipeline version the just-completed
+   * pass indexed under, so the document always reflects the version currently backing it and a
+   * retuned pipeline (a new {@code pipeline_version} label) is detectable as the reason to reindex.
+   * Guarded by {@code status = 'PROCESSING'} so only the claiming worker completes it; zero rows
+   * means the document is no longer in the claimed state and the caller treats the completion as a
+   * no-op.
    *
    * @param tenantId the owning tenant
    * @param documentId the document id
    * @param pageCount the extracted page count, or {@code null} to leave the column untouched
+   * @param pipelineVersion the pipeline version that indexed the document (recorded as the current
+   *     version; never {@code null} or blank)
    * @return {@code true} when the transition applied
    */
-  public boolean markIndexed(UUID tenantId, UUID documentId, Integer pageCount) {
+  public boolean markIndexed(
+      UUID tenantId, UUID documentId, Integer pageCount, String pipelineVersion) {
     int updated =
         jdbc.update(
             "UPDATE "
                 + TABLE
                 + " SET status = 'INDEXED', version = version + 1, updated_at = now(), "
-                + "page_count = COALESCE(?, page_count) "
+                + "page_count = COALESCE(?, page_count), pipeline_version = ? "
                 + "WHERE tenant_id = ? AND id = ? AND status = 'PROCESSING'",
             pageCount,
+            pipelineVersion,
+            tenantId,
+            documentId);
+    return updated > 0;
+  }
+
+  /**
+   * Find a document by the {@code (tenant_id, sha256)} pair — the content-fingerprint lookup the
+   * duplicate-upload flow of {@code S10-19} keys on: a re-upload whose payload SHA-256 matches an
+   * existing row is content-identical and returns that existing document (no new row, no new
+   * event). The {@code tenant_id} predicate is part of the query itself (invariant 1): another
+   * tenant's content-identical document is indistinguishable from a missing one, so a cross-tenant
+   * lookup yields {@link Optional#empty()}. This is backed by the {@code
+   * documents_tenant_sha256_idx} index declared with the {@code documents} table (the column is
+   * indexed, not unique — a {@code pipeline_version} change reindexes as a new document, which a
+   * unique constraint would wrongly forbid).
+   *
+   * @param tenantId the owning tenant
+   * @param sha256 the payload SHA-256 hex fingerprint
+   * @return the matching document projection, or empty when no such tenant-owned document exists
+   */
+  public Optional<DocumentLookupRow> findByTenantAndSha256(UUID tenantId, String sha256) {
+    List<DocumentLookupRow> rows =
+        jdbc.query(
+            "SELECT id, tenant_id, knowledge_base_id, sha256, status FROM "
+                + TABLE
+                + " WHERE tenant_id = ? AND sha256 = ?",
+            lookupRowMapper,
+            tenantId,
+            sha256);
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+  }
+
+  /**
+   * Read one document by the {@code (tenant_id, id)} pair without the parent join — the minimal
+   * tenant-scoped existence check the {@code S10-19} manual retry runs before it releases a {@code
+   * FAILED} document (a cross-tenant or forged id yields {@link Optional#empty()}, so the retry
+   * reports {@code 404}). The tenant predicate is part of the query itself (invariant 1).
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @return the matching document projection, or empty when no such tenant-owned document exists
+   */
+  public Optional<DocumentLookupRow> findByTenantAndId(UUID tenantId, UUID documentId) {
+    List<DocumentLookupRow> rows =
+        jdbc.query(
+            "SELECT id, tenant_id, knowledge_base_id, status FROM "
+                + TABLE
+                + " WHERE tenant_id = ? AND id = ?",
+            lookupRowMapper,
+            tenantId,
+            documentId);
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+  }
+
+  /**
+   * Release a {@code FAILED} document back to {@code QUEUED} for a manual re-drive (the {@code
+   * S10-19} retry edge). Guarded by {@code status = 'FAILED'}: only a document in the terminal
+   * failed state is released, so a call on an {@code INDEXED} / {@code PROCESSING} / other document
+   * affects zero rows and reports {@code false} (nothing to retry). The {@code error_code} / {@code
+   * error_summary} diagnostic is cleared on the re-queue, so the next failed pass records a fresh
+   * one rather than the stale one; the optimistic {@code version} is bumped like every working
+   * transition.
+   *
+   * @param tenantId the owning tenant
+   * @param documentId the document id
+   * @return {@code true} when the release applied; {@code false} when the document was not {@code
+   *     FAILED}
+   */
+  public boolean requeueFailedToQueued(UUID tenantId, UUID documentId) {
+    int updated =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET status = 'QUEUED', version = version + 1, updated_at = now(), "
+                + "error_code = NULL, error_summary = NULL "
+                + "WHERE tenant_id = ? AND id = ? AND status = 'FAILED'",
             tenantId,
             documentId);
     return updated > 0;
@@ -264,6 +351,20 @@ public class DocumentRepository {
               DocumentUploadStatus.valueOf(rs.getString("status")),
               rs.getString("pipeline_version"),
               rs.getString("embedding_model"));
+
+  /**
+   * Maps a {@code documents} row to the minimal tenant-scoped {@link DocumentLookupRow} the
+   * duplicate-upload and manual-retry flows ({@code S10-19}) need: identity, parent collection and
+   * lifecycle state. The {@code tenant_id} / {@code sha256} columns are selected for the duplicate
+   * lookup but not carried (the caller keys on them); the retry lookup selects the identity columns
+   * it needs.
+   */
+  private final RowMapper<DocumentLookupRow> lookupRowMapper =
+      (rs, rowNum) ->
+          new DocumentLookupRow(
+              rs.getObject("id", UUID.class),
+              rs.getObject("knowledge_base_id", UUID.class),
+              DocumentUploadStatus.valueOf(rs.getString("status")));
 
   /** Binds a nullable {@code UUID} so an absent value is stored as SQL {@code NULL}. */
   private static void bindNullableUuid(PreparedStatement ps, int index, UUID value)

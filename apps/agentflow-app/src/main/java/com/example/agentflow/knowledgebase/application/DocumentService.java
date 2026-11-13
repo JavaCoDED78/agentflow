@@ -2,10 +2,12 @@ package com.example.agentflow.knowledgebase.application;
 
 import com.example.agentflow.knowledgebase.domain.DocumentObjectKey;
 import com.example.agentflow.knowledgebase.domain.DocumentUploadStatus;
+import com.example.agentflow.knowledgebase.persistence.DocumentLookupRow;
 import com.example.agentflow.knowledgebase.persistence.DocumentRepository;
 import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -57,6 +59,7 @@ public class DocumentService {
 
   private final DocumentRepository documentRepository;
   private final OutboxService outboxService;
+  private final DocumentTransitionService documentTransitionService;
 
   /**
    * @param documentRepository the tenant-scoped {@code documents} writer, or {@code null} when no
@@ -65,13 +68,19 @@ public class DocumentService {
    *     application still boots without a database; {@link #upload} fails loudly with {@code 503})
    * @param outboxService the transactional-outbox appender ({@code messaging}); used exactly as
    *     {@code workflowexecution} uses it to publish through the outbox port
+   * @param documentTransitionService the single writer of {@code documents.status} ({@code
+   *     knowledgebase}); {@code null} when no database is configured (S01-02) — {@link
+   *     #retryFailed} fails loudly instead of the application failing to boot (the {@code
+   *     DocumentService} idiom)
    */
   @Autowired
   public DocumentService(
       @Autowired(required = false) DocumentRepository documentRepository,
-      OutboxService outboxService) {
+      OutboxService outboxService,
+      @Autowired(required = false) DocumentTransitionService documentTransitionService) {
     this.documentRepository = documentRepository;
     this.outboxService = outboxService;
+    this.documentTransitionService = documentTransitionService;
   }
 
   /**
@@ -93,6 +102,17 @@ public class DocumentService {
   public DocumentDto upload(
       UUID tenantId, UUID knowledgeBaseId, ValidatedUpload validated, String createdBy) {
     requireRepository(documentRepository);
+    // Duplicate upload (S10-19): a re-upload whose payload SHA-256 matches an existing tenant-owned
+    // row is content-identical — return that existing document with no new row and no new event.
+    // The idempotency key is (tenant_id, sha256) (plan §8.2). The lookup is tenant-scoped
+    // (invariant 1): another tenant's content-identical payload is indistinguishable from a missing
+    // one, so a cross-tenant lookup is a fresh upload, never a hit.
+    Optional<DocumentLookupRow> duplicate =
+        documentRepository.findByTenantAndSha256(tenantId, validated.checksumSha256());
+    if (duplicate.isPresent()) {
+      DocumentLookupRow existing = duplicate.get();
+      return new DocumentDto(existing.documentId(), existing.knowledgeBaseId(), existing.status());
+    }
     // Stable id across a retry; the row and the event carry it. The object key is server-owned and
     // tenant-scoped (S10-02); its authoritative type is documents.mime_type, so the key carries no
     // content-type extension.
@@ -131,6 +151,64 @@ public class DocumentService {
   }
 
   /**
+   * Manually retry a permanently {@code FAILED} document (the {@code S10-19} retry edge): release
+   * it back to {@code QUEUED} and re-enqueue its {@code ingestion-requested} event in one
+   * transaction, so the next delivery re-drives the document.
+   *
+   * <p>Guards mirror the lifecycle transition (invariant 4): the retry first re-checks the document
+   * is tenant-owned (findByTenantAndId — a cross-tenant or forged id is a {@code 404}, invariant
+   * 1), then only releases a document in the {@code FAILED} state (releaseFailedToQueued is guarded
+   * by {@code status = 'FAILED'}; anything else is a {@code 400} — nothing to retry). The release
+   * and the outbox commit atomically (invariant 3); a fresh event id is used so the re-request is a
+   * new event, not a duplicate of the original request (which the inbox already consumed).
+   *
+   * @param tenantId the owning tenant (from the verified security context; never from input)
+   * @param documentId the tenant-owned document to retry
+   * @param createdBy the actor recorded on the re-enqueued event, or {@code null} for a system
+   *     actor
+   * @return the retried document in the {@link DocumentUploadStatus#QUEUED} state
+   * @throws ResponseStatusException {@code 404} when no tenant-owned document exists; {@code 400}
+   *     when it is not {@code FAILED}; {@code 503} when no database is configured (S01-02)
+   */
+  @Transactional
+  public DocumentDto retryFailed(UUID tenantId, UUID documentId, String createdBy) {
+    requireRepository(documentRepository);
+    requireTransition(documentTransitionService);
+    DocumentLookupRow document =
+        documentRepository
+            .findByTenantAndId(tenantId, documentId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "no tenant-owned document " + documentId + " to retry"));
+    if (document.status() != DocumentUploadStatus.FAILED) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST,
+          "document "
+              + documentId
+              + " is "
+              + document.status()
+              + ": only a FAILED document can be retried");
+    }
+    documentTransitionService.releaseFailedToQueued(tenantId, documentId);
+    UUID eventId = UUID.randomUUID();
+    OutboxEvent event =
+        OutboxEvent.pending(
+            eventId,
+            eventId,
+            "document.ingestion-requested.v1",
+            "agentflow.document.ingestion-requested.v1",
+            "document",
+            documentId,
+            tenantId,
+            payloadJson(documentId, document.knowledgeBaseId()),
+            CorrelationHeaders.of(documentId.toString(), null, null).toJson());
+    outboxService.enqueue(event);
+    return new DocumentDto(documentId, document.knowledgeBaseId(), DocumentUploadStatus.QUEUED);
+  }
+
+  /**
    * @param repository the {@code documents} writer, or {@code null} when no database is configured
    * @return the repository, or a {@code 503} when no database connection is configured (S01-02)
    */
@@ -141,6 +219,19 @@ public class DocumentService {
           "uploading a document is unavailable: no database connection is configured");
     }
     return repository;
+  }
+
+  /**
+   * @param transition the {@code documents.status} writer, or {@code null} when no database is
+   *     configured
+   * @throws ResponseStatusException {@code 503} when no database connection is configured (S01-02)
+   */
+  private void requireTransition(DocumentTransitionService transition) {
+    if (transition == null) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "retrying a document is unavailable: no database connection is configured");
+    }
   }
 
   /**
