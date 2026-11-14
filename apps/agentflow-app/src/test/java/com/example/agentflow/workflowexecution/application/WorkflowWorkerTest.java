@@ -22,6 +22,7 @@ import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
+import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
@@ -61,6 +62,7 @@ class WorkflowWorkerTest {
   private final RunLeaseService leaseService = mock(RunLeaseService.class);
   private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
   private final CheckpointAdapter checkpointAdapter = mock(CheckpointAdapter.class);
+  private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
 
   @Test
   void run_a_two_step_chain_to_success_and_reaches_every_node() {
@@ -765,6 +767,108 @@ class WorkflowWorkerTest {
         .isEqualTo(WorkflowRunState.FAILED);
   }
 
+  @Test
+  void a_human_approval_pause_survives_a_restart_without_skipping_the_side_effect() {
+    // S11-03 acceptance: a restart neither skips the approval nor leaves a worker thread occupied.
+    // The graph gates a side effect ("send-email") behind a HUMAN_APPROVAL step ("send-report").
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("send-report", WorkflowStepState.PENDING);
+    stepState.put("send-email", WorkflowStepState.PENDING);
+    // the gate node carries the redacted "action" the decision binds to (never the secret payload)
+    Map<String, Object> gateConfig = new LinkedHashMap<>();
+    gateConfig.put("action", "Send the monthly financial report to finance@acme.example");
+    WorkflowGraph graph =
+        new WorkflowGraph(
+            List.of(
+                new WorkflowNode("send-report", "HUMAN_APPROVAL", gateConfig),
+                node("send-email", "NOOP")),
+            List.of(edge("send-report", "send-email")));
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    // a recording handler proves the gated downstream side effect never runs while paused
+    List<String> downstreamRuns = new ArrayList<>();
+    StepHandler noop =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "NOOP".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            downstreamRuns.add(context.stepKey());
+            return StepResult.succeeded("email sent");
+          }
+        };
+
+    // worker 1 drives the run until it pauses at the approval boundary
+    WorkflowWorker worker = buildWorker(List.of(noop));
+    worker.pollOnce(tenant);
+    // the gate parked in WAITING_FOR_APPROVAL and never reached SUCCEEDED; the downstream is still
+    // PENDING (its predecessor did not succeed), and the gated side effect never ran (invariant 7)
+    assertThat(stepState.get("send-report")).isEqualTo(WorkflowStepState.WAITING_FOR_APPROVAL);
+    assertThat(stepState.get("send-email")).isEqualTo(WorkflowStepState.PENDING);
+    assertThat(downstreamRuns).isEmpty();
+    // the durable approval was recorded at the pause (the checkpoint of where execution stopped)
+    verify(approvalRepository)
+        .create(eq(tenant), eq(runId), eq("send-report"), anyString(), anyString(), any(), any());
+    // the run is parked in WAITING_FOR_APPROVAL (the higher-level pause), not concluded; the step
+    // ran READY -> RUNNING -> WAITING_FOR_APPROVAL
+    ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
+    verify(transitionService, times(2))
+        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+    assertThat(runState.getAllValues())
+        .containsExactly(WorkflowRunState.RUNNING, WorkflowRunState.WAITING_FOR_APPROVAL);
+    ArgumentCaptor<WorkflowStepState> stepTo = ArgumentCaptor.forClass(WorkflowStepState.class);
+    verify(transitionService, times(3))
+        .transitionStep(any(), any(), eq("send-report"), stepTo.capture(), anyString(), any());
+    assertThat(stepTo.getAllValues())
+        .containsExactly(
+            WorkflowStepState.READY,
+            WorkflowStepState.RUNNING,
+            WorkflowStepState.WAITING_FOR_APPROVAL);
+    // the run's lease is released: a paused run is not a live owner while it waits (S11-03)
+    verify(runRepository).releaseLease(tenant, runId, LEASE_EPOCH);
+
+    // a restart: a fresh worker claims the run again and drives it (same persisted stepState)
+    worker = buildWorker(List.of(noop));
+    worker.pollOnce(tenant);
+    // the approval still holds: the gate is still waiting, the downstream still did not run — the
+    // restart neither skipped the approval nor executed the gated side effect
+    assertThat(stepState.get("send-report")).isEqualTo(WorkflowStepState.WAITING_FOR_APPROVAL);
+    assertThat(stepState.get("send-email")).isEqualTo(WorkflowStepState.PENDING);
+    assertThat(downstreamRuns).isEmpty();
+    // no duplicate approval on the restart (at-least-once: one pause, one approval)
+    verify(approvalRepository, times(1))
+        .create(eq(tenant), eq(runId), eq("send-report"), anyString(), anyString(), any(), any());
+    // the lease was released once and never re-held: the paused run held no worker thread (S11-03)
+    verify(runRepository, times(1)).releaseLease(tenant, runId, LEASE_EPOCH);
+  }
+
   private static WorkflowNode node(String id, String type) {
     return new WorkflowNode(id, type, new LinkedHashMap<>());
   }
@@ -784,6 +888,7 @@ class WorkflowWorkerTest {
         null,
         transitionService,
         checkpointAdapter,
+        approvalRepository,
         handlers,
         properties);
   }

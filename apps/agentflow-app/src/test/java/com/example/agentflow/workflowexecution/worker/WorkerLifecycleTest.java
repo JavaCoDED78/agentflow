@@ -23,6 +23,7 @@ import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
+import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
@@ -59,6 +60,7 @@ class WorkerLifecycleTest {
   private final RunLeaseService leaseService = mock(RunLeaseService.class);
   private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
   private final CheckpointAdapter checkpointAdapter = mock(CheckpointAdapter.class);
+  private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
 
   @Test
   void start_then_stop_sets_shutting_down_and_drains_the_loop() throws Exception {
@@ -74,6 +76,7 @@ class WorkerLifecycleTest {
             null,
             transitionService,
             checkpointAdapter,
+            approvalRepository,
             List.of(new DeterministicStepHandler()),
             properties);
     WorkerLifecycle lifecycle = new WorkerLifecycle(worker, properties);
@@ -103,6 +106,7 @@ class WorkerLifecycleTest {
             null,
             transitionService,
             checkpointAdapter,
+            approvalRepository,
             List.of(new DeterministicStepHandler()),
             properties);
     WorkerLifecycle lifecycle = new WorkerLifecycle(worker, properties);
@@ -152,6 +156,7 @@ class WorkerLifecycleTest {
             null,
             transitionService,
             checkpointAdapter,
+            approvalRepository,
             List.of(blocking),
             properties);
     WorkerLifecycle lifecycle = new WorkerLifecycle(worker, properties);

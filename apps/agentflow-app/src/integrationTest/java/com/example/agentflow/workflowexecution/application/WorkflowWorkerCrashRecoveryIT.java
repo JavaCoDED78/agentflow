@@ -183,6 +183,7 @@ class WorkflowWorkerCrashRecoveryIT {
         heartbeat,
         transitionService,
         checkpointAdapter,
+        null,
         handlers,
         cfg);
   }

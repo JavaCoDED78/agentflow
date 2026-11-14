@@ -18,6 +18,7 @@ import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
+import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
@@ -56,6 +57,7 @@ class WorkflowWorkerHeartbeatTest {
   private final RunLeaseService leaseService = mock(RunLeaseService.class);
   private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
   private final CheckpointAdapter checkpointAdapter = mock(CheckpointAdapter.class);
+  private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
   private final RunHeartbeatService heartbeat = mock(RunHeartbeatService.class);
 
   @Test
@@ -152,6 +154,7 @@ class WorkflowWorkerHeartbeatTest {
         heartbeat,
         transitionService,
         checkpointAdapter,
+        approvalRepository,
         List.of(handler),
         properties);
   }

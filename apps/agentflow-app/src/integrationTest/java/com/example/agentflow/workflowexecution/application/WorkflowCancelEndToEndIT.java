@@ -128,6 +128,7 @@ class WorkflowCancelEndToEndIT {
             heartbeat,
             transitionService,
             checkpointAdapter,
+            null,
             List.<StepHandler>of(new DeterministicStepHandler()),
             properties);
   }

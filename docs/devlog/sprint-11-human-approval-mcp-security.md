@@ -4,10 +4,57 @@
 
 - [S11-01](#s11-01-tool-risk-classification-a-closed-deny-by-default-vocabulary-owned-by-the-catalogue) — tool risk classification policy (S11-01)
 - [S11-02](#s11-02-durable-approvals-schema) — durable approvals schema (S11-02)
-- [S11-03](#s11-03) — future: approvals store, consent lifecycle and audit (append-only)
+- [S11-03](#s11-03-durable-approval-pause) — the durable approval pause (WAITING_FOR_APPROVAL): the worker parks a run at a HUMAN_APPROVAL boundary and releases the worker lease (S11-03)
 - [S11-04](#s11-04) — future: tool allowlist enforcement + permission checks on agent actions
 - [S11-05](#s11-05) — future: MCP tool allowlist and risk classification
 - [S11-06](#s11-06) — future: MCP gateway hardening (transport, secrets, telemetry)
+
+---
+
+## S11-03 — durable approval pause (`WAITING_FOR_APPROVAL`)
+
+**Task (P0):** the worker stops a run at a `HUMAN_APPROVAL` side-effect boundary and parks it in `WAITING_FOR_APPROVAL` — the durable pause the `approvals` table (S11-02) records.
+
+**Deliverable:** the worker pause — a durable checkpoint of where execution stopped, with the worker lease released while the run waits. No new table, no new endpoint, no new module edge.
+
+### What changed
+
+- **A boundary before the handler.** `workflowexecution.application.WorkflowWorker#executeStep` gains the gate: at the top of a step's lifecycle — before the heartbeat and the `StepHandler` — it checks `HUMAN_APPROVAL.equals(node.type())` and, when true, routes to `pauseForApproval` instead of running a handler. The gated side effect never executes (invariant 7), so the model cannot run a forbidden tool past a human gate and no worker thread is held while the run waits (S11-03 acceptance).
+- **`pauseForApproval`** records the durable approval first (`ApprovalRepository#create(tenant, run, step, action, payloadFingerprint, actor, actor)` — the redacted `action` summary and the canonical-config SHA-256 `payload_fingerprint`, never the payload; invariant 8), parks the run (`RunStateMachineService#transitionRun(RUNNING → WAITING_FOR_APPROVAL, run.approval-needed)` — applied before the step; the run-level pause is the higher-level fact and if the run's lease moved the pause changes nothing and the next poll recovers) and then the step (`transitionStep(WAITING_FOR_APPROVAL, step.approval-needed)`), and finally releases the run's lease (`WorkflowRunRepository#releaseLease` — a new conditional `UPDATE ... SET lease_owner = NULL, lease_until = NULL, version = version + 1 WHERE id = ? AND tenant_id = ? AND lease_epoch = ?`, fenced on `lease_epoch`, invariant 5) so the parked run is claimable again for the resume (S11-04) rather than re-running its gated step.
+- **Best-effort release.** The lease release is wrapped: a `ConflictException` (the lease moved in the gap between the step and the release) is logged, never failed. The pause is durable regardless of the release — a restart re-pauses rather than skipping the approval (the acceptance: a restart neither skips the approval nor leaves a thread occupied). The checkpoint of where execution stopped is the `WAITING_FOR_APPROVAL` state itself — a higher-level pause, not a step failure; the step's in-flight attempt is concluded by the transition service (invariant 4).
+
+### Why
+
+- **Distrust of the model (invariant 7):** the `HUMAN_APPROVAL` node is a deny-by-default gate — the gated side effect must not run without an explicit human decision.
+- **Lease/fencing (invariant 5):** the parked run must not hold a worker thread; releasing the lease (fenced on `lease_epoch`) makes it claimable for the resume instead of re-running the gated step.
+- **PostgreSQL is the source of truth (invariant 4):** the pause is durable in the run/step status; Redis is not consulted.
+- **Consistency (ADR-002/003):** forward-only — no new migration (`approvals` is `V3_3_22` / S11-02); the pause is a runtime `WAITING_FOR_APPROVAL`, not a step failure.
+
+### Verification
+
+One new DB-free acceptance suite, JUnit-XML-verified: `WorkflowWorkerTest` (`apps/agentflow-app/src/test/java/com/example/agentflow/workflowexecution/application/WorkflowWorkerTest.java`, `tests="13"` `failures="0"` `errors="0"` `skipped="0"`) gains `a_human_approval_pause_survives_a_restart_without_skipping_the_side_effect` — a two-node graph (`HUMAN_APPROVAL` → `NOOP`) pauses at the gate (`send-report` in `WAITING_FOR_APPROVAL`, the downstream `send-email` still `PENDING`, its recording handler never invoked), records one durable approval at the pause, releases the run's lease once and never re-holds it across a simulated restart, and proves the restart neither skips the approval nor runs the gated side effect. `ApprovalRepositoryTest` (`persistence`, `tests="2"`) covers the tenant-scoped insert and the SQL-NULL binding of the nullable `requester` / `created_by`.
+
+```bash
+./gradlew :apps:agentflow-app:test \
+  --tests 'com.example.agentflow.workflowexecution.application.WorkflowWorkerTest.a_human_approval_pause_survives_a_restart_without_skipping_the_side_effect' \
+  --tests 'com.example.agentflow.workflowexecution.persistence.ApprovalRepositoryTest' \
+  --rerun-tasks
+```
+
+`./gradlew :apps:agentflow-app:check --rerun-tasks` → `BUILD SUCCESSFUL`. Unit + architecture gates (`ArchitectureBoundaryTest`(1), `PackageDependencyGraphTest`(4), `NoCyclicModuleDependenciesTest`(1), `AiProviderPortArchitecturalTest`(1) — `failures=0 errors=0`), no-cycles + formatting (`spotless`) + OpenAPI; no new migration, no new endpoint, no new module edge — `S11-03` does not change module ownership. Verified via the XML in `apps/agentflow-app/build/test-results/test/`.
+
+### Documentation
+
+- `docs/domain-glossary.md` — the **Approval node** row in §9 (human approval): "Stops the run at a safe side-effect boundary, moves it to `WAITING_FOR_APPROVAL`, and releases the worker lease while waiting."
+- `docs/architecture/run-state-machine.md` — transition 2 (`RUNNING → WAITING_FOR_APPROVAL`, `step.approval-needed`): "The worker lease is released while the run waits."
+- `docs/architecture/step-state-machine.md` — the step-level `WAITING_FOR_APPROVAL` row: "the run's lease is released while it awaits a human decision."
+- `docs/devlog/sprint-11-human-approval-mcp-security.md` — this section (newest-first, above S11-02).
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`.
+
+### Risks / follow-up
+
+- The release is best-effort and fenced on `lease_epoch`; a `ConflictException` during the release is logged, never failed — the pause is durable regardless.
+- The resume (S11-04) is the approve/reject endpoint (`POST /api/v1/runs/{runId}/approvals/{approvalId}`, scope `run:approve`), idempotent (`Idempotency-Key`), binding the decision to the fingerprint (glossary §9).
 
 ---
 
@@ -92,8 +139,7 @@ verified via the XML in `apps/agentflow-app/build/test-results/test/`).
 - `version`/`updated_at` were added per `database-conventions.md` (mutable row); if a decision will
   never mutate the row in the future, the question of whether to revisit it (it affects the
   glossary) stays open.
-- The next steps (S11-03…S11-06): the durable approval pause (`WAITING_FOR_APPROVAL`), the
-  approve/reject endpoint, expiry, binding the decision to the fingerprint, and the audit.
+- The durable approval pause (`WAITING_FOR_APPROVAL`) is done — [S11-03](#s11-03-durable-approval-pause). The next steps (S11-04…S11-06): the approve/reject endpoint (S11-04), expiry, binding the decision to the fingerprint, the audit, and the MCP allowlist / risk classification / gateway hardening (S11-05…S11-06).
 
 ---
 
