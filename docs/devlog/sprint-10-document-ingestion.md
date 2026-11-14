@@ -595,6 +595,33 @@ invariants already dictate, so `brainstorming` is skipped.
 ### Not changed
 The S3 client, the credentials binding, the `documents` schema (S10-05), the ingestion worker and the upload/delete API are `S10-03` … `S10-13`; they are not on disk yet. The upload validation layer is a `knowledgebase` concern; it writes nothing and owns no row, so it changes no existing module. Related changelog entry: **The document upload validation layer (S10-03)** in [`CHANGELOG.md`](../../CHANGELOG.md) (Unreleased → Added).
 
+## S10-21 — Document the RAG pipeline and the quality check (P0).
+
+
+### What changed
+A new [`docs/rag/pipeline.md`](docs/rag/pipeline.md) — the end-to-end RAG pipeline **as it runs today** (anchored to the runtime, not the plan's target state): upload → chunk → embed → index → retrieve → ground. The existing [`docs/rag/README.md`](docs/rag/README.md) is retrieval/grounding-focused (`S10-11` … `S10-18`); this closes the gap the plan fixes by documenting the write direction and the eval in the same anchored place. Anchored to the current code (`RetrievalService`, `CitationBuilder`, `GroundingPolicy`, the `ingestion` worker):
+
+- **Two directions, one page.** A Mermaid diagram separates the *write* path (upload → chunk → embed → index, async, off the request path) from the *read* path (retrieve → ground, synchronous). The write side rides the `documents` lifecycle (`UPLOADED → QUEUED → PROCESSING → INDEXED`, `FAILED`, `DELETE_REQUESTED → DELETED`, `document-lifecycle.md`); the read side is one tenant-scoped `RetrievalService` call.
+- **The write path (`S10-03` … `S10-13` + `S10-19`).** Upload + the accept/bound layer (`DocumentUploadValidator` — size, MIME + magic bytes, `sha256`), the server-owned key `documents/<tenantId>/<documentId>[.<ext>]` with a sanitised extension (`DocumentObjectKey`, `S10-04`), the `UPLOADED → QUEUED` outbox enqueue (`S10-06`), the `DocumentIndexingWorker` pass over the `agentflow.document.ingestion-requested.v1` topic (extract → chunk with `pipelineVersion() = 'rag-ingest-pipeline-v1'` → batched embed → `ON CONFLICT` upsert on `(document_id, chunk_index, pipeline_version)` → `document.indexed.v1` in the same transaction, `S10-13`), and the `S10-19` idempotency: duplicate upload by `(tenant_id, sha256)`, manual `FAILED → QUEUED` retry, and reindex on pipeline-version change.
+- **The read path (`S10-14` … `S10-18`).** The two independent halves — `findNearest` (vector, S10-14) and `lexicalSearch` (English FTS, S10-15) — fused by `RankFusion` (reciprocal-rank, dedup by id, cap) in `hybridSearch` (S10-16); one `CitationDto` per real chunk (`S10-17`); the sealed `GroundedAnswer` / `GroundingPolicy` no-evidence decision (`S10-18`). The top-k / threshold bounds and the no-label meters (`agentflow.knowledgebase.retrieval.*`) are noted.
+- **Tenant isolation and the invariants, in both directions** (invariant 1 — the `tenant_id` predicate is inside the query, never a post-filter; invariant 2 — PostgreSQL is the source of truth; invariant 3 — at-least-once + idempotent redelivery; invariants 7/8 — retrieved content and the model are untrusted; invariant 9 — no high-cardinality metric labels).
+- **The eval command (`S10-20`).** How `RagEvalRunner` drives the production `RetrievalService` over the fixed, model-free `RagEvalEmbedding` corpus, what it measures (recall@1/3/5/10, citation correctness, the evidence verdict), the run gate, and the recorded baseline rendering (`15/15 cases passed`), diffed against any change.
+- **How the pieces fit** — a module-ownership table (`knowledgebase` / `ingestion` / `ai` per step) — and **the documented gap**: the retrieval, citation and grounding methods are `knowledgebase.application` application services (driven by the eval runner and the unit / integration suites) but there is **no `knowledgebase.web` controller yet** — the end-to-end `POST …/answers` endpoint that wires `groundedAnswer`'s output into the model is a follow-up, not part of the `S10` deliverable.
+
+### Why
+The `S10-20` acceptance is "document the RAG pipeline and the quality check," and the existing docs split the two halves: `docs/rag/README.md` (S10-11 follow-up) documents retrieval/grounding; the write path and the eval were documented only per-task (`S10-03` … `S10-13` in the devlog, `S10-20` in `docs/evaluation/rag/`). A reader had to assemble the full pipeline from three places, and could mistake a planned step for an implemented one. This is a documentation-only follow-up to `S10-11` with no code change: it says *what the current code does*, anchored to `RetrievalService` / `CitationBuilder` / `GroundingPolicy` / the `ingestion` worker, and links to the owning documents (`domain-glossary.md` §7/§8, `module-map.md`, `module-api.md`, `document-lifecycle.md`, the ADRs) and the eval (`docs/evaluation/rag/`).
+
+### Verification
+The doc is anchored to the runtime, verified against the code rather than the plan:
+
+- `RetrievalService` public API read — `search` / `lexicalSearch` / `hybridSearch` / `citations` / `groundedAnswer` (the five entry points the doc names); `CitationBuilder` / `GroundingPolicy` / `GroundedAnswer` / `RankFusion` read; the ingest worker's `DocumentIndexingWorker.TOPIC = "agentflow.document.ingestion-requested.v1"` and the `document.indexed.v1` outbox topic confirmed; `DocumentObjectKey` canonical shape `documents/<tenantId>/<documentId>[.<ext>]` with the sanitised-extension set confirmed; `Chunker.pipelineVersion() = "rag-ingest-pipeline-v1"` and the `(document_id, chunk_index, pipeline_version)` `ON CONFLICT` upsert confirmed.
+- The **eval command runs green** in this environment — `./gradlew :apps:agentflow-app:test --tests '*RagEvalRunnerTest*' --rerun-tasks` → `BUILD SUCCESSFUL`; the baseline rendering quoted in the doc (`15/15 cases passed`, the per-case `recall@1=1.00 … citations=correct evidence=as-expected` lines) matches the recorded baseline in [`docs/evaluation/rag/corpus.md`](docs/evaluation/rag/corpus.md) exactly.
+- `docs/README.md` index updated (the tree-diagram line and the AI/RAG/evaluation table row both now reference `docs/rag/pipeline.md`).
+
+`./gradlew :apps:agentflow-app:check` is already green (this task adds no code), so the architecture, formatting (`spotless`) and OpenAPI gates are unchanged.
+
+### Not changed
+No code, no migration, no REST endpoint, no new module edge, no ADR — `S10-21` is documentation only and changes no module ownership, persistence approach or invariant. The only touched files are `docs/rag/pipeline.md` (new) and the `docs/README.md` index. Related changelog entry: **The RAG pipeline and the quality check (S10-21)** in [`CHANGELOG.md`](../../CHANGELOG.md) (Unreleased → Added).
 ## S10-20 — RAG evaluation corpus (P1).
 
 
