@@ -73,7 +73,7 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21");
+              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22");
     }
   }
 
@@ -94,7 +94,8 @@ class MigrationsTest {
             "outbox_events",
             "inbox_messages",
             "dlq_messages",
-            "document_chunks");
+            "document_chunks",
+            "approvals");
   }
 
   /**
@@ -141,6 +142,16 @@ class MigrationsTest {
     assertThat(nullableColumn("inbox_messages", "status")).isFalse();
     assertThat(nullableColumn("inbox_messages", "attempts")).isFalse();
     assertThat(nullableColumn("inbox_messages", "created_at")).isFalse();
+    // approvals (S11-02): the run, the tenant, the step, the action, the payload fingerprint and
+    // the requester are NOT NULL — the required surface of an approval request is enforced by the
+    // database; the decision columns and the expiry are nullable until the decision is made.
+    assertThat(nullableColumn("approvals", "tenant_id")).isFalse();
+    assertThat(nullableColumn("approvals", "run_id")).isFalse();
+    assertThat(nullableColumn("approvals", "status")).isFalse();
+    assertThat(nullableColumn("approvals", "action")).isFalse();
+    assertThat(nullableColumn("approvals", "payload_fingerprint")).isFalse();
+    assertThat(nullableColumn("approvals", "requester")).isFalse();
+    assertThat(nullableColumn("approvals", "created_at")).isFalse();
   }
 
   /**
@@ -237,6 +248,9 @@ class MigrationsTest {
     // S10-10: a chunk is tenant-scoped (FK tenants) and pinned to its parent document (FK
     // documents).
     assertThat(referencedParents("document_chunks")).contains("tenants", "documents");
+    // S11-02: the approval row is tenant-scoped (FK tenants) and pinned to its run (FK
+    // workflow_runs); tenant isolation flows through the run (invariant 1).
+    assertThat(referencedParents("approvals")).contains("tenants", "workflow_runs");
   }
 
   /** The single genuine secondary index (S03-07) exists on the tenant-list lookup path. */
@@ -830,6 +844,213 @@ class MigrationsTest {
     assertThat(columnComment("document_chunks", "search_vector")).contains("S10-15");
   }
 
+  /**
+   * The S11-02 acceptance lives in the schema: the partial unique index {@code
+   * approvals_run_step_pending} (on {@code (run_id, step_key)} where {@code status = 'PENDING'})
+   * makes a second active approval on one step a unique violation rather than a post-check, so two
+   * active conflicting approvals cannot arise by accident (at-least-once, ADR-003); the {@code
+   * approvals_run_created_at_idx} index backs a run's approval list; and the {@code
+   * approvals_status_check} CHECK bounds the status vocabulary at the storage layer. All three are
+   * declared by {@code V3_3_22}.
+   */
+  @Test
+  void approvals_indexes_and_status_check_exist() throws SQLException {
+    assertThat(indexes("approvals")).contains("approvals_run_step_pending");
+    assertThat(indexes("approvals")).contains("approvals_run_created_at_idx");
+    assertThat(checkConstraints("approvals")).contains("approvals_status_check");
+  }
+
+  /**
+   * The S11-02 acceptance, proven against data rather than declared: a valid PENDING approval for
+   * (run, step) lands, and a second active (PENDING) approval on the same step is rejected by the
+   * partial unique index, so two active conflicting approvals cannot arise by accident even under a
+   * race or a duplicate event. The partial index is scoped to PENDING: a decided (APPROVED)
+   * approval and an active (PENDING) approval can coexist on the same step, and a PENDING on a
+   * different step or a different run is safe. A missing parent tenant or run is rejected by the
+   * foreign key, an unknown status by the CHECK, and a missing required column by NOT NULL. Every
+   * probe rolls back so nothing leaks.
+   */
+  @Test
+  void approvals_acceptance_against_data() throws SQLException {
+    try (Connection connection = connection()) {
+      connection.setAutoCommit(false);
+      try {
+        // A tenant, then its run — the approval row is tenant-scoped and pinned to its run.
+        insert(
+            "INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')",
+            uuid(),
+            "t-approvals");
+        UUID tenant = tenantId("t-approvals");
+        assertThat(tenant).isNotNull();
+
+        insert(
+            "INSERT INTO workflow_definitions (id, tenant_id, name, status) VALUES (?, ?, ?, ?)",
+            uuid(),
+            tenant,
+            "wf-approvals",
+            "ACTIVE");
+        UUID definition = definitionId("wf-approvals");
+        String version = uuid();
+        insert(
+            "INSERT INTO workflow_definition_versions (id, workflow_id, version, graph_json, checksum) "
+                + "VALUES (?, ?, 1, ?, ?)",
+            version,
+            definition,
+            "{\"nodes\":[]}",
+            "c");
+        String runId = uuid();
+        insert(
+            "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt) "
+                + "VALUES (?, ?, ?, 'QUEUED', 1)",
+            runId,
+            tenant,
+            version);
+
+        String stepKey = "approve-write";
+
+        // A valid PENDING approval lands; the decision columns are nullable until it is decided.
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)",
+            uuid(),
+            tenant,
+            runId,
+            stepKey,
+            "approve the write",
+            "fp-1",
+            "system");
+
+        // The acceptance: a second PENDING on the same (run_id, step_key) is rejected by the
+        // partial
+        // unique index — two active conflicting approvals on one step cannot arise by accident.
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                            + "payload_fingerprint, requester) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)",
+                        uuid(),
+                        tenant,
+                        runId,
+                        stepKey,
+                        "approve the write",
+                        "fp-1",
+                        "system"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
+
+        // The partial index is scoped to PENDING: a decided (APPROVED) approval and an active
+        // (PENDING) approval can coexist on the same (run, step).
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester, decision_actor, decision_at) VALUES (?, ?, ?, ?, "
+                + "'APPROVED', ?, ?, ?, ?, ?)",
+            uuid(),
+            tenant,
+            runId,
+            stepKey,
+            "approve the write",
+            "fp-1",
+            "approver",
+            "approver",
+            "2026-01-01T00:00:00Z");
+
+        // A PENDING on a different step for the same run is a different row — safe.
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)",
+            uuid(),
+            tenant,
+            runId,
+            "approve-diff",
+            "approve the read",
+            "fp-2",
+            "system");
+
+        // A PENDING on a different run for the same step is a different row — safe.
+        String otherRun = uuid();
+        insert(
+            "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt) "
+                + "VALUES (?, ?, ?, 'QUEUED', 1)",
+            otherRun,
+            tenant,
+            version);
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)",
+            uuid(),
+            tenant,
+            otherRun,
+            stepKey,
+            "approve the write",
+            "fp-1",
+            "system");
+
+        // A missing parent tenant is rejected by the foreign key.
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                                + "payload_fingerprint, requester) VALUES ('"
+                                + uuid()
+                                + "', '00000001-0000-0000-0000-000000000001', '"
+                                + runId
+                                + "', 'x', 'PENDING', 'x', 'fp', 'system')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
+
+        // A missing parent run is rejected by the foreign key.
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                                + "payload_fingerprint, requester) VALUES ('"
+                                + uuid()
+                                + "', '"
+                                + tenant
+                                + "', '00000001-0000-0000-0000-000000000001', 'x', 'PENDING', 'x', 'fp', 'system')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("foreign key");
+
+        // An unknown status is rejected by the CHECK.
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                            + "payload_fingerprint, requester) VALUES (?, ?, ?, ?, 'INVALID', ?, ?, ?)",
+                        uuid(),
+                        tenant,
+                        runId,
+                        stepKey,
+                        "x",
+                        "fp",
+                        "system"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("check");
+
+        // A missing required column is rejected by NOT NULL.
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "INSERT INTO approvals (id, run_id, step_key, status, action, "
+                                + "payload_fingerprint, requester) VALUES ('"
+                                + uuid()
+                                + "', '"
+                                + runId
+                                + "', 'x', 'PENDING', 'x', 'fp', 'system')"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("not-null");
+
+        connection.rollback();
+      } catch (SQLException e) {
+        connection.rollback();
+        throw e;
+      }
+    }
+  }
+
   private static Connection connection() throws SQLException {
     return DriverManager.getConnection(
         postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
@@ -840,7 +1061,13 @@ class MigrationsTest {
   }
 
   private static void insert(String sql, Object... params) throws SQLException {
-    try (Statement stmt = statement()) {
+    // Each insert is an independent autocommit statement, so the connection is opened and closed
+    // around this one call. Closing the connection here (not just the statement) is deliberate:
+    // this helper is called from the schema acceptance tests in tight loops, and an un-closed
+    // connection would accumulate against the Testcontainers Postgres max_connections and exhaust
+    // it ("sorry, too many clients already"), failing unrelated tests.
+    try (Connection conn = connection();
+        Statement stmt = conn.createStatement()) {
       stmt.execute(interpolate(sql, params));
     }
   }

@@ -188,7 +188,7 @@ API: `POST /api/v1/knowledge-bases`, `POST /api/v1/knowledge-bases/{id}/document
 
 | Concept | Shape | Meaning |
 |---|---|---|
-| **Approval (approval record)** | table `approvals` (`id`, `tenant_id`, `run_id`, `step_key`, `status`, `action`, `payload_fingerprint`, `requester`, `decision_actor`, `decision_at`, `decision_comment`, `expiry`, `created_at`) | A durable, immutable-payload-bound pause point for a side effect. |
+| **Approval (approval record)** | table `approvals` (`id`, `tenant_id`, `run_id`, `step_key`, `status`, `action`, `payload_fingerprint`, `requester`, `decision_actor`, `decision_at`, `decision_comment`, `expiry`, `version`, `updated_at`, `created_at`); `unique (run_id, step_key) WHERE status = 'PENDING'` | A durable, payload-bound pause point for a side effect. At most one active (PENDING) approval per step — the partial unique index makes two active conflicting approvals on one step impossible by accident. |
 | **Approval node** | graph node `HUMAN_APPROVAL` | Stops the run at a safe side-effect boundary, moves it to `WAITING_FOR_APPROVAL`, and releases the worker lease while waiting. |
 | **Approval decision** | `POST /api/v1/runs/{runId}/approvals/{approvalId}` (`Idempotency-Key`), scope `run:approve` | `approve`/`reject`/expiry, idempotent, written to the append-only audit trail. The decision is bound to the exact tool-argument fingerprint — an approved set of arguments cannot execute a different one. |
 
