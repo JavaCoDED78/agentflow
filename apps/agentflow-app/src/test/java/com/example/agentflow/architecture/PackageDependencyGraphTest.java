@@ -59,7 +59,7 @@ class PackageDependencyGraphTest {
     edges.put("ai", Set.of("toolexecution", "workflowexecution"));
     edges.put("usage", Set.of("ai", "workflowexecution"));
     edges.put("audit", Set.of("identity"));
-    edges.put("workflowexecution", Set.of("workflowdefinition", "messaging"));
+    edges.put("workflowexecution", Set.of("workflowdefinition", "messaging", "audit"));
 
     assertThat(new PackageDependencyGraph(edges).findCycles()).isEmpty();
   }

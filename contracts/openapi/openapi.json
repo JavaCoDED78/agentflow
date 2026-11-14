@@ -270,6 +270,102 @@
         }
       }
     },
+    "/api/v1/runs/{runId}/approvals/{approvalId}" : {
+      "post" : {
+        "tags" : [ "approval-controller" ],
+        "summary" : "Approve a human-approval request (idempotent)",
+        "description" : "Records the APPROVED decision on a PENDING approval and its audit row in one transaction (S11-04, ADR-018). Idempotent: a repeat — with or without the Idempotency-Key — replays the recorded decision instead of writing a second one; a reused key with a different payload is a 409. Requires the run:approve authority (S04-08); tenant-scoped so another tenant's approval is a 404, never a leak.",
+        "operationId" : "decideApproval",
+        "parameters" : [ {
+          "name" : "runId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "approvalId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "Idempotency-Key",
+          "in" : "header",
+          "description" : "A client-chosen idempotency key. A repeat with the same payload under this key replays the recorded decision (S11-04); a different payload under the same key is a 409 conflict. Omit for an unkeyed decision — the state-based replay still answers a repeat.",
+          "required" : false,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "requestBody" : {
+          "description" : "The decision body — {\"decision\":\"approve\",\"comment\":…}. Consumed as the raw bytes so the idempotency fingerprint is canonical (wire-format independent).",
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "the decision snapshot (original or replayed)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDecisionDto"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "the body is not the decision JSON, the decision is not 'approve', or the key is not a UUID",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDecisionDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "no approval matches (tenant_id, run_id, approvalId)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDecisionDto"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "already decided otherwise, expired, the step moved on, or a reused key carries a different payload",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDecisionDto"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApprovalDecisionDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workflows/{workflowId}" : {
       "get" : {
         "tags" : [ "workflow-definition-controller" ],
@@ -525,6 +621,47 @@
           "createdAt" : {
             "type" : "string",
             "format" : "date-time"
+          }
+        }
+      },
+      "ApprovalDecisionRequest" : {
+        "type" : "object",
+        "properties" : {
+          "decision" : {
+            "type" : "string"
+          },
+          "comment" : {
+            "type" : "string"
+          }
+        }
+      },
+      "ApprovalDecisionDto" : {
+        "type" : "object",
+        "properties" : {
+          "approvalId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "runId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "stepKey" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED" ]
+          },
+          "decisionActor" : {
+            "type" : "string"
+          },
+          "decisionAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "decisionComment" : {
+            "type" : "string"
           }
         }
       },

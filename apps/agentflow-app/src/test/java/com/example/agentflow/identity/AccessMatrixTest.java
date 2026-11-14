@@ -42,6 +42,17 @@ class AccessMatrixTest {
   }
 
   @Test
+  void approving_a_human_approval_step_requires_run_approve() {
+    // S11-04: the least privilege for the decision endpoint is exactly the approval capability —
+    // never a broader run permission.
+    AccessMatrix matrix = new AccessMatrix();
+
+    EndpointRule approve = find(matrix, "POST", "/api/v1/runs/*/approvals/*");
+
+    assertThat(approve.requiredPermission()).isEqualTo(Permission.RUN_APPROVE);
+  }
+
+  @Test
   void referenced_permissions_are_subset_of_catalogue() {
     AccessMatrix matrix = new AccessMatrix();
 

@@ -73,7 +73,7 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22");
+              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23");
     }
   }
 
@@ -1049,6 +1049,152 @@ class MigrationsTest {
         throw e;
       }
     }
+  }
+
+  /**
+   * The S11-04 idempotency pair is schema-backed ({@code V3_3_23}): {@code idempotency_key} and
+   * {@code idempotency_fingerprint} are nullable — an unkeyed decision stores neither and is
+   * answered by the state-based replay — and the {@code approvals_tenant_idempotency_key} unique
+   * guard makes a second decision under the same (tenant, key) a unique violation, exactly the
+   * {@code workflow_runs} convention (S06-05): a keyed repeat is answered from the stored row,
+   * never a second decision. The guard is tenant-scoped, so the same key under another tenant is a
+   * different row (invariant 1).
+   */
+  @Test
+  void approvals_idempotency_key_is_nullable_and_unique_per_tenant() throws SQLException {
+    assertThat(nullableColumn("approvals", "idempotency_key")).isTrue();
+    assertThat(nullableColumn("approvals", "idempotency_fingerprint")).isTrue();
+
+    try (Connection connection = connection()) {
+      connection.setAutoCommit(false);
+      try {
+        insert(
+            "INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')",
+            uuid(),
+            "t-approvals-idem");
+        insert(
+            "INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')",
+            uuid(),
+            "t-approvals-idem-2");
+        UUID tenant = tenantId("t-approvals-idem");
+        UUID otherTenant = tenantId("t-approvals-idem-2");
+        assertThat(tenant).isNotNull();
+        assertThat(otherTenant).isNotNull();
+
+        UUID run = insertRun(tenant, "wf-approvals-idem");
+        UUID otherRun = insertRun(otherTenant, "wf-approvals-idem-2");
+
+        // A decision recorded under a key lands with its payload fingerprint.
+        String key = uuid();
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester, decision_actor, decision_at, idempotency_key, "
+                + "idempotency_fingerprint) VALUES (?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?)",
+            uuid(),
+            tenant,
+            run,
+            "step-one",
+            "approve the write",
+            "fp-1",
+            "system",
+            "approver",
+            "2026-11-14T12:00:00Z",
+            key,
+            "fingerprint-1");
+
+        // The acceptance: a second decision under the same (tenant, key) is rejected by the
+        // unique guard — a keyed repeat is answered, never a second row.
+        assertThatThrownBy(
+                () ->
+                    insert(
+                        "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                            + "payload_fingerprint, requester, decision_actor, decision_at, "
+                            + "idempotency_key, idempotency_fingerprint) VALUES (?, ?, ?, ?, "
+                            + "'APPROVED', ?, ?, ?, ?, ?, ?, ?)",
+                        uuid(),
+                        tenant,
+                        run,
+                        "step-two",
+                        "approve the read",
+                        "fp-2",
+                        "system",
+                        "approver",
+                        "2026-11-14T12:00:01Z",
+                        key,
+                        "fingerprint-2"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("unique constraint");
+
+        // The guard is tenant-scoped: the same key under another tenant is a different row.
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester, decision_actor, decision_at, idempotency_key, "
+                + "idempotency_fingerprint) VALUES (?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?)",
+            uuid(),
+            otherTenant,
+            otherRun,
+            "step-one",
+            "approve the write",
+            "fp-1",
+            "system",
+            "approver",
+            "2026-11-14T12:00:00Z",
+            key,
+            "fingerprint-1");
+
+        // The columns are nullable: an unkeyed decision stores neither and lands.
+        insert(
+            "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action, "
+                + "payload_fingerprint, requester, decision_actor, decision_at) "
+                + "VALUES (?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?)",
+            uuid(),
+            tenant,
+            run,
+            "step-three",
+            "approve the delete",
+            "fp-3",
+            "system",
+            "approver",
+            "2026-11-14T12:00:02Z");
+
+        connection.rollback();
+      } catch (SQLException e) {
+        connection.rollback();
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * Inserts the workflow-definition → version → run chain an approval row needs a FK target for.
+   *
+   * @param tenant the owning tenant
+   * @param name a unique definition name for this probe
+   * @return the run id
+   */
+  private static UUID insertRun(UUID tenant, String name) throws SQLException {
+    insert(
+        "INSERT INTO workflow_definitions (id, tenant_id, name, status) VALUES (?, ?, ?, ?)",
+        uuid(),
+        tenant,
+        name,
+        "ACTIVE");
+    String version = uuid();
+    insert(
+        "INSERT INTO workflow_definition_versions (id, workflow_id, version, graph_json, checksum) "
+            + "VALUES (?, ?, 1, ?, ?)",
+        version,
+        definitionId(name),
+        "{\"nodes\":[]}",
+        "c");
+    String run = uuid();
+    insert(
+        "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt) "
+            + "VALUES (?, ?, ?, 'QUEUED', 1)",
+        run,
+        tenant,
+        version);
+    return UUID.fromString(run);
   }
 
   private static Connection connection() throws SQLException {
