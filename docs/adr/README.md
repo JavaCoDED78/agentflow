@@ -32,6 +32,7 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-014`](ADR-014-provider-port.md) | The AI provider is accessed behind a neutral application port | 2026-11-07 | S09-01 | Accepted |
 | [`ADR-015`](ADR-015-knowledgebase-outbox-edge.md) | knowledgebase enqueues ingestion through the transactional outbox (its only `messaging` edge) | 2026-11-11 | S10-06 | Accepted |
 | [`ADR-016`](ADR-016-ingestion-ai-embedding-edge.md) | ingestion embeds chunks through the `ai` embedding port (arrow 19) | 2026-11-12 | S10-12 | Accepted |
+| [`ADR-017`](ADR-017-tool-risk-classification.md) | Tool risk classification is a closed, deny-by-default vocabulary owned by the catalogue | 2026-11-14 | S11-01 | Accepted |
 
 ## Statuses
 

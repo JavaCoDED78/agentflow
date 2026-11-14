@@ -111,6 +111,10 @@ where possible (`S02-08` rejects any edge outside the module-map table;
 - **AI is an untrusted planner** — the model proposes a typed plan that a
   server-side validation gate checks before execution; it never changes
   permissions, policies or allowlists (`ADR-006`).
+- **Tool risk is classified by default** — every tool carries a risk class
+  (`READ_ONLY` / `WRITE` / `EXTERNAL_SIDE_EFFECT`); an unknown or missing class
+  is denied by default, and the classification is defined once and owned by the
+  catalogue (`ADR-017`).
 - **Errors are classified** by the taxonomy; retry applies only to transient
   classes (plan §12, invariant 12).
 - **Build integrity** — one Java 25 toolchain, one formatter (Spotless/Google Java
