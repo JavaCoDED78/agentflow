@@ -8,5 +8,7 @@ package com.example.agentflow.audit.domain;
  */
 public enum AuditResourceType {
   WORKFLOW_DEFINITION,
-  TOOL
+  TOOL,
+  /** A human-approval record from the {@code approvals} table (S11-04). */
+  APPROVAL
 }

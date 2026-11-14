@@ -79,6 +79,7 @@ flowchart LR
     kb -->|18| messaging
     wfexc -->|12| wfdef
     wfexc -->|13| messaging
+    wfexc -->|20| audit
     feedback["execution SPI<br/>StepHandler port (defined in wfexc)"]
 
     %% --- Feedback via the execution SPI: implementers depend on the port owner ---
@@ -122,7 +123,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `identity` | tenant context, claims → permissions mapping, the trusted source of tenant | Keycloak (OIDC/JWT), Spring Security |
 | `agentcatalog` | agent profiles, model policy, tool allowlist, tool risk classes | `identity`, PostgreSQL |
 | `workflowdefinition` | versioned workflow graph, DSL/graph validation, activation | `agentcatalog` |
-| `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, `StepHandler` port | `workflowdefinition`, messaging (outbox/inbox) |
+| `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, approvals, `StepHandler` port | `workflowdefinition`, messaging (outbox/inbox), `audit` (approval decisions, arrow 20) |
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
 | `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), object storage |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19) |
@@ -208,7 +209,7 @@ enforcement is everywhere).
 The numbered arrows in the diagram are the **only** allowed compile-time `module -> module`
 edges, as tabulated below. They follow the plan's §4.2 "outgoing dependencies"
 column and the glossary's ownership, plus the ADR-recorded later edges (18, `ADR-015`;
-19, `ADR-016`). Everything else is a runtime dependency of
+19, `ADR-016`; 20, `ADR-018`). Everything else is a runtime dependency of
 a single package (Keycloak, PostgreSQL, Kafka, Redis, object storage, the
 model provider) and is **not** a module edge.
 
@@ -229,6 +230,7 @@ model provider) and is **not** a module edge.
 | 13 | `workflowexecution -> messaging` | a run/step transition publishes through the outbox port |
 | 18 | `knowledgebase -> messaging` | the upload enqueues `ingestion-requested` through the transactional outbox port (S10-06; ADR-015) |
 | 19 | `ingestion -> ai` | the pipeline embeds chunk sets through the neutral embedding port (`EmbeddingGenerationService`; S10-12; ADR-016) |
+| 20 | `workflowexecution -> audit` | the human-approval decision is written to the append-only audit trail in the same transaction as the decision (S11-04; ADR-018) |
 | 14–16 | `toolexecution -> workflowexecution`, `ai -> workflowexecution`, `knowledgebase -> workflowexecution` | **the execution SPI**: these packages implement the `StepHandler` port that `workflowexecution` owns (open decision §4) |
 | 17 | `workflowexecution -> toolexecution/ai/knowledgebase` | **runtime only**, via the SPI (never a compile edge) |
 

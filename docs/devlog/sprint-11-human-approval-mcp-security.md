@@ -5,9 +5,66 @@
 - [S11-01](#s11-01-tool-risk-classification-a-closed-deny-by-default-vocabulary-owned-by-the-catalogue) — tool risk classification policy (S11-01)
 - [S11-02](#s11-02-durable-approvals-schema) — durable approvals schema (S11-02)
 - [S11-03](#s11-03-durable-approval-pause) — the durable approval pause (WAITING_FOR_APPROVAL): the worker parks a run at a HUMAN_APPROVAL boundary and releases the worker lease (S11-03)
-- [S11-04](#s11-04) — future: tool allowlist enforcement + permission checks on agent actions
-- [S11-05](#s11-05) — future: MCP tool allowlist and risk classification
-- [S11-06](#s11-06) — future: MCP gateway hardening (transport, secrets, telemetry)
+- [S11-04](#s11-04-the-approve-endpoint) — the approve endpoint: the human decision on a HUMAN_APPROVAL pause, recorded atomically with its audit row (S11-04)
+- [S11-05](#s11-05) — future: reject/expiry — the full approval lifecycle, continuation published only through the outbox (S11-05)
+- [S11-06](#s11-06) — future: the payload-bound approval — the fingerprint checked at execution (S11-06)
+
+---
+
+## S11-04 — the approve endpoint
+
+**Task (P0):** implement the approve endpoint — require `run:approve`; check tenant, approval status/expiry and step; record the decision and the audit atomically; make a repeated decision idempotent.
+
+**Deliverable:** `POST /api/v1/runs/{runId}/approvals/{approvalId}` — the human decision on the durable pause S11-03 parks, idempotent by state and by `Idempotency-Key`, the decision and its audit row one durable fact.
+
+### What changed
+
+- **The endpoint.** `workflowexecution.web.ApprovalController` accepts the decision body (`{"decision":"approve","comment":…}` — reject and the expiry lifecycle land in S11-05), the optional `Idempotency-Key` header and a canonical payload fingerprint, and delegates to `ApprovalService#approve`. The body is consumed as raw bytes and parsed canonically, so the idempotency fingerprint is wire-format independent (the controller test pins the fingerprint across `{"decision":"approve","comment":"x"}` and a pretty-printed equivalent). The OpenAPI contract documents the request body as the real `ApprovalDecisionRequest` schema (the swagger `@RequestBody` annotation overrides the raw-`String` parameter shape; `generateOpenApiContract` regenerated, `***`-scan clean).
+- **The decision guards, the S11-04 acceptance ("unauthorized user / another tenant cannot approve a step").** The access matrix gates the endpoint on the `run:approve` authority (S04-08, new `AccessMatrix` rule). `ApprovalService#approve` looks the approval up by `(tenant_id, run_id, id)` — another tenant's approval is a `404`, never a leak (invariant 1) — and decides only a `PENDING`, unexpired approval whose step is still `WAITING_FOR_APPROVAL` (`409` otherwise). The write is the guarded transition itself: a conditional `UPDATE` on `status = 'PENDING'` and the optimistic-lock `version`, a zero-rows outcome a `ConflictException` (invariant 4, at-least-once `ADR-003`).
+- **The atomic audit append.** `AuditService.record(...)` (the new `APPROVE` verb / `APPROVAL` resource type) joins the same `@Transactional` boundary, so the decision and its audit row commit or roll back together — across the new `workflowexecution -> audit` compile edge recorded as `ADR-018` (module-map arrow 20; the architecture gates `ArchitectureBoundaryTest` / `PackageDependencyGraphTest` updated). The audit row carries the actor, the verb, the resource type and the approval id — never the comment text, never the payload (invariant 8).
+- **Idempotency, two layers.** By state: a repeat approve on an already-`APPROVED` approval replays the recorded decision, and a lost race re-reads the winner instead of failing. By key: migration `V3_3_23` adds the nullable `idempotency_key` / `idempotency_fingerprint` pair and the `approvals_tenant_idempotency_key` unique guard (the `workflow_runs` convention of S06-05/S06-06) — the stored fingerprint proves a replay, a different payload under a reused key a `409`, and a duplicate-key race is answered from the keyed row re-read. An unkeyed decision skips the keyed path entirely; the state-based replay still answers a repeat.
+- **New types.** `workflowexecution.domain.ApprovalStatus` mirrors the `approvals_status_check` vocabulary (`PENDING`/`APPROVED`/`REJECTED`/`EXPIRED`/`CANCELLED`); `application.ApprovalDecisionRequest` is the decision body; `application.ApprovalDecisionDto` is the response snapshot (`approvalId`, `runId`, `stepKey`, `status`, `decisionActor`, `decisionAt`, `decisionComment` — never the payload or the fingerprint preimage, invariant 8). `ApprovalRepository` gains the tenant-scoped `find` / `findByIdempotencyKey` reads and the guarded `recordApprove` write.
+
+### Why
+
+- **Distrust of the model (invariant 7):** the human decision is the gate — it must be recorded by the backend, with the actor from the verified security context, never from the request body.
+- **Tenant isolation (invariant 1):** every read and the guarded write carry the `tenant_id` predicate, so a foreign approval is indistinguishable from a missing one (404, not a leak).
+- **PostgreSQL is the source of truth (invariant 4):** the decision is a state-machine transition — conditional update + optimistic version in one transaction, never a read-then-write.
+- **At-least-once (`ADR-003`):** a repeated decision (retry, double-click, redelivery) answers with the recorded decision instead of a second write — by state and by key.
+
+### Verification
+
+New DB-free suites, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`): `ApprovalServiceTest` (`tests="15"` — happy path with the atomic audit append, the state- and key-based replays, 404 cross-tenant/missing, 409 decided-otherwise/expired/step-moved/lost-race/different-payload, the duplicate-key race answered from the keyed row, 503 without a database); `ApprovalRepositoryTest` (`tests="8"` — the tenant-scoped `find`/`findByIdempotencyKey` SQL, the `recordApprove` binds driven through the `PreparedStatementSetter`, SQL-NULL bindings, zero-rows → `ConflictException`); `ApprovalControllerTest` (`tests="6"` — the `200` contract, the key/fingerprint threading, the canonical-fingerprint stability across wire formats, the `400` edges); `ApprovalStatusTest` (`tests="2"`); `AccessMatrixTest` (`tests="5"`) gains the `run:approve` rule.
+
+```bash
+./gradlew :apps:agentflow-app:test \
+  --tests 'com.example.agentflow.workflowexecution.application.ApprovalServiceTest' \
+  --tests 'com.example.agentflow.workflowexecution.persistence.ApprovalRepositoryTest' \
+  --tests 'com.example.agentflow.workflowexecution.web.ApprovalControllerTest' \
+  --rerun-tasks
+```
+
+The schema probe `MigrationsTest#approvals_idempotency_key_is_nullable_and_unique_per_tenant` proves the `V3_3_23` acceptance on `pgvector/pgvector:0.8.6-pg18` via Testcontainers: the columns are nullable, the unique guard rejects a second decision under the same `(tenant, key)`, the tenant-scoped guard accepts the same key under another tenant, an unkeyed decision lands.
+
+```bash
+./gradlew :apps:agentflow-app:integrationTest --tests '*MigrationsTest*' --rerun-tasks
+```
+
+`MigrationsTest` `tests="22" failures="0" errors="0" skipped="0"` (`BUILD SUCCESSFUL`). `./gradlew :apps:agentflow-app:check --rerun-tasks` → `BUILD SUCCESSFUL` — unit + architecture gates (`ArchitectureBoundaryTest` `tests="1"`, `PackageDependencyGraphTest` `tests="4"`, `NoCyclicModuleDependenciesTest` `tests="1"` — all `failures="0"`, XML verified fresh) + no-cycles + formatting (`spotless`) + the OpenAPI contract gate (`OpenApiContractCheckTest` green against the regenerated `contracts/openapi/openapi.json`, `***`-scan zero). All counts read from the XML in `apps/agentflow-app/build/test-results/`.
+
+### Documentation
+
+- `docs/adr/ADR-018-workflowexecution-audit-edge.md` — the new `workflowexecution -> audit` compile edge (the decision/audit atomicity), added to the `docs/adr/README.md` register.
+- `docs/architecture/module-map.md` — arrow 20 and the `workflowexecution` dependency row.
+- `docs/architecture/module-api.md` — the `ApprovalService` entry and the real permitted public types (`ApprovalStatus`, `ApprovalDecisionRequest`, `ApprovalDecisionDto`).
+- `docs/security/permissions.md` — the `POST /api/v1/runs/*/approvals/*` → `run:approve` matrix row.
+- `contracts/openapi/openapi.json` — regenerated (the new path, the `ApprovalDecisionRequest` body schema, the `Idempotency-Key` header parameter).
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-03).
+
+### Risks / follow-up
+
+- The approve endpoint records the decision and parks the outcome; the resume of the run (step/run transition out of `WAITING_FOR_APPROVAL`, published only through the outbox) is S11-05, together with reject and the expiry lifecycle.
+- The fingerprint is stored and compared for idempotency; binding it to execution (re-check at side-effect time) is S11-06 — until then a decision authorizes the step, not a re-validated argument set.
 
 ---
 
