@@ -137,6 +137,41 @@ public class WorkflowRunRepository {
   }
 
   /**
+   * Releases the run's lease without moving its status (S11-03): a run parked at a {@code
+   * HUMAN_APPROVAL} boundary is not a live owner while it waits, so clearing {@code lease_owner}/
+   * {@code lease_until} makes it claimable again (durable-execution §3) and is resumed by the
+   * approval decision (S11-04), not by a re-claimed run re-running its gated step. The conditional
+   * update is fenced on the run lease_epoch (invariant 5): a stale owner affects no row, so another
+   * worker re-claiming this run in the meantime leaves the lease it already set intact.
+   *
+   * @param tenantId the run's tenant (the guard's tenant predicate — invariant 1)
+   * @param runId the run
+   * @param leaseEpoch the run lease_epoch the caller claims to hold (invariant 5)
+   * @throws ConflictException the row did not move (missing / cross-tenant / stale lease epoch)
+   */
+  public void releaseLease(UUID tenantId, UUID runId, int leaseEpoch) {
+    int affected =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET lease_owner = NULL, lease_until = NULL, updated_at = now(), version = version + 1"
+                + " WHERE id = ? AND tenant_id = ? AND lease_epoch = ?",
+            ps -> {
+              ps.setObject(1, runId);
+              ps.setObject(2, tenantId);
+              ps.setInt(3, leaseEpoch);
+            });
+    if (affected == 0) {
+      throw new ConflictException(
+          "run "
+              + runId
+              + " lease is out of date (lease epoch "
+              + leaseEpoch
+              + ") or no longer ours — the pause is not ours");
+    }
+  }
+
+  /**
    * Atomically claim a run for the current worker (S07-03, the ADR-011 lease model).
    *
    * <p>The whole operation is one conditional {@code UPDATE ... RETURNING lease_epoch}: it sets

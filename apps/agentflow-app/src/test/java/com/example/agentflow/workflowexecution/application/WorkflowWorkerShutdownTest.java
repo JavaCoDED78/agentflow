@@ -13,6 +13,7 @@ import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
+import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
@@ -42,6 +43,7 @@ class WorkflowWorkerShutdownTest {
   private final RunLeaseService leaseService = mock(RunLeaseService.class);
   private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
   private final CheckpointAdapter checkpointAdapter = mock(CheckpointAdapter.class);
+  private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
 
   @Test
   void poll_once_returns_zero_and_skips_claiming_once_stopping() {
@@ -130,6 +132,7 @@ class WorkflowWorkerShutdownTest {
         null,
         transitionService,
         checkpointAdapter,
+        approvalRepository,
         List.of(new DeterministicStepHandler()),
         properties);
   }

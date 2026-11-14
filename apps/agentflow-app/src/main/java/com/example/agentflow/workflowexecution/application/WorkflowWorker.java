@@ -1,5 +1,6 @@
 package com.example.agentflow.workflowexecution.application;
 
+import com.example.agentflow.common.Fingerprint;
 import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
@@ -10,6 +11,7 @@ import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
+import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
@@ -55,6 +57,12 @@ public class WorkflowWorker implements DisposableBean {
   /** The output-schema version carried on every step checkpoint this worker persists (S07-07). */
   public static final String STEP_OUTPUT_SCHEMA_VERSION = "1";
 
+  /**
+   * The {@code HUMAN_APPROVAL} node type (a side-effect boundary, {@code workflowdefinition}). At
+   * this boundary a step pauses the run for a human decision instead of running a handler (S11-03).
+   */
+  private static final String HUMAN_APPROVAL = "HUMAN_APPROVAL";
+
   private static final Logger log = LoggerFactory.getLogger(WorkflowWorker.class);
 
   private final WorkflowRunRepository runRepository;
@@ -64,6 +72,10 @@ public class WorkflowWorker implements DisposableBean {
   private final RunHeartbeatService heartbeat;
   private final RunStateMachineService transitionService;
   private final CheckpointAdapter checkpointAdapter;
+
+  /** The approvals owner: the durable pause at a {@code HUMAN_APPROVAL} boundary (S11-03). */
+  private final ApprovalRepository approvalRepository;
+
   private final List<StepHandler> handlers;
   private final String actor;
 
@@ -102,6 +114,8 @@ public class WorkflowWorker implements DisposableBean {
    *     (a DB-less skeleton has no lease to extend), so the loop starts no heartbeat thread
    * @param transitionService the single step / run transition service (invariant 4)
    * @param checkpointAdapter the redacting, size-bounding checkpoint seam (S07-07)
+   * @param approvalRepository the approvals owner (the durable pause at a {@code HUMAN_APPROVAL}
+   *     boundary — S11-03)
    * @param handlers the {@link StepHandler} beans, resolved by node type at runtime
    * @param properties the validated application configuration (used for the event {@code actor})
    */
@@ -113,6 +127,7 @@ public class WorkflowWorker implements DisposableBean {
       RunHeartbeatService heartbeat,
       RunStateMachineService transitionService,
       CheckpointAdapter checkpointAdapter,
+      ApprovalRepository approvalRepository,
       List<StepHandler> handlers,
       AgentFlowProperties properties) {
     this.runRepository = runRepository;
@@ -122,6 +137,7 @@ public class WorkflowWorker implements DisposableBean {
     this.heartbeat = heartbeat;
     this.transitionService = transitionService;
     this.checkpointAdapter = checkpointAdapter;
+    this.approvalRepository = approvalRepository;
     this.handlers = handlers;
     this.actor = resolveActor(properties);
     this.properties = properties;
@@ -369,6 +385,10 @@ public class WorkflowWorker implements DisposableBean {
    * Schedule, execute and conclude one step through the state machine (PENDING → READY → RUNNING →
    * SUCCEEDED / RETRY_WAIT / FAILED), then checkpoint its output on success.
    *
+   * <p>A {@code HUMAN_APPROVAL} node stops the step and the run at the side-effect boundary instead
+   * of running a handler: it records the durable approval, parks the step and the run in {@code
+   * WAITING_FOR_APPROVAL}, and releases the run's lease (S11-03).
+   *
    * <p>A handler that <em>returns</em> {@code FAILED} is a decided domain outcome: the step ends
    * {@code FAILED}. A handler that <em>throws</em> is a fault the {@link StepFailureClassifier}
    * (S07-11) classifies: a transient fault (infra / provider rate-limit / provider timeout) ends
@@ -388,6 +408,18 @@ public class WorkflowWorker implements DisposableBean {
       int leaseEpoch) {
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.READY, "step.ready");
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.RUNNING, "step.running");
+    WorkflowNode node = nodes.get(stepKey);
+    // S11-03 — the HUMAN_APPROVAL boundary: a HUMAN_APPROVAL node stops the step and the run at a
+    // side-effect boundary. It records the durable approval (the checkpoint of where execution
+    // paused), parks the step and the run in WAITING_FOR_APPROVAL, and releases the run's lease
+    // without starting a heartbeat or running a handler — so the blocked side effect never executes
+    // and no worker thread is held while the run waits (the acceptance: a restart neither skips the
+    // approval nor leaves a thread occupied). The step never reaches a StepHandler; the resume is a
+    // separate decision (S11-04).
+    if (HUMAN_APPROVAL.equals(node.type())) {
+      pauseForApproval(tenantId, runId, stepKey, node, leaseEpoch);
+      return;
+    }
     // Heartbeat (S07-04, the gap-b fix): while this step's handler runs — it may outlive the lease
     // lifetime — extend the run's lease so the stale-run recovery scan (S07-09) does not mistake an
     // actively-owned run for a crashed owner and re-claim it. The heartbeat runs on its own thread
@@ -396,7 +428,6 @@ public class WorkflowWorker implements DisposableBean {
     // worker's {@code lease_epoch}. The task is cancelled the instant the step concludes.
     ScheduledFuture<?> leaseHeartbeat = startHeartbeat(tenantId, runId, owner, leaseEpoch);
     try {
-      WorkflowNode node = nodes.get(stepKey);
       // S08-12: resolve the node's input wiring against the completed predecessors' persisted
       // outputs BEFORE the handler (and any tool) is invoked. An unresolvable wiring — an unknown
       // output path, a type violation, a null value — throws InputMappingException (an
@@ -433,6 +464,111 @@ public class WorkflowWorker implements DisposableBean {
       // pause, cancelled) matches zero rows on the next heartbeat anyway; reconcile (pollOnce)
       // releases the lease when the run reaches a lease-releasing state.
       stopHeartbeat(leaseHeartbeat);
+    }
+  }
+
+  /**
+   * Pause a step at a {@code HUMAN_APPROVAL} boundary (S11-03): record the durable approval, park
+   * the step and the run in {@code WAITING_FOR_APPROVAL}, and release the run's lease so a paused
+   * run is not a live owner while it waits (durable-execution §3).
+   *
+   * <p>The pause is the checkpoint of where execution stopped. The run's {@code
+   * WAITING_FOR_APPROVAL} transition is applied first (the run-level pause is the higher-level
+   * fact): if the run's lease moved, the run is not ours and the pause changes nothing — the next
+   * poll recovers. The step's transition then parks the step, and the transition service concludes
+   * its in-flight attempt, so no attempt lifecycle marker is left dangling (invariant 4). Finally
+   * the run's lease is released (the step transition fences through this worker's {@code
+   * lease_epoch}, so it cannot race the release): the run is claimable again and is resumed by the
+   * approval decision (S11-04), not by a re-claimed run re-running its gated step. No heartbeat
+   * starts and no handler runs, so the blocked side effect never executes and no worker thread is
+   * held — the acceptance of S11-03: a restart neither skips the approval nor leaves a thread
+   * occupied.
+   *
+   * @param tenantId the run's tenant (its tenant isolation flows through the run)
+   * @param runId the run to pause
+   * @param stepKey the graph node / step the request is gating (matches {@code
+   *     workflow_step_runs.step_key})
+   * @param node the {@code HUMAN_APPROVAL} node (its {@code action} + payload are the request)
+   * @param leaseEpoch the run lease_epoch this worker claims to hold (invariant 5)
+   */
+  private void pauseForApproval(
+      UUID tenantId, UUID runId, String stepKey, WorkflowNode node, int leaseEpoch) {
+    String action = approvalAction(node);
+    String fingerprint = approvalFingerprint(node, stepKey);
+    // Record the pause before anything else: this is the durable checkpoint of where execution
+    // stopped, so a restart re-pauses rather than skipping the approval (S11-03 acceptance).
+    approvalRepository.create(tenantId, runId, stepKey, action, fingerprint, actor, actor);
+    // Park the run first (the higher-level pause); if the run's lease moved, the run is not ours
+    // and the pause changes nothing — the next poll recovers (invariant 5).
+    if (!transitionRun(
+        tenantId, runId, WorkflowRunState.WAITING_FOR_APPROVAL, "run.approval-needed")) {
+      return;
+    }
+    // Park the step; the transition service concludes the step's in-flight attempt (leaving
+    // RUNNING), so no attempt lifecycle marker is left dangling (invariant 4).
+    transitionStep(
+        tenantId, runId, stepKey, WorkflowStepState.WAITING_FOR_APPROVAL, "step.approval-needed");
+    log.info(
+        "run {} paused at the human-approval boundary: step={} action={}", runId, stepKey, action);
+    // Release the run's lease (best-effort): the run is paused, not owned by a live worker, so
+    // clearing the lease makes it claimable again for the resume (S11-04) without a re-run of the
+    // gated step. A concurrent re-claim in the gap leaves the lease it set intact.
+    releaseRunLease(tenantId, runId, leaseEpoch);
+  }
+
+  /**
+   * The short, human-readable summary of the gated side effect the decision binds to. It is a
+   * redacted instruction, never a secret (invariant 8): the node's {@code action} is a display
+   * summary, so a human can approve without seeing the payload the fingerprint pins.
+   */
+  private String approvalAction(WorkflowNode node) {
+    Object action = node.config().get("action");
+    return action == null ? node.type() : action.toString();
+  }
+
+  /**
+   * The payload fingerprint the decision binds to (S11-06 refines this to the exact tool arguments
+   * / tool / version). Here it is the lowercase-hex SHA-256 of the node's canonical config — a
+   * stable digest, so the same request fingerprints identically on every pause, and the decision is
+   * bound to that digest, never the raw payload (invariant 8: a fingerprint is a digest, not the
+   * payload).
+   */
+  private String approvalFingerprint(WorkflowNode node, String stepKey) {
+    return Fingerprint.sha256Hex(canonicalConfig(node, stepKey));
+  }
+
+  /**
+   * A canonical, order-independent serialization of the node's config for fingerprinting: the node
+   * id, the step key and each config entry as {@code key=value}, sorted by key, so two nodes with
+   * the same logical config fingerprint identically regardless of insertion order.
+   */
+  private static String canonicalConfig(WorkflowNode node, String stepKey) {
+    return "node="
+        + node.id()
+        + ";step="
+        + stepKey
+        + ";"
+        + node.config().entrySet().stream()
+            .sorted(java.util.Map.Entry.comparingByKey())
+            .map(entry -> entry.getKey() + "=" + entry.getValue())
+            .collect(java.util.stream.Collectors.joining(","));
+  }
+
+  /**
+   * Release the run's lease after the pause (S11-03), best-effort. A {@link
+   * com.example.agentflow.workflowexecution.domain.ConflictException} means the lease moved (the
+   * run was re-claimed by another writer in the gap between the step and the release — a race the
+   * fenced update refuses) or the run is already leaseless; in either case the run is not ours to
+   * release, and the pause is durable regardless. It is never treated as a failure — releasing the
+   * lease is idempotent: releasing an already-released lease is a no-op (invariant 3: the pause is
+   * recorded once and observed; the lease release is a best-effort cleanup).
+   */
+  private void releaseRunLease(UUID tenantId, UUID runId, int leaseEpoch) {
+    try {
+      runRepository.releaseLease(tenantId, runId, leaseEpoch);
+    } catch (com.example.agentflow.workflowexecution.domain.ConflictException e) {
+      log.debug(
+          "run {} lease release denied during human-approval pause: {}", runId, e.getMessage());
     }
   }
 
