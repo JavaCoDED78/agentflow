@@ -11,6 +11,54 @@
 - [S11-07](#s11-07--mcp-transport-streamable-http-verified-against-the-stable-spring-ai-20x-line) — MCP transport: Streamable-HTTP on the stable Spring AI 2.0.x line, with the client/server compatibility matrix (S11-07)
 - [S11-08](#s11-08--the-isolated-mcp-demo-server-agentflow-mcp-lab) — the isolated MCP demo server: agentflow-mcp-lab, a separate artifact with one read-only fixture tool and no path to the business database (S11-08)
 - [S11-09](#s11-09--the-mcp-client-adapter-an-allowlist-the-model-cannot-leave) — the MCP client adapter: an allowlist the model cannot leave (S11-09)
+- [S11-10](#s11-10--the-mcp-outbound-destination-policy-the-ssrf-guard) — the MCP outbound destination policy: the SSRF guard that refuses loopback/private/metadata destinations before a socket opens (S11-10)
+
+---
+
+## S11-10 — the MCP outbound destination policy: the SSRF guard
+
+**Task (P0):** implement the outbound destination policy — block loopback/private/link-local/metadata destinations, control protocols, and refuse any connection that is not a routable public `http`/`https` endpoint, so the MCP adapter can never be steered by a workflow step, a document, or a server response into opening a socket to a local or private host (the SSRF guard).
+
+**Deliverable:** `toolexecution.mcp.OutboundDestinationPolicy` — a pure, immutable domain value (no Spring, no I/O beyond a DNS lookup when resolving a hostname), plus `OutboundPolicyViolationException`; the guard wired into `McpClientAdapter.invoke`/`isReachable` and bound per connection from the transport URL in `McpClientConfiguration`.
+
+### What changed
+
+- **A pure classifier of host + protocol.** `OutboundDestinationPolicy.of(String)` parses the connection URL once, classifies it into an immutable shape (`protocol`, and the booleans `loopback`, `unspecified`, `privateRange`, `linkLocal`, `uniqueLocal`, `reserved`), and answers `isPermitted()`. Permitted only when the protocol is `http`/`https` and none of the booleans hold. The classification is the whole policy: `toString()` renders `PROTOCOL(target) denied=REASON` where `target` is the resolved IP (or literal name) and `REASON` is a stable label — never the URL — so a destination name cannot leak through diagnostics (invariant 8). The value contract is content-based: two policies are equal iff they classify identically and share the protocol, and `hashCode` is over the classification + protocol only.
+
+- **The refusal vocabulary is closed and SSRF-shaped.** `linkLocal` includes the cloud metadata endpoint `169.254.169.254` (169.254.0.0/16) and, in IPv6, link-local (`fe80::/10`), unique-local (`fc00::/7`) and the `::/8` reserved range; `privateRange` is RFC-1918 (`10/8`, `172.16/12`, `192.168/16`); `reserved` covers `240.0.0.0/4` and the RFC-5737 documentation ranges; `unspecified` is `0.0.0.0`/`::`. A non-`http`/`https` scheme (`ws`, `wss`, `file`, …), a missing protocol, a missing host, or a malformed URL fails construction with a stable `IllegalArgumentException` naming the problem (protocol / host / URL) — never a bare `name()` message. An unresolvable hostname is classified on its literal name and still refuses loopback/unspecified literals; the actual connection fails at open time.
+
+- **Defense in depth.** `McpClientAdapter` checks the policy in **both** `invoke` and `isReachable`: an absent policy is inert (the adapter does not invent one), a denied destination throws `OutboundPolicyViolationException` before any client interaction. The guard owns the network, not the caller — a caller that omits the reachability check still cannot open a socket to a refused host.
+
+- **Wiring without new edges.** `McpClientConfiguration` maps each `spring.ai.mcp.client.streamable-http.connections.<name>.url` to an `OutboundDestinationPolicy` at startup (a malformed URL fails the app, so an unsafe destination can never boot), and passes the map to the `McpClientAdapter` bean. Everything is DataSource-free and Kafka-free — safe in every profile. No new module edge: `toolexecution` owns the adapter and the guard; `config` composes them (verified by `ArchitectureBoundaryTest`).
+
+### Why
+
+- **An allowlisted host is not an allowlisted destination.** S11-09's allowlist is a list of *hosts*; a workflow step, a document, or a server response can name one of those hosts and — through a redirect, a DNS re-resolution, or a server reply — reach a loopback or metadata endpoint. The outbound policy closes that seam by classifying the destination before the socket opens (invariant 7 — the model and its inputs are an untrusted planner, never an authorization authority).
+- **Fail-closed, and only on the classification.** A destination is permitted only if the closed set of refusals is empty. There is no "permit by default if the URL looks public" — the URL is never observed past the classification label.
+
+### Verification
+
+```bash
+./gradlew :apps:agentflow-app:test \
+  --tests '*toolexecution.mcp.OutboundDestinationPolicyTest' \
+  --tests '*toolexecution.mcp.McpClientOutboundPolicyTest' \
+  --tests '*McpClientConfigurationTest' --rerun-tasks
+./gradlew spotlessApply check --rerun-tasks
+```
+
+`BUILD SUCCESSFUL`, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh reports in this session): `OutboundDestinationPolicyTest` **22** — `Protocol` (6: http/https permitted; `ws`/`wss`/`file` refused at construction with a "protocol" message; missing protocol, missing host, malformed URL and null all refused with the expected message); `Host` (12: public IPv4/IPv6 permitted with the resolved address, loopback IPv4/IPv6, unspecified IPv4/IPv6, the four private ranges, the `169.254.169.254` metadata link-local, unique-local IPv6, the `240.0.0.0/4` reserved and the RFC-5737 documentation ranges refused); `ValueContract` (4: content-based equality/hashCode across protocol, `toString` is URL-safe and invariant-8 clean, `isDenied` true only when refused). `McpClientOutboundPolicyTest` **8** — deny-path first: an adapter built with a loopback (`127.0.0.1`), metadata (`169.254.169.254`) or private (`10.0.0.5`) policy refuses both `invoke` and `isReachable` with `OutboundPolicyViolationException` and `verifyNoInteractions` on the MCP client; a reachable public connection (`8.8.8.8`) proceeds. `McpClientConfigurationTest` **8** (per-connection URL → policy binding, defaults, the client → connection-name mapping). The full `./gradlew check` gate — unit tests of both artifacts + architecture boundaries (`ArchitectureBoundaryTest` `tests="1"`, `NoCyclicModuleDependenciesTest` `tests="1"`) + no-cycles + formatting (`spotless`) + the OpenAPI contract — green; **1394** unit tests, `0` failures, `0` errors, `0` skipped.
+
+### Risks / follow-up
+
+- **Redirects and DNS resolution.** The guard classifies the *configured* destination before connect; it does not yet inspect a 3xx redirect target or a DNS re-resolution at open time. A redirect back to `127.0.0.1` would slip past the up-front policy — re-checking the redirect target is the natural extension of this guard.
+- **Exposing allowlisted MCP tools as `ToolDescriptor`s.** S11-09's adapter is still not routed through a workflow `TOOL_CALL` step; that routing is a separate task (the S11-09 forward reference bundled it with the SSRF guard, but the plan scopes S11-10 to the guard alone).
+
+### Docs
+
+- [`docs/architecture/module-api.md`](../architecture/module-api.md) — the `toolexecution` `mcp` internal-package entry now records the outbound destination policy and the adapter's two-seam enforcement.
+- [`docs/domain-glossary.md`](../domain-glossary.md) — the **Outbound destination policy (SSRF guard)** row.
+- [`docs/threat-model/README.md`](../threat-model/README.md) — the SSRF-on-MCP section with a threat/mitigation/test table.
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-09).
 
 ---
 

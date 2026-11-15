@@ -75,6 +75,10 @@ arithmetic parser — **not** `eval`), `report.format`. Demo MCP tool:
 "function". The Planner may *refer* to a tool by its registered name but may not
 add or enable one.
 
+Outbound connection guard:
+
+| **Outbound destination policy (SSRF guard)** | `OutboundDestinationPolicy` — http/https only; loopback, unspecified, private (RFC-1918), link-local incl. the metadata endpoint 169.254.169.254, unique-local IPv6 and reserved/future ranges refused | The MCP adapter's SSRF guard (S11-10): classifies each connection's host + protocol <em>before</em> a socket opens and refuses anything but a routable public host; `McpClientAdapter` re-checks it in both `invoke` and `isReachable`. A refusal logs only a protocol + classification label, never the URL (invariants 7/8/9). |
+
 ---
 
 ## 4. Workflow definitions and versions (module `workflowdefinition`)

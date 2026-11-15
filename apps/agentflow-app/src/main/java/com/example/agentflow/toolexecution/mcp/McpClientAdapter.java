@@ -23,14 +23,22 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * The MCP client adapter (S11-09, ADR-019): the <em>only</em> path from the platform to an MCP
  * server, and a fail-closed one — a call reaches the network only after it has passed the {@link
- * McpAllowlist}, matched a server-advertised tool, and validated its arguments against the
- * advertised input schema.
+ * McpAllowlist}, the outbound destination policy (S11-10), matched a server-advertised tool, and
+ * validated its arguments against the advertised input schema.
  *
  * <p>The S11-09 acceptance — <b>the model cannot call an MCP target outside the allowlist
  * configuration</b> — holds because the planner (an untrusted planner, {@code ADR-006}) only ever
  * proposes a {@code (server, tool)} pair; this adapter decides, server-side, from the operator's
  * configuration alone. There is no path that takes a target from the model, a document, or a server
  * response and calls it.
+ *
+ * <p>S11-10 closes a second gap on the same path: the connection is refused before any client
+ * connects when its transport URL resolves to a loopback, private, link-local (which includes the
+ * cloud metadata endpoint {@code 169.254.169.254}) or otherwise non-routable host — an MCP target
+ * cannot punch through to the host's own network or its metadata service. The guard is a {@link
+ * OutboundDestinationPolicy} bound per connection from the transport URL at startup and enforced at
+ * {@link #isReachable(String)} (and re-checked in {@link #invoke}); an absent policy is inert,
+ * never a bypass.
  *
  * <p>Every call is bounded the way a built-in tool call is: the per-server timeout from the {@link
  * McpServerPolicy} is enforced through {@link ToolCallTimeout} (a timed-out call is ambiguous and
@@ -47,6 +55,7 @@ public class McpClientAdapter {
 
   private final McpAllowlist allowlist;
   private final Map<String, McpSyncClient> clients;
+  private final Map<String, OutboundDestinationPolicy> destinationPolicies;
   private final ExecutorService pool;
   private final JsonMapper jsonMapper;
   private final ConcurrentMap<String, Map<String, Tool>> advertisedTools =
@@ -56,10 +65,16 @@ public class McpClientAdapter {
    * @param allowlist the operator-configured allowlist; the only authorization source
    * @param clients the connected MCP sync clients, keyed by connection name (empty when no
    *     connection is configured); a server allowlisted but absent here is refused at call time
+   * @param destinationPolicies the per-connection outbound destination policy (SSRF guard, S11-10),
+   *     keyed by connection name; empty when no transport URL is configured — an absent policy is
+   *     inert, not a bypass
    * @param pool the shared tool-call pool the bounded call runs on
    */
   public McpClientAdapter(
-      McpAllowlist allowlist, Map<String, McpSyncClient> clients, ExecutorService pool) {
+      McpAllowlist allowlist,
+      Map<String, McpSyncClient> clients,
+      Map<String, OutboundDestinationPolicy> destinationPolicies,
+      ExecutorService pool) {
     if (allowlist == null) {
       throw new IllegalArgumentException("allowlist must not be null");
     }
@@ -71,8 +86,20 @@ public class McpClientAdapter {
     }
     this.allowlist = allowlist;
     this.clients = Map.copyOf(clients);
+    this.destinationPolicies =
+        destinationPolicies == null ? Map.of() : Map.copyOf(destinationPolicies);
     this.pool = pool;
     this.jsonMapper = JsonMapper.builder().build();
+  }
+
+  /**
+   * Backwards-friendly entry point for the no-transport-URL path: no outbound destination policy is
+   * supplied, so the guard is inert (S11-10 — the guard is opt-in by configuration; its absence
+   * does not open a bypass, it simply never runs).
+   */
+  public McpClientAdapter(
+      McpAllowlist allowlist, Map<String, McpSyncClient> clients, ExecutorService pool) {
+    this(allowlist, clients, Map.of(), pool);
   }
 
   /**
@@ -84,6 +111,8 @@ public class McpClientAdapter {
    * @return the tool's textual result
    * @throws McpAccessDeniedException when the target is outside the allowlist, the tool is not
    *     advertised, or the result exceeds the response bound
+   * @throws com.example.agentflow.toolexecution.mcp.OutboundPolicyViolationException when the
+   *     connection's transport URL resolves to a non-routable host (S11-10) — the call never opens
    * @throws com.example.agentflow.toolexecution.domain.SchemaValidationException when the arguments
    *     do not match the advertised input schema
    * @throws TimeoutException when the call does not answer within the per-server timeout — the
@@ -111,6 +140,13 @@ public class McpClientAdapter {
       throw new McpAccessDeniedException(
           McpAccessDeniedException.Reason.UNKNOWN_SERVER,
           "server '" + server + "' is allowlisted but not connected");
+    }
+    // Defense in depth (S11-10): re-check the outbound destination policy here even though the
+    // reachability gate already enforced it, so a caller that omits the gate still cannot open a
+    // socket to a refused host — the guard owns the network, not the caller.
+    OutboundDestinationPolicy destination = destinationPolicies.get(server);
+    if (destination != null && !destination.isPermitted()) {
+      throw new OutboundPolicyViolationException(destination);
     }
     Tool advertised = advertisedTools(client, server).get(tool);
     if (advertised == null) {
@@ -234,7 +270,18 @@ public class McpClientAdapter {
    *     invoked
    */
   public boolean isReachable(String server) {
-    return allowlist.containsServer(server) && clients.containsKey(server);
+    if (!allowlist.containsServer(server) || !clients.containsKey(server)) {
+      return false;
+    }
+    // The outbound destination policy (S11-10) gates the connection here, before any client
+    // connects: an allowlisted + connected server whose transport URL resolves to a loopback,
+    // private, link-local or otherwise non-routable host is refused (an OutboundPolicyViolation),
+    // never reached. An absent policy is inert, never a bypass.
+    OutboundDestinationPolicy destination = destinationPolicies.get(server);
+    if (destination != null && !destination.isPermitted()) {
+      throw new OutboundPolicyViolationException(destination);
+    }
+    return true;
   }
 
   /**
