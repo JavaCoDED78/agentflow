@@ -32,22 +32,25 @@ WebFlux), stateless Streamable-HTTP (no need at demo scale), and the SDK 2.2.x
 "modern" 2026-07-28 preview (unstable API until 3.0). See ADR-019 for the full
 alternatives table.
 
-## Demo server — `agentflow-mcp-lab` (lands in S11-08)
+## Demo server — `agentflow-mcp-lab` (S11-08)
 
-One Gradle dependency (version from the BOM, no inline pin — S01-06):
+Implemented as its own Gradle subproject and Spring Boot artifact (`apps/agentflow-mcp-lab/`,
+`com.example.agentflow.mcplab`) — a separate process with its own lifecycle, holding no
+business-database credentials (no JDBC starter, no Flyway, no PostgreSQL driver on its
+classpath; isolation by absence). One Gradle dependency (version from the BOM, no
+inline pin — S01-06):
 
 ```kotlin
-// apps/agentflow-mcp-lab/build.gradle.kts — illustrative; the module lands in S11-08
+// apps/agentflow-mcp-lab/build.gradle.kts
 dependencies {
     implementation(platform(libs.spring.ai.bom))
     implementation("org.springframework.ai:spring-ai-starter-mcp-server-webmvc")
 }
 ```
 
-Configuration:
+Configuration (`apps/agentflow-mcp-lab/src/main/resources/application.yml`):
 
 ```yaml
-# agentflow-mcp-lab — illustrative; the module lands in S11-08
 spring:
   ai:
     mcp:
@@ -61,8 +64,19 @@ spring:
           mcp-endpoint: /mcp          # default; explicit for clarity
 ```
 
-The lab exposes one or two safe, read-only demo tools and holds **no credentials
-to the business database** (S11-08 acceptance).
+The lab exposes one safe, read-only demo tool, `ticket_lookup` (the MCP specification
+restricts tool names to letters, digits, `_` and `-`, so the in-process `ticket.lookup`
+name cannot cross the wire), answering from a fixed in-memory fixture dataset —
+fictitious tickets `TKT-1001` / `TKT-1002` / `TKT-1003`, deterministic, no network, no
+database.
+
+```bash
+# run the lab independently (port 8081)
+./gradlew :apps:agentflow-mcp-lab:bootRun
+# its gate: the tool contract, the no-datasource isolation, and a real MCP
+# initialize handshake over Streamable-HTTP
+./gradlew :apps:agentflow-mcp-lab:test
+```
 
 ## Client — `agentflow-app` (wired in S11-09)
 

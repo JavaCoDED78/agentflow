@@ -4,7 +4,10 @@ Application code lives here.
 
 - `agentflow-app/` — one Spring Boot artifact with several runtime roles
   (`api`, `workflow-worker`, `ingestion-worker`), started with Gradle profiles.
-- `agentflow-mcp-lab/` — optional isolated MCP demo server (later sprint).
+- `agentflow-mcp-lab/` — the isolated MCP demo server (S11-08, ADR-019): a separate
+  Spring Boot artifact exposing one read-only fixture tool over Streamable-HTTP; no
+  business-database credentials, run independently via
+  `./gradlew :apps:agentflow-mcp-lab:bootRun`.
 
 Modules are packages inside `agentflow-app`, not Gradle subprojects. Business
 logic stays out of controllers, Kafka listeners and infrastructure adapters;

@@ -29,3 +29,7 @@ rootProject.name = "agentflow"
 // monolith grows. Add each new module here, for example
 // include("apps:agentflow-app") (S01-07).
 include("apps:agentflow-app")
+// Isolated MCP demo server (S11-08, ADR-019): a separate Spring Boot artifact with its
+// own lifecycle — it is deployed and run independently of the monolith and holds no
+// business-database credentials. Deliberately not a package of agentflow-app.
+include("apps:agentflow-mcp-lab")
