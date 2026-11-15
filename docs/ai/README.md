@@ -176,6 +176,8 @@ configuration and report format: [real-provider-contract-test.md](real-provider-
 
 - [`provider-configuration.md`](provider-configuration.md) — provider wiring, secrets, resilience, the
   fake provider for CI, budget reservation.
+- [`mcp.md`](mcp.md) — MCP transport and configuration: the verified version matrix, the demo server
+  and client coordinates, and the allowlist seam (S11-07, `ADR-019`).
 - [`docs/ai/real-provider-contract-test.md`](real-provider-contract-test.md) — opt-in live-provider
   contract test.
 - [`docs/evaluation/README.md`](../evaluation/README.md) — Planner baseline eval cases, metrics, run/

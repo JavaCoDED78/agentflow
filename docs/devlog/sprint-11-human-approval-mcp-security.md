@@ -8,6 +8,59 @@
 - [S11-04](#s11-04-the-approve-endpoint) — the approve endpoint: the human decision on a HUMAN_APPROVAL pause, recorded atomically with its audit row (S11-04)
 - [S11-05](#s11-05--reject-and-the-expiry-lifecycle-the-full-approval-lifecycle) — reject and the expiry lifecycle: the resume/refusal completion, the two outbox events, and the poll that never steals a paused run (S11-05)
 - [S11-06](#s11-06--the-payload-bound-approval-the-fingerprint-re-validated-at-the-decision) — the payload-bound approval: the canonical fingerprint of the exact arguments re-validated at the decision (S11-06)
+- [S11-07](#s11-07--mcp-transport-streamable-http-verified-against-the-stable-spring-ai-20x-line) — MCP transport: Streamable-HTTP on the stable Spring AI 2.0.x line, with the client/server compatibility matrix (S11-07)
+
+---
+
+## S11-07 — MCP transport: Streamable-HTTP, verified against the stable Spring AI 2.0.x line
+
+**Task (P1):** verify the current MCP API/transport against the stable Spring AI 2.0.x documentation; choose one transport for the demo; fix protocol/client/server compatibility.
+
+**Deliverable:** `ADR-019` (the transport and compatibility decision) and [`docs/ai/mcp.md`](../ai/mcp.md) — the verified version matrix and the configuration the demo server (S11-08) and the client (S11-09) build on.
+
+### What changed
+
+- **Nothing in code — this is the research-and-fix task Sprint 11's MCP work stands on.** Its output is a decision and a configuration contract, both verified against published artifacts rather than tutorials.
+- **One transport: Streamable-HTTP.** The demo server (`agentflow-mcp-lab`, S11-08) gets `spring-ai-starter-mcp-server-webmvc` with `spring.ai.mcp.server.protocol=STREAMABLE`; the main app (S11-09) gets `spring-ai-starter-mcp-client` (JDK `HttpClient`-based) and is a client only — `spring.ai.mcp.server.enabled=false`, no server starter on its classpath.
+- **Verified facts, dated 2026-11-15.** Spring AI 2.0.1 is the stable line and deprecates the SSE MCP server since 2.0.0 ("use STREAMABLE instead"); `spring-ai-mcp:2.0.1` depends on `io.modelcontextprotocol.sdk:mcp:2.0.0` (read from the published POM), and SDK 2.0.0 tracks MCP spec revision 2025-11-25 and deprecates SSE in favor of Streamable HTTP; the `mcp-spring-webmvc`/`mcp-spring-webflux` artifacts moved from the `io.modelcontextprotocol.sdk` group to `org.springframework.ai` in Spring AI 2.0; the `spring-ai-bom:2.0.1` manages every MCP starter at the BOM version, so no inline pins exist or are needed.
+- **Compatibility is derived, not configured.** Both ends ride the same BOM → `spring-ai-mcp` → SDK chain, so a connection always pairs identical SDK versions and one protocol revision. Neither app pins or imports `io.modelcontextprotocol.*` directly — the ADR-019 alternatives table records why (the 2.0 group-id relocation makes direct SDK pinning a maintenance hazard, and it would bypass BOM discipline, S01-06).
+- **The connection map is the allowlist seam.** `spring.ai.mcp.client.streamable-http.connections` in `docs/ai/mcp.md` names exactly one host — the lab — and S11-09 refuses anything outside it.
+
+### Why
+
+- The MCP ecosystem moved twice in a year: SSE → Streamable HTTP (spec 2025-03-26), then SDK 2.0's relocation of the Spring transports. Sprint 11's acceptance — *the decision must not rest on a deprecated API or an experimental transport* — eliminates SSE (deprecated in both Spring AI 2.0.0 and SDK 2.0.0), the WebFlux starters (the stack forbids WebFlux), the SDK 2.2.x "modern" 2026-07-28 preview (its own changelog calls the API unstable until 3.0), and STDIO (the lab is a network service by design). Streamable-HTTP is the only option left standing — and it is the documented default.
+- Fixing this *before* S11-08/S11-09 is the cheap seam: a transport change after the lab and the client adapter exist would rewrite both instead of a document.
+
+### Verification
+
+Documentation-only change — the verification is link integrity plus reproducible artifact checks, run and inspected here:
+
+```bash
+# BOM manages every MCP starter at the BOM version
+curl -s https://repo.maven.apache.org/maven2/org/springframework/ai/spring-ai-bom/2.0.1/spring-ai-bom-2.0.1.pom \
+  | grep -o 'spring-ai-starter-mcp-[a-z-]*' | sort -u
+# -> spring-ai-starter-mcp-client / -client-webflux / -server / -server-webflux / -server-webmvc
+
+# the exact SDK chain the BOM resolves
+curl -s https://repo.maven.apache.org/maven2/org/springframework/ai/spring-ai-mcp/2.0.1/spring-ai-mcp-2.0.1.pom \
+  | grep -A3 'modelcontextprotocol'
+# -> io.modelcontextprotocol.sdk:mcp:2.0.0 (compile)
+```
+
+Both commands run against Maven Central on 2026-11-15 with the recorded output (also printed in [`docs/ai/mcp.md`](../ai/mcp.md)); the Spring AI 2.0.1 reference (MCP server boot starter page — "SSE WebMVC deprecated since 2.0.0, use STREAMABLE instead") and the MCP Java SDK changelog (2.0.0 "Streamable HTTP first: SSE transports deprecated") carry the deprecation facts. `git diff --check` clean; no build gate applies to a docs-only change (none claimed).
+
+### Documentation
+
+- [`docs/adr/ADR-019-mcp-streamable-http-transport.md`](../adr/ADR-019-mcp-streamable-http-transport.md) — new, `Accepted`, registered in the ADR register.
+- [`docs/ai/mcp.md`](../ai/mcp.md) — new MCP integration & configuration guide (version matrix, server/client coordinates, allowlist seam, verification commands).
+- `docs/README.md` (the ADR tree through `ADR-019` and the `ai/` entry), `docs/adr/README.md` (register row), `docs/ai/README.md` (Docs list).
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-06).
+
+### Risks / follow-up
+
+- The Spring AI docs recommend the WebFlux client for production deployments; ADR-019 accepts the JDK-HttpClient client as the deliberate cost of the no-WebFlux stack rule, at demo scale.
+- A Spring AI version bump must re-verify this ADR's facts (SSE deprecation status, SDK line, group ids) as part of the bump's compatibility check — recorded as an ADR-019 follow-up.
+- S11-08 builds the lab on these coordinates; S11-09 wires the client behind the allowlist; S11-10 adds the SSRF guard for the connection URLs.
 
 ---
 
