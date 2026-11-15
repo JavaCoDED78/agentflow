@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -31,8 +32,9 @@ import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 /**
  * Verifies the approval-decision endpoint against {@link ApprovalController} in isolation with
  * MockMvc. The service is Mockito-mocked so the path never touches a database; the tests pin the
- * contract — {@code 200} with the decision, the {@code Idempotency-Key}/fingerprint threading, and
- * the {@code 400} edge cases (a non-approve decision, malformed JSON, a malformed key).
+ * contract — {@code 200} with the decision for both {@code "approve"} and {@code "reject"}, the
+ * {@code Idempotency-Key}/fingerprint threading, and the {@code 400} edge cases (an unknown
+ * decision, malformed JSON, a malformed key).
  */
 @ExtendWith(MockitoExtension.class)
 class ApprovalControllerTest {
@@ -152,13 +154,36 @@ class ApprovalControllerTest {
   }
 
   @Test
-  void a_non_approve_decision_is_a_400() throws Exception {
+  void reject_routes_to_the_reject_half_and_returns_200_with_the_decision() throws Exception {
+    when(approvalService.reject(
+            eq(TENANT), eq("local"), eq(RUN), eq(APPROVAL), isNull(), isNull(), isNull()))
+        .thenReturn(rejected());
+
     mockMvc
         .perform(
             post("/api/v1/runs/{runId}/approvals/{approvalId}", RUN, APPROVAL)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"decision\":\"reject\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.approvalId").value(APPROVAL.toString()))
+        .andExpect(jsonPath("$.status").value("REJECTED"));
+
+    verify(approvalService)
+        .reject(eq(TENANT), eq("local"), eq(RUN), eq(APPROVAL), isNull(), isNull(), isNull());
+    verify(approvalService, never()).approve(any(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void an_unknown_decision_is_a_400() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/runs/{runId}/approvals/{approvalId}", RUN, APPROVAL)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"decision\":\"maybe\"}"))
         .andExpect(status().isBadRequest());
+
+    verify(approvalService, never()).approve(any(), any(), any(), any(), any(), any(), any());
+    verify(approvalService, never()).reject(any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -191,5 +216,16 @@ class ApprovalControllerTest {
         "local",
         OffsetDateTime.parse("2026-11-14T12:00:00Z"),
         "ok");
+  }
+
+  private static ApprovalDecisionDto rejected() {
+    return new ApprovalDecisionDto(
+        APPROVAL,
+        RUN,
+        "send-report",
+        ApprovalStatus.REJECTED,
+        "local",
+        OffsetDateTime.parse("2026-11-14T12:00:00Z"),
+        null);
   }
 }

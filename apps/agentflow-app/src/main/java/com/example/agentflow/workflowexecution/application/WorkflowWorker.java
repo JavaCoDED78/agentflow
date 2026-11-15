@@ -225,10 +225,19 @@ public class WorkflowWorker implements DisposableBean {
    * pinned graph's steps, execute the ready ones through their {@link StepHandler}, and reconcile
    * the run state.
    *
+   * <p>Two states are special-cased around the {@code run.started} transition (S11-05): an
+   * approval-paused run ({@code WAITING_FOR_APPROVAL}, its lease released at the pause) answers a
+   * claim by releasing it again — only the approval decision moves a paused run, so a poll neither
+   * steals it back to {@code RUNNING} nor races the decision's own resume edge; and a run already
+   * {@code RUNNING} when claimed (resumed by an approval decision, or re-claimed after its owner's
+   * lease expired) is driven without the transition, which the state machine forbids from {@code
+   * RUNNING}.
+   *
    * @return {@code true} when the worker made progress on the run this poll; {@code false} when the
    *     run could not be made to progress this poll — it could not be claimed (terminal, owned by a
-   *     live worker, a cross-tenant id, or the lease lost to another writer), or the run or its
-   *     pinned graph is missing, or a run transition was denied ({@code 404}/{@code 409})
+   *     live worker, a cross-tenant id, or the lease lost to another writer), it is approval-paused
+   *     (released back to the decision), or the run or its pinned graph is missing, or a run
+   *     transition was denied ({@code 404}/{@code 409})
    */
   private boolean processRun(UUID tenantId, UUID runId) {
     int epoch = leaseService.claim(tenantId, runId);
@@ -256,7 +265,20 @@ public class WorkflowWorker implements DisposableBean {
       drainForCancellation(tenantId, runId, graph, epoch);
       return true;
     }
-    if (!transitionRun(tenantId, runId, WorkflowRunState.RUNNING, "run.started")) {
+    // S11-05 — an approval-paused run is moved only by the approval decision. The pause released
+    // the lease, so this claim is possible even though no worker may drive the run: a poll must
+    // not re-drive it (that would both lie about the run state — WAITING_FOR_APPROVAL -> RUNNING
+    // without a decision — and race the decision's own WAITING_FOR_APPROVAL -> RUNNING edge).
+    // Release the accidental claim and leave the pause durable for the decision.
+    if (WorkflowRunState.WAITING_FOR_APPROVAL.equals(run.status())) {
+      releaseRunLease(tenantId, runId, epoch);
+      return false;
+    }
+    // A run already RUNNING when claimed — resumed by an approval decision (run.approved), or
+    // re-claimed after its owner's lease expired — is driven without the run.started transition:
+    // the state machine forbids RUNNING -> RUNNING, and the run is genuinely owned and executable.
+    if (!WorkflowRunState.RUNNING.equals(run.status())
+        && !transitionRun(tenantId, runId, WorkflowRunState.RUNNING, "run.started")) {
       return false;
     }
     materializeSteps(tenantId, runId, graph, epoch);

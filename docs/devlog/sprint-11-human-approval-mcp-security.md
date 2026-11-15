@@ -6,8 +6,59 @@
 - [S11-02](#s11-02-durable-approvals-schema) — durable approvals schema (S11-02)
 - [S11-03](#s11-03-durable-approval-pause) — the durable approval pause (WAITING_FOR_APPROVAL): the worker parks a run at a HUMAN_APPROVAL boundary and releases the worker lease (S11-03)
 - [S11-04](#s11-04-the-approve-endpoint) — the approve endpoint: the human decision on a HUMAN_APPROVAL pause, recorded atomically with its audit row (S11-04)
-- [S11-05](#s11-05) — future: reject/expiry — the full approval lifecycle, continuation published only through the outbox (S11-05)
+- [S11-05](#s11-05--reject-and-the-expiry-lifecycle-the-full-approval-lifecycle) — reject and the expiry lifecycle: the resume/refusal completion, the two outbox events, and the poll that never steals a paused run (S11-05)
 - [S11-06](#s11-06) — future: the payload-bound approval — the fingerprint checked at execution (S11-06)
+
+---
+
+## S11-05 — reject and the expiry lifecycle: the full approval lifecycle
+
+**The decision now completes the run.** S11-04 recorded the decision and parked the outcome; S11-05 is the second half of every decision, applied in the same transaction through the single transition service (invariant 4), plus the expiry lifecycle that fails what outlived its deadline. A rejected/expired request never launches a side effect, and the continuation/refusal is published only through the outbox.
+
+### What changed
+
+- **Reject.** `ApprovalService#reject` mirrors `approve` guard for guard (capability at the edge, tenant-scoped lookups → `404`, only a `PENDING` unexpired approval whose step is still `WAITING_FOR_APPROVAL` → `409`, the guarded conditional write, the atomic audit append, both idempotent replay mechanisms — state- and key-based, including the lost-race re-read and the duplicate-key race). The completion differs by design: `refuseSideEffect` moves the run and the gated step `WAITING_FOR_APPROVAL -> FAILED` (`run.rejected`) without the gated handler ever executing, and publishes `workflow.run.rejected.v1` (topic `agentflow.workflow.run-rejected.v1`, payload `cause: "REJECTED"`). The endpoint accepts `{"decision":"reject"}` through the same `POST /api/v1/runs/{runId}/approvals/{approvalId}`; any other decision is a `400` at the edge. New audit verb `REJECT` (`AuditAction`).
+- **Approve completion (the resume).** `resumeAfterApproval` — `WAITING_FOR_APPROVAL -> RUNNING` (`run.approved`), the gated step back to `RUNNING` and immediately `SUCCEEDED` (the human decision is the gate step's whole execution, so the step can never re-pause and recreate a second `PENDING` approval on the same step), and the continuation `workflow.run.resumed.v1` (topic `agentflow.workflow.run-resumed.v1`) through the transactional outbox — the only publication channel (invariant 3).
+- **The shared decision write.** `ApprovalRepository#recordApprove` / `#recordReject` share `recordDecision` — one guarded `UPDATE` (`status = 'PENDING'` + optimistic-lock `version`, zero rows → `ConflictException`), the status a bound internal literal, never caller input; the status vocabulary stays closed.
+- **Expiry.** `ApprovalRepository#expirePending` — the guarded `EXPIRED` write with no human actor: only `decision_at` marks the observed deadline, so an expired row can never be read back as a human decision. `ApprovalService#expireOverdue` — the sweep's transactional entry point: the guarded write (a lost race against a human decision answers `false`), the `EXPIRE` audit row under the system actor `agentflow-approval-expiry`, and the same refusal completion with `cause: "EXPIRED"`. `findOverduePending(cutoff, limit)` scans `PENDING` rows with `expiry` already past, oldest-first, bounded per pass. New audit verb `EXPIRE`; `ApprovalStatus.EXPIRED` already existed in the `approvals_status_check` vocabulary.
+- **The sweep.** `worker.ApprovalExpiryScheduler` — `@Scheduled` on `agentflow.worker.approval-expiry-fixed-rate-ms` (default 5 s), enabled per role by `agentflow.worker.approval-expiry-enabled=true` (default off, the API role never expires approvals), gated on `DataSource` like the recovery scheduler. One pass: scan (bounded by `approval-expiry-batch-size`, default 16) → pre-check the gated run is still `WAITING_FOR_APPROVAL` (a run that moved on owns its lifecycle; a missing/cross-tenant run is indistinguishable from moved-on) → expire through the service → one `agentflow.workflow.approvals.expired` counter increment per won item (no tenant/run label, invariant 9). A lost race, a faulted item or a moved-on run never stops the rest of the batch; the sweep is idempotent, so a re-run after a crash expires nothing twice (at-least-once, ADR-003).
+- **The worker poll no longer fights the pause.** `WorkflowWorker#processRun` special-cases two states around the `run.started` transition. A run claimed in `WAITING_FOR_APPROVAL` (the pause released the lease, so a claim is possible even though no worker may drive it) answers by releasing the accidental claim again and making no progress — a poll neither steals the run back to `RUNNING` (a lie about the state, and a race against the decision's own resume edge) nor re-runs the gated step. A run already `RUNNING` when claimed — resumed by an approval decision, or re-claimed after its owner's lease expired — is driven without the transition: the state machine forbids `RUNNING -> RUNNING`, and the re-drive is invisible on the run's transition history.
+- **Config.** `AgentFlowProperties.Worker` gains `approval-expiry-enabled` (default `false`), `approval-expiry-fixed-rate-ms` (default `5000`), `approval-expiry-batch-size` (default `16`, `@Min(1)`).
+
+### Why
+
+The plan's acceptance: «отклонённый/просроченный запрос не должен запускать side effect» and «продолжение/отказ публиковать только через outbox». The state machines (`run-state-machine.md` §3, `step-state-machine.md` guard 11) already named the edges — `run.approved` (resume), `run.rejected` (refusal) — this task lands them. The pause released the lease (S11-03), which created two new worker-race shapes (steal-back, double `run.started`) that the poll must refuse.
+
+### Verification
+
+```bash
+./gradlew :apps:agentflow-app:test \
+  --tests 'com.example.agentflow.workflowexecution.application.ApprovalServiceTest' \
+  --tests 'com.example.agentflow.workflowexecution.web.ApprovalControllerTest' \
+  --tests 'com.example.agentflow.workflowexecution.persistence.ApprovalRepositoryTest' \
+  --tests 'com.example.agentflow.workflowexecution.worker.ApprovalExpirySchedulerTest' \
+  --tests 'com.example.agentflow.workflowexecution.application.WorkflowWorkerTest' \
+  --rerun-tasks
+./gradlew :apps:agentflow-app:integrationTest \
+  --tests 'com.example.agentflow.workflowexecution.persistence.ApprovalDecisionWriteIT'
+```
+
+`BUILD SUCCESSFUL`, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`): `ApprovalServiceTest` **26** (the S11-04 guards plus: the resume — run to `RUNNING`, step `RUNNING`→`SUCCEEDED`, one `run-resumed` outbox event; the refusal — run and step to `FAILED`, one `run-rejected` event with `cause`; reject replays state- and key-based; reject 409s on approved-elsewhere/expired/step-moved/lost-race; expiry — guarded write, `EXPIRE` audit under the system actor, refusal with `cause: EXPIRED`; lost expiry race answers `false` with no side effects), `ApprovalControllerTest` **7** (reject routes to `ApprovalService#reject` and returns `200` with the decision; an unknown decision is a `400` touching neither half), `ApprovalRepositoryTest` **13** (the shared decision write's SQL/binds for approve and reject, SQL-NULL bindings, zero-rows → conflict, `expirePending` writes no actor/comment, the overdue scan's SQL/bounds/mapper), `ApprovalExpirySchedulerTest` **5** (expired-and-counted with the invariant-9 counter, moved-on run skipped, lost race and faulted item never stop the batch, empty pass), `WorkflowWorkerTest` **15** (the S11-03 restart acceptance plus: a paused run is not stolen back — no `run.started`, no step moves, the accidental claim released; an already-`RUNNING` claimed run is driven to its conclusion without a second `run.started`).
+
+Integration on `pgvector/pgvector:0.8.6-pg18` (the same image as Compose — never H2): `ApprovalDecisionWriteIT` **5** — the guarded writes against real rows: a reject lands with bumped version; a second decision on the decided row is a conflict on both the stale and the fresh version; a genuine two-thread approve/reject race affects **exactly one** row (invariant 4); `expirePending` marks `EXPIRED` with `decision_actor`/`decision_comment` NULL; the overdue scan returns only overdue `PENDING` rows oldest-first.
+
+### Documentation
+
+- `docs/architecture/kafka-topics.md` and `docs/architecture/events/README.md` — the two new topics/events (`run-resumed.v1`, `run-rejected.v1` with the closed `cause` vocabulary) in the tables and as example payloads.
+- `docs/architecture/module-api.md` — the `ApprovalService` entry (decision half of the lifecycle, the sweep, the worker poll contract) and the published-event-types row.
+- `contracts/openapi/openapi.json` — regenerated (the decision endpoint now documents both `approve` and `reject`).
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-04).
+
+### Risks / follow-up
+
+- The expiry sweep runs per workflow-worker role and scans across tenants (like the S07-09 recovery scan); each item is fenced by its own guarded write and the run pre-check, and the counter carries no tenant label (invariant 9).
+- A human decision racing the sweep between the scan and the write wins or loses on the `version` fence — the loser makes no progress, at-least-once (ADR-003), never exactly-once.
+- The fingerprint is stored and compared for idempotency; binding it to execution (re-check at side-effect time) is S11-06 — until then a decision authorizes the step, not a re-validated argument set.
 
 ---
 
@@ -63,7 +114,7 @@ The schema probe `MigrationsTest#approvals_idempotency_key_is_nullable_and_uniqu
 
 ### Risks / follow-up
 
-- The approve endpoint records the decision and parks the outcome; the resume of the run (step/run transition out of `WAITING_FOR_APPROVAL`, published only through the outbox) is S11-05, together with reject and the expiry lifecycle.
+- The approve endpoint records the decision; the resume of the run (step/run transition out of `WAITING_FOR_APPROVAL`, published only through the outbox) landed in [S11-05](#s11-05--reject-and-the-expiry-lifecycle-the-full-approval-lifecycle), together with reject and the expiry lifecycle.
 - The fingerprint is stored and compared for idempotency; binding it to execution (re-check at side-effect time) is S11-06 — until then a decision authorizes the step, not a re-validated argument set.
 
 ---

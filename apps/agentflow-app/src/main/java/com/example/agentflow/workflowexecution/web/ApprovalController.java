@@ -25,15 +25,17 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * The human-approval decision endpoint — {@code POST /api/v1/runs/{runId}/approvals/{approvalId}}
- * (S11-04, glossary §9).
+ * (S11-04 approve, S11-05 reject, glossary §9).
  *
- * <p>Approves the gated side effect of one {@code HUMAN_APPROVAL} step through {@link
- * ApprovalService#approve}: the decision and its audit row commit atomically ({@code ADR-018}), and
- * a repeat — with or without the client's {@code Idempotency-Key} — replays the recorded decision
- * instead of writing a second one. The endpoint is gated on the {@code run:approve} authority by
- * the access matrix (S04-08), so a caller without that capability is denied before it ever reaches
- * this controller; the tenant/resource checks inside the service make another tenant's approval
- * indistinguishable from a missing one (invariant 1, the S11-04 acceptance).
+ * <p>Decides the gated side effect of one {@code HUMAN_APPROVAL} step through {@link
+ * ApprovalService#approve} / {@link ApprovalService#reject}: the decision, its audit row, the
+ * run/step completion and the outbox continuation/refusal commit atomically ({@code ADR-018},
+ * {@code ADR-004}), and a repeat — with or without the client's {@code Idempotency-Key} — replays
+ * the recorded decision instead of writing a second one. The endpoint is gated on the {@code
+ * run:approve} authority by the access matrix (S04-08), so a caller without that capability is
+ * denied before it ever reaches this controller; the tenant/resource checks inside the service make
+ * another tenant's approval indistinguishable from a missing one (invariant 1, the S11-04
+ * acceptance).
  *
  * <p>The {@code tenantId} and {@code actor} are read from application configuration, not from the
  * request (invariant 1 — never derived from input), exactly as {@link WorkflowRunController} does;
@@ -61,7 +63,7 @@ public class ApprovalController {
   }
 
   /**
-   * Approve a human-approval request, idempotently.
+   * Decide a human-approval request (approve or reject), idempotently.
    *
    * <p>Returns {@code 200 OK} with the persisted {@link ApprovalDecisionDto} — on the first
    * decision and on every state- or key-based replay alike, so a client retrying a lost response
@@ -69,7 +71,7 @@ public class ApprovalController {
    *
    * <ul>
    *   <li>{@code 400 bad_request} when the body is not the decision JSON the contract expects, the
-   *       {@code decision} is not {@code "approve"} (reject lands in S11-05), or the {@code
+   *       {@code decision} is neither {@code "approve"} nor {@code "reject"}, or the {@code
    *       Idempotency-Key} header is not a UUID;
    *   <li>{@code 404 not_found} when no approval matches {@code (tenant_id, run_id, approvalId)} —
    *       another tenant's approval is indistinguishable from a missing one (invariant 1);
@@ -83,15 +85,19 @@ public class ApprovalController {
    * @param idempotencyKey an optional client idempotency key: a repeat with the same payload under
    *     this key replays the recorded decision; a different payload under the same key is a {@code
    *     409} (S11-04, {@code V3_3_23})
-   * @param rawBody the raw decision JSON ({@code {"decision":"approve","comment":"…"}})
+   * @param rawBody the raw decision JSON ({@code {"decision":"approve"|"reject","comment":"…"}})
    * @return {@code 200 OK} with the decision snapshot (original or replayed)
    */
   @Operation(
       operationId = "decideApproval",
-      summary = "Approve a human-approval request (idempotent)",
+      summary =
+          "Decide a human-approval request: approve resumes the run, reject fails it (idempotent)",
       description =
-          "Records the APPROVED decision on a PENDING approval and its audit row in one "
-              + "transaction (S11-04, ADR-018). Idempotent: a repeat — with or without the "
+          "Records the human decision on a PENDING approval and its audit row in one transaction "
+              + "(S11-04/S11-05, ADR-018). approve resumes the run (WAITING_FOR_APPROVAL -> "
+              + "RUNNING, workflow.run.resumed.v1 through the outbox); reject refuses the side "
+              + "effect (run and gated step -> FAILED, workflow.run.rejected.v1) — the gated side "
+              + "effect never executes. Idempotent: a repeat — with or without the "
               + "Idempotency-Key — replays the recorded decision instead of writing a second one; "
               + "a reused key with a different payload is a 409. Requires the run:approve "
               + "authority (S04-08); tenant-scoped so another tenant's approval is a 404, never a "
@@ -100,7 +106,7 @@ public class ApprovalController {
   @ApiResponse(
       responseCode = "400",
       description =
-          "the body is not the decision JSON, the decision is not 'approve', or the key is not a UUID")
+          "the body is not the decision JSON, the decision is neither 'approve' nor 'reject', or the key is not a UUID")
   @ApiResponse(
       responseCode = "404",
       description = "no approval matches (tenant_id, run_id, approvalId)")
@@ -110,7 +116,7 @@ public class ApprovalController {
           "already decided otherwise, expired, the step moved on, or a reused key carries a different payload")
   @ApiResponse(responseCode = "503", description = "no database connection is configured")
   @PostMapping("/{runId}/approvals/{approvalId}")
-  ResponseEntity<ApprovalDecisionDto> approve(
+  ResponseEntity<ApprovalDecisionDto> decide(
       @PathVariable UUID runId,
       @PathVariable UUID approvalId,
       @Parameter(
@@ -132,19 +138,25 @@ public class ApprovalController {
           @RequestBody
           String rawBody) {
     ApprovalDecisionRequest parsed = parse(rawBody);
-    if (!"approve".equals(parsed.decision())) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST,
-          "decision must be \"approve\" — reject and the expiry lifecycle land in S11-05");
-    }
     UUID key = parseKey(idempotencyKey);
     String fingerprint =
         key == null
             ? null
             : Fingerprint.sha256Hex(canonical(new DecisionPayload(approvalId, parsed)));
-    return ResponseEntity.ok(
-        approvalService.approve(
-            tenantId, actor, runId, approvalId, parsed.comment(), key, fingerprint));
+    // The closed decision vocabulary (S11-04 approve, S11-05 reject): anything else is a 400 at
+    // the edge, never a service-level surprise.
+    if ("approve".equals(parsed.decision())) {
+      return ResponseEntity.ok(
+          approvalService.approve(
+              tenantId, actor, runId, approvalId, parsed.comment(), key, fingerprint));
+    }
+    if ("reject".equals(parsed.decision())) {
+      return ResponseEntity.ok(
+          approvalService.reject(
+              tenantId, actor, runId, approvalId, parsed.comment(), key, fingerprint));
+    }
+    throw new ResponseStatusException(
+        HttpStatus.BAD_REQUEST, "decision must be \"approve\" or \"reject\"");
   }
 
   /**

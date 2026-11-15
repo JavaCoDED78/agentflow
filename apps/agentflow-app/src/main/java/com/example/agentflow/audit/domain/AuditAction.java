@@ -21,5 +21,14 @@ public enum AuditAction {
    * A human-approval decision to let the gated side effect run (S11-04; reject/expiry land in
    * S11-05).
    */
-  APPROVE
+  APPROVE,
+
+  /** A human-approval decision to block the gated side effect (S11-05). */
+  REJECT,
+
+  /**
+   * The approval request outlived its {@code expiry} before a decision and the expiry sweep blocked
+   * the gated side effect (S11-05) — the system actor, never a human one.
+   */
+  EXPIRE
 }

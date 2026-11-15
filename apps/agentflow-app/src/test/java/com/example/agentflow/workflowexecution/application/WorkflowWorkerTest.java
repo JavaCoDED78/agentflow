@@ -869,6 +869,129 @@ class WorkflowWorkerTest {
     verify(runRepository, times(1)).releaseLease(tenant, runId, LEASE_EPOCH);
   }
 
+  @Test
+  void a_paused_run_waiting_for_approval_is_not_stolen_back_to_running_by_the_poll() {
+    // S11-05 acceptance: the pause released the lease, so the poll CAN claim the run again — but a
+    // paused run is moved only by the approval decision. The claim must be released again and no
+    // run.started transition may fire, otherwise the poll would both lie about the run state
+    // (WAITING_FOR_APPROVAL -> RUNNING without a decision) and race the decision's own resume edge.
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    runId,
+                    versionId,
+                    WorkflowRunState.WAITING_FOR_APPROVAL,
+                    1,
+                    OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId))
+        .thenReturn(
+            new WorkflowGraph(
+                List.of(node("send-report", "HUMAN_APPROVAL"), node("send-email", "NOOP")),
+                List.of(edge("send-report", "send-email"))));
+    List<String> downstreamRuns = new ArrayList<>();
+    StepHandler noop =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "NOOP".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            downstreamRuns.add(context.stepKey());
+            return StepResult.succeeded("email sent");
+          }
+        };
+
+    WorkflowWorker worker = buildWorker(List.of(noop));
+    int processed = worker.pollOnce(tenant);
+
+    // no progress, no state machine moves, no gated side effect — the pause is left durable
+    assertThat(processed).isZero();
+    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any());
+    verify(transitionService, never()).transitionStep(any(), any(), any(), any(), any(), any());
+    verify(stepRepository, never()).createStep(any(), any(), anyString(), anyInt(), any());
+    assertThat(downstreamRuns).isEmpty();
+    // the accidental claim is released again, so the run stays claimable for the resume (S11-04)
+    verify(runRepository, times(1)).releaseLease(tenant, runId, LEASE_EPOCH);
+  }
+
+  @Test
+  void a_run_already_running_when_claimed_is_driven_without_a_second_run_started() {
+    // S11-05 acceptance: a run already RUNNING when claimed — resumed by an approval decision, or
+    // re-claimed after its owner's lease expired — is driven without the run.started transition
+    // (the state machine forbids RUNNING -> RUNNING). The re-drive picks up the persisted step
+    // states and concludes the run; a second run.started would be a lie about the run's history.
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("extract", WorkflowStepState.PENDING);
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.RUNNING, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId))
+        .thenReturn(new WorkflowGraph(List.of(node("extract", "NOOP")), List.of()));
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    StepHandler noop =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "NOOP".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            return StepResult.succeeded("extracted");
+          }
+        };
+
+    WorkflowWorker worker = buildWorker(List.of(noop));
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isOne();
+    // the parked step was driven to its conclusion ...
+    assertThat(stepState.get("extract")).isEqualTo(WorkflowStepState.SUCCEEDED);
+    // ... WITHOUT a run.started: the run never paused, so the re-drive is invisible on the run's
+    // transition history; the only run-level moves are the resume's own SUCCEEDED conclusion
+    verify(transitionService, never())
+        .transitionRun(any(), any(), eq(WorkflowRunState.RUNNING), anyString(), any());
+    verify(transitionService)
+        .transitionRun(
+            tenant, runId, WorkflowRunState.SUCCEEDED, "run.finished", "agentflow-worker");
+    // the step ran READY -> RUNNING -> SUCCEEDED under its own step.* events
+    ArgumentCaptor<String> stepEvents = ArgumentCaptor.forClass(String.class);
+    verify(transitionService, times(3))
+        .transitionStep(eq(tenant), eq(runId), eq("extract"), any(), stepEvents.capture(), any());
+    assertThat(stepEvents.getAllValues())
+        .containsExactly("step.ready", "step.running", "step.succeeded");
+  }
+
   private static WorkflowNode node(String id, String type) {
     return new WorkflowNode(id, type, new LinkedHashMap<>());
   }
