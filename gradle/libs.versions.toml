@@ -40,6 +40,10 @@ spring-ai-bom   = { module = "org.springframework.ai:spring-ai-bom",            
 # its Spring AI beans are created only by a @ConditionalOnProperty config behind ChatModelPort
 # (S09-01), so the core app boots without a provider profile and without any AI key.
 spring-ai-openai = { module = "org.springframework.ai:spring-ai-openai" }
+# MCP demo server (S11-08, ADR-019): the Streamable-HTTP WebMVC MCP server starter for the
+# isolated agentflow-mcp-lab artifact. Version comes from the spring-ai BOM (S01-08); nothing
+# is pinned inline. The main app never takes this dependency — it is an MCP client only.
+spring-ai-starter-mcp-server-webmvc = { module = "org.springframework.ai:spring-ai-starter-mcp-server-webmvc" }
 # Structured JSON logging (S01-19); version pinned above.
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstash-logback-encoder" }
 # Schema migrations (S03-01): Flyway Core is BOM-managed by the Spring Boot BOM,

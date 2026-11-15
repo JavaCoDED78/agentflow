@@ -9,6 +9,46 @@
 - [S11-05](#s11-05--reject-and-the-expiry-lifecycle-the-full-approval-lifecycle) — reject and the expiry lifecycle: the resume/refusal completion, the two outbox events, and the poll that never steals a paused run (S11-05)
 - [S11-06](#s11-06--the-payload-bound-approval-the-fingerprint-re-validated-at-the-decision) — the payload-bound approval: the canonical fingerprint of the exact arguments re-validated at the decision (S11-06)
 - [S11-07](#s11-07--mcp-transport-streamable-http-verified-against-the-stable-spring-ai-20x-line) — MCP transport: Streamable-HTTP on the stable Spring AI 2.0.x line, with the client/server compatibility matrix (S11-07)
+- [S11-08](#s11-08--the-isolated-mcp-demo-server-agentflow-mcp-lab) — the isolated MCP demo server: agentflow-mcp-lab, a separate artifact with one read-only fixture tool and no path to the business database (S11-08)
+
+---
+
+## S11-08 — the isolated MCP demo server: agentflow-mcp-lab
+
+**Task (P1):** create a separate process/service with one or two safe read-only tools; give it no direct DB credentials from the main application.
+
+**Deliverable:** `apps/agentflow-mcp-lab` — a separate Spring Boot artifact running the Streamable-HTTP MCP server from ADR-019, exposing one read-only demo tool, `ticket_lookup`.
+
+### What changed
+
+- **A new Gradle subproject and Spring Boot artifact** (`apps/agentflow-mcp-lab/`, main class `com.example.agentflow.mcplab.McpLabApplication`, registered in `settings.gradle.kts`). It is deliberately not a package of `agentflow-app`: the lab is a separate deployable with its own lifecycle, which is exactly the case the repository rules allow a separate module for.
+- **The ADR-019 coordinates, no more, no less:** `spring-boot-starter-web` (Servlet stack) + `spring-ai-starter-mcp-server-webmvc` (BOM-managed 2.0.1), `spring.ai.mcp.server.protocol=STREAMABLE`, endpoint `/mcp`, port 8081. The catalog gains one entry (`spring-ai-starter-mcp-server-webmvc`); nothing is pinned inline; `generateLockFiles --write-locks` adds the lab's `gradle.lockfile`.
+- **One safe, read-only tool — isolation by absence.** `LabTicketLookupService` answers `ticket_lookup` from a fixed in-memory fixture (`TKT-1001` open $49.99 / `TKT-1002` on hold $129.00 / `TKT-1003` closed $42.50 — the same fictitious story as the monolith's in-process `ticket.lookup`, S08-07, but self-contained: the lab shares no code and no state with `agentflow-app`). There is no JDBC starter, no Flyway, no PostgreSQL driver on the lab classpath, so the business database is unreachable from the process at all — a credential cannot leak in through autoconfiguration because there is nothing to autoconfigure it into. An unknown id is a first-class `NOT_FOUND` answer in one stable schema, never an exception across the wire; the MCP tool name is `ticket_lookup` because the MCP specification restricts tool names to letters, digits, `_` and `-` — the in-process dot name cannot cross the wire.
+
+### Why
+
+- **Separate artifact over a profile of the monolith.** The S11-08 acceptance is isolation: the lab must run independently and never see the business database. A profile of `agentflow-app` would share the artifact's classpath (the PostgreSQL driver, Flyway) and its configuration surface — isolation would rest on convention. A separate artifact makes it structural: the forbidden things are not present.
+- **One tool, deliberately minimal.** The plan allows one or two; one deterministic read-only tool demonstrates the full MCP surface (advertise → call → typed answer) without widening the attack surface the allowlist (S11-09) and SSRF guard (S11-10) will police.
+
+### Verification
+
+```bash
+./gradlew :apps:agentflow-mcp-lab:test --rerun-tasks
+./gradlew spotlessApply check --rerun-tasks
+```
+
+`BUILD SUCCESSFUL`, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh reports in this session): `LabTicketLookupServiceTest` **6** (exact fixture values for every ticket, `NOT_FOUND` as a first-class answer, exact/case-sensitive matching, the null/blank contract guards, repeated-lookup stability), `McpLabApplicationTest` **2** (the context boots and advertises exactly one tool named `ticket_lookup`; `getBeanNamesForType(DataSource.class)` is empty — the no-datasource isolation acceptance), `McpLabEndpointTest` **1** (boots on a random port and performs a real MCP `initialize` handshake over Streamable-HTTP with the JDK `HttpClient` — `200` and the body carries the server identity `agentflow-mcp-lab`). The full `./gradlew check` gate — unit tests of both artifacts + formatting (`spotless`) + the wrapper-integrity verify — green.
+
+### Documentation
+
+- `docs/ai/mcp.md` — the demo-server section is now the real module: actual build file, application.yml, run/test commands, the `ticket_lookup` naming note.
+- `apps/README.md` and the root `AGENTS.md` repository layout — the lab's PLANNED marker replaced with the implemented entry.
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-07).
+
+### Risks / follow-up
+
+- No Compose service or Helm chart for the lab yet — it runs via `bootRun`; packaging/deployment lands where the demo needs it (not required by the S11-08 acceptance, which the independent-boot test proves).
+- S11-09 wires the monolith's MCP client to this server through the connection allowlist; S11-10 adds the SSRF guard over the connection URLs.
 
 ---
 

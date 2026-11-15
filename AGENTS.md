@@ -26,7 +26,9 @@ When implementing any task from the plan (`S##-##` in `AGENTFLOW_ARCHITECTURE_AN
 
 ```text
 apps/agentflow-app/        one Spring Boot artifact, several runtime roles (api / workflow-worker / ingestion-worker)
-apps/agentflow-mcp-lab/    PLANNED (P1) — isolated MCP demo server; not created yet (apps/ currently holds agentflow-app only). Remove or confirm when implemented.
+apps/agentflow-mcp-lab/    Isolated MCP demo server (S11-08, ADR-019): own Spring Boot artifact + Gradle subproject,
+                         one read-only fixture tool (ticket_lookup) over Streamable-HTTP; no JDBC/Flyway/driver — no
+                         path to the business database. Run: ./gradlew :apps:agentflow-mcp-lab:bootRun (port 8081).
 infra/                     compose, docker, helm, argocd, observability/* (everything as code)
 contracts/                 openapi/, events/json-schema/, asyncapi/
 docs/                      adr/, architecture/, runbooks/, devlog/, threat-model/, load-tests/, security/ …

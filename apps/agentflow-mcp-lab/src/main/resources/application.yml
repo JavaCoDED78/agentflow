@@ -1,0 +1,23 @@
+# Configuration of the isolated MCP demo server (agentflow-mcp-lab, S11-08).
+#
+# The transport and property names are the ADR-019 decision: one Streamable-HTTP
+# transport on the Servlet stack, no SSE, no WebFlux. The lab has no datasource section
+# on purpose — it must never see the business database.
+
+spring:
+  application:
+    name: agentflow-mcp-lab
+  ai:
+    mcp:
+      server:
+        enabled: true
+        # ADR-019: Streamable-HTTP is the one chosen transport (SSE is deprecated).
+        protocol: STREAMABLE
+        name: agentflow-mcp-lab
+        version: 1.0.0
+        type: SYNC
+        streamable-http:
+          mcp-endpoint: /mcp
+
+server:
+  port: 8081
