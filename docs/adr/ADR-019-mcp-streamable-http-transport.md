@@ -111,3 +111,16 @@ nothing experimental.**
   refused); S11-10 adds the SSRF guard for the connection URLs. A Spring AI
   version bump re-verifies this ADR's facts (deprecation status, SDK line) as
   part of the bump's compatibility check.
+
+## Implementation notes
+
+- **S11-08 (done):** the lab runs as its own artifact on these coordinates —
+  see `docs/ai/mcp.md` and the S11-08 devlog entry.
+- **S11-09 (done):** the client allowlist landed exactly as decided: the Spring
+  AI connection map owns transport URLs, the new `agentflow.mcp.servers.<name>`
+  group owns authorization (tool names + per-server timeout + response bound),
+  and `toolexecution.mcp.McpClientAdapter` refuses anything outside their
+  intersection before avoidable I/O. `spring-ai-starter-mcp-client` is on the
+  main-app classpath with the server starter disabled
+  (`spring.ai.mcp.server.enabled=false`). See `docs/ai/mcp.md` (client section)
+  and the S11-09 devlog entry.
