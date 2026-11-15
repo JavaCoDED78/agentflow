@@ -34,6 +34,7 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-016`](ADR-016-ingestion-ai-embedding-edge.md) | ingestion embeds chunks through the `ai` embedding port (arrow 19) | 2026-11-12 | S10-12 | Accepted |
 | [`ADR-017`](ADR-017-tool-risk-classification.md) | Tool risk classification is a closed, deny-by-default vocabulary owned by the catalogue | 2026-11-14 | S11-01 | Accepted |
 | [`ADR-018`](ADR-018-workflowexecution-audit-edge.md) | The approval decision is audited through a new `workflowexecution -> audit` compile edge | 2026-11-14 | S11-04 | Accepted |
+| [`ADR-019`](ADR-019-mcp-streamable-http-transport.md) | MCP transport and client/server compatibility: Streamable-HTTP on the stable Spring AI 2.0.x line | 2026-11-15 | S11-07 | Accepted |
 
 ## Statuses
 

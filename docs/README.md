@@ -45,7 +45,13 @@ docs/
 │   ├── ADR-010-audit-workflow-definition-mutations.md  ← audit on definition mutations (S04-12)
 │   ├── ADR-011-workflow-run-lease.md             ← workflow run lease, heartbeat, fencing, recovery (S07-01)
 │   ├── ADR-012-local-tenant-default-bypass.md            ← local-skeleton tenant default bypass (S03-13/…/S04-10)
-│   └── ADR-013-s3-object-storage-garage.md  ← S3 object storage: Garage for the local stack (S01-15)
+│   ├── ADR-013-s3-object-storage-garage.md  ← S3 object storage: Garage for the local stack (S01-15)
+│   ├── ADR-014-provider-port.md              ← the AI provider behind a neutral application port (S09-01)
+│   ├── ADR-015-knowledgebase-outbox-edge.md  ← knowledgebase → messaging outbox edge (S10-06)
+│   ├── ADR-016-ingestion-ai-embedding-edge.md ← ingestion → ai embedding port edge (S10-12)
+│   ├── ADR-017-tool-risk-classification.md   ← closed, deny-by-default tool risk vocabulary (S11-01)
+│   ├── ADR-018-workflowexecution-audit-edge.md ← the approval decision audited across a new audit edge (S11-04)
+│   └── ADR-019-mcp-streamable-http-transport.md ← MCP transport: Streamable-HTTP on stable Spring AI 2.0.x (S11-07)
 ├── architecture/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
 │   ├── dependency-management.md       ← version catalog / BOM policy (S01-06, S01-08)
@@ -72,7 +78,7 @@ docs/
 │   └── dsl-v1.md                      ← workflow DSL v1: shape, node types, validation, examples (S05-17)
 ├── tools/
 │   └── README.md                      ← tool authoring guide (S08-15)
-├── ai/                                README.md ← AI integration guide (S09-15); provider-configuration.md ← S09-15; real-provider-contract-test.md ← S09-12; rag/ README.md ← RAG grounding guide (S10-11 follow-up); pipeline.md ← full pipeline: upload→chunk→embed→index→retrieval→ground (S10-11…S10-20)
+├── ai/                                README.md ← AI integration guide (S09-15); provider-configuration.md ← S09-15; real-provider-contract-test.md ← S09-12; mcp.md ← MCP transport & configuration (S11-07); rag/ README.md ← RAG grounding guide (S10-11 follow-up); pipeline.md ← full pipeline: upload→chunk→embed→index→retrieval→ground (S10-11…S10-20)
 ├── evaluation/
 │   ├── README.md                      ← Planner baseline eval cases (S09-14)
 │   └── rag/                           README.md ← how the RAG eval works (S10-20); corpus.md ← the fixed sample documents, questions and reference pages/chunks (S10-20)
