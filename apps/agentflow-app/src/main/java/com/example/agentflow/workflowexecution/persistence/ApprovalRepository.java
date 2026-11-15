@@ -35,10 +35,14 @@ import org.springframework.stereotype.Repository;
  *
  * <p>The decision path (S11-04) is the approve endpoint's half of the table: a tenant-scoped read
  * ({@link #find}), the conditional decision write guarded on {@code status = 'PENDING'} and the
- * optimistic-lock {@code version} ({@link #recordApprove} — a zero-rows outcome is a {@link
- * ConflictException}, so two competing decisions never silently overwrite each other, invariant 4),
- * and the keyed lookup ({@link #findByIdempotencyKey}) the idempotent replay answers from. The
- * idempotency columns are {@code V3_3_23} (S11-04).
+ * optimistic-lock {@code version} ({@link #recordApprove} / {@link #recordReject} — a zero-rows
+ * outcome is a {@link ConflictException}, so two competing decisions never silently overwrite each
+ * other, invariant 4), and the keyed lookup ({@link #findByIdempotencyKey}) the idempotent replay
+ * answers from. The idempotency columns are {@code V3_3_23} (S11-04).
+ *
+ * <p>The lifecycle completion (S11-05) adds the reject write ({@link #recordReject}), the expiry
+ * sweep's guarded {@code EXPIRED} write ({@link #expirePending} — no human actor, only the observed
+ * deadline) and the overdue scan it drives ({@link #findOverduePending}).
  */
 @Repository
 @ConditionalOnBean(DataSource.class)
@@ -173,30 +177,104 @@ public class ApprovalRepository {
       UUID idempotencyKey,
       String idempotencyFingerprint,
       int expectedVersion) {
+    recordDecision(
+        tenantId,
+        runId,
+        approvalId,
+        "APPROVED",
+        decisionActor,
+        decisionAt,
+        decisionComment,
+        idempotencyKey,
+        idempotencyFingerprint,
+        expectedVersion);
+  }
+
+  /**
+   * Record a {@code REJECTED} decision on a {@code PENDING} approval (S11-05) — the guarded write
+   * of the reject half of the lifecycle, byte-for-byte the {@link #recordApprove} contract with the
+   * {@code REJECTED} status: conditional on {@code status = 'PENDING'} and the optimistic-lock
+   * {@code version}, a zero-rows outcome a {@link ConflictException} (invariant 4), the idempotency
+   * pair stored with the decision under the {@code approvals_tenant_idempotency_key} guard when the
+   * caller chose a key.
+   *
+   * @param tenantId the owning tenant
+   * @param runId the run the approval gates
+   * @param approvalId the approval record to decide
+   * @param decisionActor the deciding actor (never a token)
+   * @param decisionAt the decision instant from the injectable {@code Clock} (invariant 10)
+   * @param decisionComment the free-text note, or {@code null}
+   * @param idempotencyKey the client key, or {@code null} for an unkeyed decision
+   * @param idempotencyFingerprint the digest of the canonical decision payload, or {@code null}
+   * @param expectedVersion the version the read-path observed (optimistic lock)
+   * @throws ConflictException if zero rows match (the decision raced or the row moved)
+   */
+  public void recordReject(
+      UUID tenantId,
+      UUID runId,
+      UUID approvalId,
+      String decisionActor,
+      OffsetDateTime decisionAt,
+      String decisionComment,
+      UUID idempotencyKey,
+      String idempotencyFingerprint,
+      int expectedVersion) {
+    recordDecision(
+        tenantId,
+        runId,
+        approvalId,
+        "REJECTED",
+        decisionActor,
+        decisionAt,
+        decisionComment,
+        idempotencyKey,
+        idempotencyFingerprint,
+        expectedVersion);
+  }
+
+  /**
+   * The shared conditional decision write behind {@link #recordApprove} / {@link #recordReject}: a
+   * single guarded {@code UPDATE} setting the terminal {@code status}, the decision metadata and
+   * the idempotency pair, fenced on {@code status = 'PENDING'} and the optimistic-lock {@code
+   * version}. The {@code targetStatus} is an internal literal (one of the two callers above), never
+   * caller input — the status vocabulary is closed (the {@code approvals_status_check} bound).
+   */
+  private void recordDecision(
+      UUID tenantId,
+      UUID runId,
+      UUID approvalId,
+      String targetStatus,
+      String decisionActor,
+      OffsetDateTime decisionAt,
+      String decisionComment,
+      UUID idempotencyKey,
+      String idempotencyFingerprint,
+      int expectedVersion) {
     int affected =
         jdbc.update(
             "UPDATE "
                 + TABLE
-                + " SET status = 'APPROVED', decision_actor = ?, decision_at = ?,"
+                + " SET status = ?, decision_actor = ?, decision_at = ?,"
                 + " decision_comment = ?, idempotency_key = ?, idempotency_fingerprint = ?,"
                 + " version = version + 1, updated_at = ?"
                 + " WHERE id = ? AND tenant_id = ? AND run_id = ? AND status = 'PENDING'"
                 + " AND version = ?",
             ps -> {
-              ps.setString(1, decisionActor);
-              ps.setObject(2, decisionAt);
-              bindNullableString(ps, 3, decisionComment);
+              ps.setString(1, targetStatus);
+              ps.setString(2, decisionActor);
+              ps.setObject(3, decisionAt);
+              bindNullableString(ps, 4, decisionComment);
               if (idempotencyKey == null) {
-                ps.setNull(4, Types.OTHER);
+                ps.setNull(5, Types.OTHER);
               } else {
-                ps.setObject(4, idempotencyKey);
+                ps.setObject(5, idempotencyKey);
               }
-              bindNullableString(ps, 5, idempotencyFingerprint);
-              ps.setObject(6, decisionAt);
-              ps.setObject(7, approvalId);
-              ps.setObject(8, tenantId);
-              ps.setObject(9, runId);
-              ps.setInt(10, expectedVersion);
+              bindNullableString(ps, 6, idempotencyFingerprint);
+              ps.setObject(7, decisionAt);
+              ps.setObject(8, approvalId);
+              ps.setObject(9, tenantId);
+              ps.setObject(10, runId);
+              ps.setInt(11, expectedVersion);
             });
     if (affected == 0) {
       throw new ConflictException(
@@ -208,6 +286,83 @@ public class ApprovalRepository {
               + expectedVersion
               + ") or no longer PENDING — another decision won the race");
     }
+  }
+
+  /**
+   * Record an {@code EXPIRED} terminal status on a {@code PENDING} approval whose {@code expiry}
+   * has passed (S11-05, the expiry sweep), the guarded write half of the refusal path.
+   *
+   * <p>An expiry has no human behind it: {@code decision_actor} / {@code decision_comment} stay
+   * {@code NULL} and only {@code decision_at} marks when the sweep observed the deadline, so the
+   * row can never be read back as a human decision. The update is guarded on {@code status =
+   * 'PENDING'} and the optimistic-lock {@code version}, so an expiry racing a concurrent human
+   * decision (or a second sweeper) affects at most one row — the loser sees a {@link
+   * ConflictException} and skips (at-least-once, ADR-003).
+   *
+   * @param tenantId the owning tenant
+   * @param runId the run the approval gates
+   * @param approvalId the approval record to expire
+   * @param expiredAt the instant the sweep observed the deadline, from the injectable {@code Clock}
+   *     (invariant 10)
+   * @param expectedVersion the version the scan observed (optimistic lock)
+   * @throws ConflictException if zero rows match (a decision raced or the row moved)
+   */
+  public void expirePending(
+      UUID tenantId, UUID runId, UUID approvalId, OffsetDateTime expiredAt, int expectedVersion) {
+    int affected =
+        jdbc.update(
+            "UPDATE "
+                + TABLE
+                + " SET status = 'EXPIRED', decision_at = ?,"
+                + " version = version + 1, updated_at = ?"
+                + " WHERE id = ? AND tenant_id = ? AND run_id = ? AND status = 'PENDING'"
+                + " AND version = ?",
+            ps -> {
+              ps.setObject(1, expiredAt);
+              ps.setObject(2, expiredAt);
+              ps.setObject(3, approvalId);
+              ps.setObject(4, tenantId);
+              ps.setObject(5, runId);
+              ps.setInt(6, expectedVersion);
+            });
+    if (affected == 0) {
+      throw new ConflictException(
+          "approval "
+              + approvalId
+              + " on run "
+              + runId
+              + " is out of date (version "
+              + expectedVersion
+              + ") or no longer PENDING — a decision won the race");
+    }
+  }
+
+  /**
+   * The expiry-sweep scan (S11-05): the {@code PENDING} approvals whose {@code expiry} is already
+   * past the given cutoff, oldest-expiry-first, bounded by {@code limit} so one sweep fails a
+   * limited batch rather than table-scanning every approval. The cutoff comes from the injectable
+   * {@code Clock} (invariant 10), so the sweep is deterministic under a fixed clock in tests.
+   *
+   * @param cutoff the instant an {@code expiry} must be strictly before to count as overdue
+   * @param limit the per-pass bound
+   * @return the overdue approvals with the fields the refusal completion needs, ordered oldest
+   *     first
+   */
+  public List<OverdueApprovalRow> findOverduePending(OffsetDateTime cutoff, int limit) {
+    return jdbc.query(
+        "SELECT id, tenant_id, run_id, step_key, version FROM "
+            + TABLE
+            + " WHERE status = 'PENDING' AND expiry IS NOT NULL AND expiry < ?"
+            + " ORDER BY expiry ASC LIMIT ?",
+        (rs, rowNum) ->
+            new OverdueApprovalRow(
+                rs.getObject("id", UUID.class),
+                rs.getObject("tenant_id", UUID.class),
+                rs.getObject("run_id", UUID.class),
+                rs.getString("step_key"),
+                rs.getInt("version")),
+        cutoff,
+        limit);
   }
 
   /**

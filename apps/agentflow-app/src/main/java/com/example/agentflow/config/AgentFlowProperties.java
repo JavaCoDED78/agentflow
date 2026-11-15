@@ -687,6 +687,32 @@ public class AgentFlowProperties {
     private long recoveryFixedRateMs = 5_000L;
 
     /**
+     * Whether the approval-expiry sweep (S11-05) runs in this process. {@code false} by default so
+     * the skeleton (and the API role) does not expire approvals; the {@code workflow-worker} role
+     * enables it, so the sweep that fails a run past its approval deadline lives only where a live
+     * worker can drive the failed run's aftermath. Enabled explicitly, not "everywhere by default"
+     * (apps/agentflow-app AGENTS.md). Bound from {@code agentflow.worker.approval-expiry-enabled}.
+     */
+    private boolean approvalExpiryEnabled = false;
+
+    /**
+     * Approval-expiry sweep poll cadence, in milliseconds (S11-05). Drives the {@code @Scheduled}
+     * scan for {@code PENDING} approvals whose {@code expiry} has passed. At least 1; a value below
+     * 1 fails startup. Bound from {@code agentflow.worker.approval-expiry-fixed-rate-ms}.
+     */
+    @Min(value = 1, message = "agentflow.worker.approval-expiry-fixed-rate-ms must be at least 1")
+    private long approvalExpiryFixedRateMs = 5_000L;
+
+    /**
+     * Maximum number of overdue approvals the expiry sweep fails in one pass (S11-05). Bounded so
+     * one sweep takes ownership of a limited batch rather than table-scanning every approval at
+     * once. Default 16; a value below 1 fails startup. Bound from {@code
+     * agentflow.worker.approval-expiry-batch-size}.
+     */
+    @Min(value = 1, message = "agentflow.worker.approval-expiry-batch-size must be at least 1")
+    private int approvalExpiryBatchSize = 16;
+
+    /**
      * Whether the worker poll loop (S07-13, the graceful-shutdown lifecycle) drives the {@link
      * WorkflowWorker} in this process. {@code true} by default for the {@code workflow-worker}
      * role; the {@code api} role and the skeleton leave it {@code false} so no loop runs without a
@@ -929,6 +955,52 @@ public class AgentFlowProperties {
      */
     public void setRecoveryFixedRateMs(long recoveryFixedRateMs) {
       this.recoveryFixedRateMs = recoveryFixedRateMs;
+    }
+
+    /**
+     * @return whether the approval-expiry sweep (S11-05) runs in this process (default {@code
+     *     false}, enabled by the {@code workflow-worker} role)
+     */
+    public boolean isApprovalExpiryEnabled() {
+      return approvalExpiryEnabled;
+    }
+
+    /**
+     * @param approvalExpiryEnabled whether the approval-expiry sweep runs in this process (default
+     *     {@code false})
+     */
+    public void setApprovalExpiryEnabled(boolean approvalExpiryEnabled) {
+      this.approvalExpiryEnabled = approvalExpiryEnabled;
+    }
+
+    /**
+     * @return the approval-expiry sweep poll cadence in milliseconds (default {@code 5000})
+     */
+    public long getApprovalExpiryFixedRateMs() {
+      return approvalExpiryFixedRateMs;
+    }
+
+    /**
+     * @param approvalExpiryFixedRateMs the approval-expiry sweep poll cadence in milliseconds (at
+     *     least 1)
+     */
+    public void setApprovalExpiryFixedRateMs(long approvalExpiryFixedRateMs) {
+      this.approvalExpiryFixedRateMs = approvalExpiryFixedRateMs;
+    }
+
+    /**
+     * @return the maximum number of overdue approvals the expiry sweep fails per pass (default
+     *     {@code 16})
+     */
+    public int getApprovalExpiryBatchSize() {
+      return approvalExpiryBatchSize;
+    }
+
+    /**
+     * @param approvalExpiryBatchSize the per-pass expiry bound (at least 1)
+     */
+    public void setApprovalExpiryBatchSize(int approvalExpiryBatchSize) {
+      this.approvalExpiryBatchSize = approvalExpiryBatchSize;
     }
 
     /**

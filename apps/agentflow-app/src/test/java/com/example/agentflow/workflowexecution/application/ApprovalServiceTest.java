@@ -15,11 +15,15 @@ import static org.mockito.Mockito.when;
 import com.example.agentflow.audit.application.AuditService;
 import com.example.agentflow.audit.domain.AuditAction;
 import com.example.agentflow.audit.domain.AuditResourceType;
+import com.example.agentflow.messaging.application.OutboxService;
+import com.example.agentflow.messaging.domain.OutboxEvent;
 import com.example.agentflow.workflowexecution.domain.ApprovalStatus;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
+import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.ApprovalRow;
+import com.example.agentflow.workflowexecution.persistence.OverdueApprovalRow;
 import com.example.agentflow.workflowexecution.persistence.StepStateSnapshot;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.time.Clock;
@@ -35,11 +39,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * DB-free tests for the approve half of the approval lifecycle ({@link ApprovalService}, S11-04).
- * The repositories and the audit service are Mockito mocks, so every guard — tenant (404),
- * status/expiry/step (409), the conditional write, the atomic audit append and both idempotent
- * replay mechanisms — is asserted directly; the real conditional update runs against a real
- * PostgreSQL row in the integration suite.
+ * DB-free tests for the approval decision lifecycle ({@link ApprovalService}: S11-04 approve,
+ * S11-05 reject + expiry). The repositories, the transition service, the outbox and the audit
+ * service are Mockito mocks, so every guard — tenant (404), status/expiry/step (409), the
+ * conditional write, the atomic audit append, both idempotent replay mechanisms and the
+ * resume/refusal completion (run + step transitions + the outbox continuation/refusal) — is
+ * asserted directly; the real conditional update runs against a real PostgreSQL row in the
+ * integration suite.
  */
 class ApprovalServiceTest {
 
@@ -54,9 +60,17 @@ class ApprovalServiceTest {
   private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
   private final WorkflowStepRunRepository stepRepository = mock(WorkflowStepRunRepository.class);
   private final AuditService auditService = mock(AuditService.class);
+  private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
+  private final OutboxService outboxService = mock(OutboxService.class);
 
   private final ApprovalService service =
-      new ApprovalService(approvalRepository, stepRepository, auditService, FIXED_CLOCK);
+      new ApprovalService(
+          approvalRepository,
+          stepRepository,
+          auditService,
+          transitionService,
+          outboxService,
+          FIXED_CLOCK);
 
   @Test
   void approve_records_the_decision_and_audits_it_in_the_same_flow() {
@@ -341,9 +355,17 @@ class ApprovalServiceTest {
 
   @Test
   void no_database_is_a_503() {
-    ApprovalService noDb = new ApprovalService(null, null, auditService, FIXED_CLOCK);
+    ApprovalService noDb =
+        new ApprovalService(
+            null, null, auditService, transitionService, outboxService, FIXED_CLOCK);
 
     assertThatThrownBy(() -> noDb.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+    assertThatThrownBy(() -> noDb.reject(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
@@ -386,6 +408,285 @@ class ApprovalServiceTest {
     assertThat(fingerprintCaptor.getValue()).isEqualTo(fingerprint);
   }
 
+  @Test
+  void approve_resumes_the_run_and_publishes_the_continuation_through_the_outbox() {
+    ApprovalRow pending = pendingRow(null);
+    ApprovalRow decided = decidedRow(pending, null);
+    when(approvalRepository.find(TENANT, RUN, APPROVAL))
+        .thenReturn(Optional.of(pending))
+        .thenReturn(Optional.of(decided));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+
+    service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null);
+
+    // The resume (S11-05): the run leaves the pause, the gate step's execution — the human
+    // decision — concludes SUCCEEDED, and the continuation is the only publication.
+    verify(transitionService)
+        .transitionRun(
+            eq(TENANT), eq(RUN), eq(WorkflowRunState.RUNNING), eq("run.approved"), eq(ACTOR));
+    verify(transitionService)
+        .transitionStep(
+            eq(TENANT),
+            eq(RUN),
+            eq(STEP),
+            eq(WorkflowStepState.RUNNING),
+            eq("run.approved"),
+            eq(ACTOR));
+    verify(transitionService)
+        .transitionStep(
+            eq(TENANT),
+            eq(RUN),
+            eq(STEP),
+            eq(WorkflowStepState.SUCCEEDED),
+            eq("step.approved"),
+            eq(ACTOR));
+    ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+    verify(outboxService).enqueue(event.capture());
+    assertThat(event.getValue().topic()).isEqualTo("agentflow.workflow.run-resumed.v1");
+    assertThat(event.getValue().aggregateType()).isEqualTo("workflow_run");
+    assertThat(event.getValue().aggregateId()).isEqualTo(RUN);
+    assertThat(event.getValue().payloadJson()).contains("\"runId\":\"" + RUN + "\"");
+    assertThat(event.getValue().eventKey()).isEqualTo(TENANT + ":" + RUN);
+  }
+
+  @Test
+  void a_repeat_approve_makes_no_progress_and_publishes_nothing() {
+    ApprovalRow decided = decidedRow(pendingRow(null), "first call");
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(decided));
+
+    service.approve(TENANT, ACTOR, RUN, APPROVAL, "second call", null, null);
+
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void reject_records_the_decision_fails_the_run_and_publishes_the_refusal() {
+    ApprovalRow pending = pendingRow(null);
+    ApprovalRow decided = rejectedRow(pending, "too risky");
+    when(approvalRepository.find(TENANT, RUN, APPROVAL))
+        .thenReturn(Optional.of(pending))
+        .thenReturn(Optional.of(decided));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+
+    ApprovalDecisionDto dto = service.reject(TENANT, ACTOR, RUN, APPROVAL, "too risky", null, null);
+
+    assertThat(dto.status()).isEqualTo(ApprovalStatus.REJECTED);
+    verify(approvalRepository)
+        .recordReject(
+            eq(TENANT),
+            eq(RUN),
+            eq(APPROVAL),
+            eq(ACTOR),
+            eq(OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
+            eq("too risky"),
+            eq(null),
+            eq(null),
+            eq(0));
+    verify(auditService)
+        .record(
+            eq(TENANT),
+            eq(ACTOR),
+            eq(AuditAction.REJECT),
+            eq(AuditResourceType.APPROVAL),
+            eq(APPROVAL),
+            eq("step=" + STEP));
+    // The refusal (S11-05): the run and the gated step fail WITHOUT the side effect ever
+    // executing, and the refusal — not a continuation — is what the outbox carries.
+    verify(transitionService)
+        .transitionRun(
+            eq(TENANT), eq(RUN), eq(WorkflowRunState.FAILED), eq("run.rejected"), eq(ACTOR));
+    verify(transitionService)
+        .transitionStep(
+            eq(TENANT),
+            eq(RUN),
+            eq(STEP),
+            eq(WorkflowStepState.FAILED),
+            eq("run.rejected"),
+            eq(ACTOR));
+    ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+    verify(outboxService).enqueue(event.capture());
+    assertThat(event.getValue().topic()).isEqualTo("agentflow.workflow.run-rejected.v1");
+    assertThat(event.getValue().payloadJson()).contains("\"cause\":\"REJECTED\"");
+  }
+
+  @Test
+  void a_repeat_reject_replays_the_recorded_decision_without_a_second_write() {
+    ApprovalRow decided = rejectedRow(pendingRow(null), "first call");
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(decided));
+
+    ApprovalDecisionDto replay =
+        service.reject(TENANT, ACTOR, RUN, APPROVAL, "second call", null, null);
+
+    assertThat(replay.decisionComment()).isEqualTo("first call");
+    verify(approvalRepository, never())
+        .recordReject(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verify(auditService, never()).record(any(), any(), any(), any(), any(), any());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void an_approval_decided_approve_cannot_be_rejected() {
+    ApprovalRow approved = decidedRow(pendingRow(null), "yes");
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(approved));
+
+    assertThatThrownBy(() -> service.reject(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    verify(approvalRepository, never())
+        .recordReject(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void an_expired_approval_cannot_be_rejected() {
+    ApprovalRow expired =
+        pendingRowWithExpiry(null, OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC).minusSeconds(1));
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(expired));
+
+    assertThatThrownBy(() -> service.reject(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    verify(approvalRepository, never())
+        .recordReject(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void a_keyed_reject_repeat_replays_without_even_reading_the_targeted_approval() {
+    UUID key = UUID.randomUUID();
+    String fingerprint = "fingerprint-of-the-original-payload";
+    ApprovalRow decided = rowWithKey(rejectedRow(pendingRow(key), null), key, fingerprint);
+    when(approvalRepository.findByIdempotencyKey(TENANT, key)).thenReturn(Optional.of(decided));
+
+    ApprovalDecisionDto replay =
+        service.reject(TENANT, ACTOR, RUN, APPROVAL, null, key, fingerprint);
+
+    assertThat(replay.status()).isEqualTo(ApprovalStatus.REJECTED);
+    verify(approvalRepository, never()).find(any(), any(), any());
+    verify(approvalRepository, never())
+        .recordReject(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void a_lost_reject_race_replays_the_winning_reject_decision() {
+    when(approvalRepository.find(TENANT, RUN, APPROVAL))
+        .thenReturn(Optional.of(pendingRow(null)))
+        .thenReturn(Optional.of(rejectedRow(pendingRow(null), "concurrent winner")));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    doThrow(new ConflictException("another decision won the race"))
+        .when(approvalRepository)
+        .recordReject(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+
+    ApprovalDecisionDto replay = service.reject(TENANT, ACTOR, RUN, APPROVAL, null, null, null);
+
+    assertThat(replay.status()).isEqualTo(ApprovalStatus.REJECTED);
+    assertThat(replay.decisionComment()).isEqualTo("concurrent winner");
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void a_reject_whose_step_moved_on_is_a_409_without_side_effects() {
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(pendingRow(null)));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(UUID.randomUUID().toString(), WorkflowStepState.RUNNING, 4)));
+
+    assertThatThrownBy(() -> service.reject(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    verify(approvalRepository, never())
+        .recordReject(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void expire_overdue_refuses_the_side_effect_under_the_system_actor() {
+    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0);
+
+    assertThat(service.expireOverdue(overdue)).isTrue();
+
+    verify(approvalRepository)
+        .expirePending(
+            eq(TENANT),
+            eq(RUN),
+            eq(APPROVAL),
+            eq(OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
+            eq(0));
+    // An expiry is never a human decision: the audit row names the system actor and the EXPIRE
+    // verb, and the refusal event carries the EXPIRED cause.
+    verify(auditService)
+        .record(
+            eq(TENANT),
+            eq("agentflow-approval-expiry"),
+            eq(AuditAction.EXPIRE),
+            eq(AuditResourceType.APPROVAL),
+            eq(APPROVAL),
+            eq("step=" + STEP));
+    verify(transitionService)
+        .transitionRun(
+            eq(TENANT),
+            eq(RUN),
+            eq(WorkflowRunState.FAILED),
+            eq("run.rejected"),
+            eq("agentflow-approval-expiry"));
+    verify(transitionService)
+        .transitionStep(
+            eq(TENANT),
+            eq(RUN),
+            eq(STEP),
+            eq(WorkflowStepState.FAILED),
+            eq("run.rejected"),
+            eq("agentflow-approval-expiry"));
+    ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+    verify(outboxService).enqueue(event.capture());
+    assertThat(event.getValue().topic()).isEqualTo("agentflow.workflow.run-rejected.v1");
+    assertThat(event.getValue().payloadJson()).contains("\"cause\":\"EXPIRED\"");
+  }
+
+  @Test
+  void a_lost_expire_race_leaves_the_row_to_the_winner() {
+    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0);
+    doThrow(new ConflictException("a human decision won the race"))
+        .when(approvalRepository)
+        .expirePending(any(), any(), any(), any(), anyInt());
+
+    assertThat(service.expireOverdue(overdue)).isFalse();
+
+    verify(auditService, never()).record(any(), any(), any(), any(), any(), any());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
   private static ApprovalRow pendingRow(UUID idempotencyKey) {
     return pendingRowWithExpiry(idempotencyKey, null);
   }
@@ -411,6 +712,21 @@ class ApprovalServiceTest {
         from.runId(),
         from.stepKey(),
         ApprovalStatus.APPROVED.name(),
+        from.expiry(),
+        from.version() + 1,
+        ACTOR,
+        OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC),
+        comment,
+        from.idempotencyKey(),
+        from.idempotencyFingerprint());
+  }
+
+  private static ApprovalRow rejectedRow(ApprovalRow from, String comment) {
+    return new ApprovalRow(
+        from.id(),
+        from.runId(),
+        from.stepKey(),
+        ApprovalStatus.REJECTED.name(),
         from.expiry(),
         from.version() + 1,
         ACTOR,

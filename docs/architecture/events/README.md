@@ -106,6 +106,8 @@ summarizes it for the catalog.
 | `agentflow.workflow.step-ready.v1` | `workflow_run` (`runId`) · `tenantId:runId` | workflow engine → **workflow execution** worker | The next step of a run is ready to execute. |
 | `agentflow.workflow.run-cancelled.v1` | `workflow_run` (`runId`) · `tenantId:runId` | API/outbox → **workflow execution** worker | A cancellation was requested and committed; the run must stop on a safe boundary. |
 | `agentflow.workflow.run-finished.v1` | `workflow_run` (`runId`) · `tenantId:runId` | workflow execution worker → downstream | A run reached a terminal state (`SUCCEEDED` / `FAILED`), including an ambiguous external-call outcome. |
+| `agentflow.workflow.run-resumed.v1` | `workflow_run` (`runId`) · `tenantId:runId` | workflow execution worker (approval decision) → downstream | A human approved a `HUMAN_APPROVAL` gate; the run left `WAITING_FOR_APPROVAL` and continues (`S11-05`). |
+| `agentflow.workflow.run-rejected.v1` | `workflow_run` (`runId`) · `tenantId:runId` | workflow execution worker (approval decision / expiry sweep) → downstream | A human rejected or an approval expired at a `HUMAN_APPROVAL` gate; the run and the gated step failed without the side effect ever executing (`S11-05`). The payload `cause` is `REJECTED` or `EXPIRED`. |
 | `agentflow.document.ingestion-requested.v1` | `document` (`documentId`) · `tenantId:documentId` | API/outbox → **ingestion** worker | A document is committed and ready to be extracted → chunked → embedded → indexed (`S06-05`). |
 | `agentflow.document.indexed.v1` | `document` (`documentId`) · `tenantId:documentId` | **ingestion** worker → downstream (workflow execution / API) | A document finished ingestion and is ready for tenant-scoped search. |
 
@@ -241,6 +243,57 @@ every example uses a placeholder UUID and a zero UUID — never a real id, tenan
   "causationId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "payload": {
     "outcome": "SUCCEEDED"
+  }
+}
+```
+
+### `workflow.run.resumed.v1`
+
+Published through the transactional outbox when a human approves a `HUMAN_APPROVAL` gate
+(`S11-05`): the run left `WAITING_FOR_APPROVAL` (`run.approved`), the gated step concluded
+`SUCCEEDED` (the human decision is the gate step's whole execution), and this continuation is
+the only publication — it commits or rolls back with the decision.
+
+```json
+{
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "eventType": "workflow.run.resumed.v1",
+  "schemaVersion": "1.0.0",
+  "occurredAt": "2026-11-14T10:00:30Z",
+  "tenantId": "00000000-0000-0000-0000-000000000001",
+  "aggregateType": "workflow_run",
+  "aggregateId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+  "correlationId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+  "causationId": null,
+  "payload": {
+    "runId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+    "approvalId": "2c963f66-5717-4562-b3fc-3fa85f64afa6"
+  }
+}
+```
+
+### `workflow.run.rejected.v1`
+
+Published through the transactional outbox when a `HUMAN_APPROVAL` gate is refused (`S11-05`) —
+by a human reject (`cause: REJECTED`) or by the approval-expiry sweep (`cause: EXPIRED`). The
+run and the gated step failed without the side effect ever executing, so downstream consumers
+never observe the gated call. The `cause` vocabulary is closed by the two producers.
+
+```json
+{
+  "eventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "eventType": "workflow.run.rejected.v1",
+  "schemaVersion": "1.0.0",
+  "occurredAt": "2026-11-14T10:00:30Z",
+  "tenantId": "00000000-0000-0000-0000-000000000001",
+  "aggregateType": "workflow_run",
+  "aggregateId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+  "correlationId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+  "causationId": null,
+  "payload": {
+    "runId": "7f3e2c1a-9b4d-4e6a-8c0f-1a2b3c4d5e6f",
+    "approvalId": "2c963f66-5717-4562-b3fc-3fa85f64afa6",
+    "cause": "REJECTED"
   }
 }
 ```
