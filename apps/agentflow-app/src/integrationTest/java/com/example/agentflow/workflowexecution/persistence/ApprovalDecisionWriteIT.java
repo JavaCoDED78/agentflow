@@ -80,6 +80,9 @@ class ApprovalDecisionWriteIT {
     assertThat(decided.decisionComment()).isEqualTo("too risky");
     assertThat(decided.idempotencyKey()).isEqualTo(key);
     assertThat(decided.idempotencyFingerprint()).isEqualTo("fingerprint");
+    // the payload binding rides the row unread by the decision path but never lost: the digest the
+    // approval was requested under reads back verbatim (S11-06 re-validates it on approve)
+    assertThat(decided.payloadFingerprint()).isEqualTo("fp");
     assertThat(decided.version()).isEqualTo(1);
   }
 
