@@ -1,11 +1,13 @@
 package com.example.agentflow.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.agentflow.toolexecution.mcp.McpAllowlist;
 import com.example.agentflow.toolexecution.mcp.McpClientAdapter;
+import com.example.agentflow.toolexecution.mcp.OutboundPolicyViolationException;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpClientTransport;
@@ -138,6 +140,36 @@ class McpClientConfigurationTest {
               McpClient.SyncSpec spec = McpClient.sync(mock(McpClientTransport.class));
               customizer.customize("lab", spec);
               customizer.customize("not-allowlisted", spec);
+            });
+  }
+
+  @Test
+  void malformedOutboundUrlFailsContextStartup() {
+    // A non-http transport URL on an allowlisted connection fails the binding (S11-10 — fail-fast
+    // on a malformed destination policy), never surfacing as a later runtime surprise.
+    runner
+        .withPropertyValues(
+            "agentflow.mcp.servers.lab.tools[0]=ticket_lookup",
+            "spring.ai.mcp.client.streamable-http.connections.lab.url=ws://localhost/mcp")
+        .run(context -> assertThat(context).hasFailed());
+  }
+
+  @Test
+  void loopbackTransportIsRefusedAtConnectionTime() {
+    // A loopback transport URL binds cleanly (it parses), but the connection is refused at the
+    // reachability gate (S11-10 acceptance): the context boots, and isReachable throws — never
+    // returns true — before any client connects.
+    runner
+        .withUserConfiguration(ScriptedClientsConfig.class)
+        .withPropertyValues(
+            "agentflow.mcp.servers.lab.tools[0]=ticket_lookup",
+            "spring.ai.mcp.client.streamable-http.connections.lab.url=http://127.0.0.1:9999/mcp")
+        .run(
+            context -> {
+              assertThat(context).hasNotFailed();
+              McpClientAdapter adapter = context.getBean(McpClientAdapter.class);
+              assertThatThrownBy(() -> adapter.isReachable("lab"))
+                  .isInstanceOf(OutboundPolicyViolationException.class);
             });
   }
 
