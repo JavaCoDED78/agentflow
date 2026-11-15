@@ -6,6 +6,10 @@ import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
+import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
+import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
+import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
+import com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprint;
 import com.example.agentflow.workflowexecution.domain.ApprovalStatus;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
@@ -13,7 +17,9 @@ import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.ApprovalRow;
 import com.example.agentflow.workflowexecution.persistence.OverdueApprovalRow;
+import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStateSnapshot;
+import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.time.Clock;
 import java.time.OffsetDateTime;
@@ -57,7 +63,12 @@ import org.springframework.web.server.ResponseStatusException;
  *       applies the same refusal a human reject would;
  *   <li><b>step</b> — the gated step must still be {@code WAITING_FOR_APPROVAL}: a step that moved
  *       on (cancelled, …) makes the decision a {@code 409}, never a silent decision on a stale
- *       request.
+ *       request;
+ *   <li><b>payload</b> (S11-06, approve only) — the stored {@code payload_fingerprint} must still
+ *       bind to the exact payload of the run's pinned graph: the decision is the moment the
+ *       approved argument set is authorized to execute, so a drifted or unverifiable binding is a
+ *       {@code 409} and writes nothing — an approved set of arguments can never execute a different
+ *       one.
  * </ol>
  *
  * <p><b>Idempotency.</b> Two mechanisms, both answering a repeat with the recorded decision instead
@@ -100,6 +111,8 @@ public class ApprovalService {
 
   private final ApprovalRepository approvalRepository;
   private final WorkflowStepRunRepository stepRepository;
+  private final WorkflowRunRepository runRepository;
+  private final WorkflowVersionService versionService;
   private final AuditService auditService;
   private final RunStateMachineService transitionService;
   private final OutboxService outboxService;
@@ -108,12 +121,16 @@ public class ApprovalService {
   public ApprovalService(
       @Autowired(required = false) ApprovalRepository approvalRepository,
       @Autowired(required = false) WorkflowStepRunRepository stepRepository,
+      @Autowired(required = false) WorkflowRunRepository runRepository,
+      @Autowired(required = false) WorkflowVersionService versionService,
       AuditService auditService,
       RunStateMachineService transitionService,
       OutboxService outboxService,
       @Autowired(required = false) Clock clock) {
     this.approvalRepository = approvalRepository;
     this.stepRepository = stepRepository;
+    this.runRepository = runRepository;
+    this.versionService = versionService;
     this.auditService = auditService;
     this.transitionService = transitionService;
     this.outboxService = outboxService;
@@ -138,8 +155,9 @@ public class ApprovalService {
    *     decision is replayed
    * @throws ResponseStatusException {@code 503} when no database is configured, {@code 404} when no
    *     approval matches {@code (tenantId, runId, approvalId)} (or the gated step is gone), {@code
-   *     409} when the approval is already decided otherwise, expired, its step moved on, or a
-   *     reused key carries a different payload
+   *     409} when the approval is already decided otherwise, expired, its step moved on, its stored
+   *     payload fingerprint no longer binds to the run's pinned payload (S11-06), or a reused key
+   *     carries a different payload
    */
   @Transactional
   public ApprovalDecisionDto approve(
@@ -180,6 +198,11 @@ public class ApprovalService {
     OffsetDateTime now = OffsetDateTime.now(clock);
     assertNotExpired(approval, now);
     assertStepStillWaiting(tenantId, runId, approval);
+    // S11-06 — the payload binding: an approve authorizes the gated side effect, so the stored
+    // fingerprint must still bind to the exact payload the run would execute. A mismatch (or an
+    // unverifiable pinned graph) refuses the decision — the approved argument set can never differ
+    // from the executed one — and nothing is written.
+    assertPayloadUnchanged(tenantId, runId, approval);
 
     try {
       approvalRepository.recordApprove(
@@ -541,6 +564,55 @@ public class ApprovalService {
               + " is "
               + step.status()
               + ", not WAITING_FOR_APPROVAL — the approval is stale");
+    }
+  }
+
+  /**
+   * The S11-06 payload-binding guard, the approve half: the decision completes the gate — it is the
+   * moment the approved argument set is authorized to execute — so the fingerprint stored on the
+   * request must still bind to the exact payload of the run's pinned graph. The digest is
+   * recomputed from the pinned, immutable workflow version (the same {@link
+   * ApprovalPayloadFingerprint} algorithm the worker used at the pause) and compared with the
+   * stored {@code payload_fingerprint}; a mismatch, a gated step missing from the graph, or an
+   * unverifiable (missing) pinned graph refuses the decision with {@code 409} and writes nothing —
+   * an approved set of arguments can never execute a different one (the S11-06 acceptance). The run
+   * stays parked in {@code WAITING_FOR_APPROVAL}: the stale request must be rejected (or expired)
+   * and a new approval requested before the side effect may proceed.
+   *
+   * <p>The graph read reuses the existing {@code workflowexecution -> workflowdefinition} edge
+   * (module-map arrow 2, the same public {@link WorkflowVersionService} the worker loads pinned
+   * graphs through) — no new compile edge. The reject/expiry paths carry no such check on purpose:
+   * they refuse the side effect, so a drifted binding creates no risk there, and leaving them open
+   * lets an operator retire a stale request.
+   */
+  private void assertPayloadUnchanged(UUID tenantId, UUID runId, ApprovalRow approval) {
+    requireRepository(runRepository);
+    requireRepository(versionService);
+    RunView run =
+        runRepository
+            .findRun(tenantId, runId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "run " + runId + " was not found for this tenant"));
+    WorkflowGraph graph = versionService.loadGraph(tenantId, run.workflowVersionId());
+    String currentFingerprint = null;
+    if (graph != null) {
+      for (WorkflowNode node : graph.nodes()) {
+        if (node.id().equals(approval.stepKey())) {
+          currentFingerprint = ApprovalPayloadFingerprint.compute(node.id(), node.config());
+          break;
+        }
+      }
+    }
+    if (currentFingerprint == null || !currentFingerprint.equals(approval.payloadFingerprint())) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
+          "the gated parameters on run "
+              + runId
+              + " no longer match the payload this approval was requested for — the stored"
+              + " fingerprint does not bind to the pinned payload; reject the stale request and"
+              + " request a new approval");
     }
   }
 

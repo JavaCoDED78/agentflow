@@ -75,6 +75,7 @@ class ApprovalRepositoryTest {
             id,
             run,
             "send-report",
+            "payload-fingerprint",
             "APPROVED",
             null,
             1,
@@ -93,6 +94,7 @@ class ApprovalRepositoryTest {
     when(rs.getObject("id", UUID.class)).thenReturn(id);
     when(rs.getObject("run_id", UUID.class)).thenReturn(run);
     when(rs.getString("step_key")).thenReturn("send-report");
+    when(rs.getString("payload_fingerprint")).thenReturn("payload-fingerprint");
     when(rs.getString("status")).thenReturn("APPROVED");
     when(rs.getInt("version")).thenReturn(1);
     when(rs.getString("decision_actor")).thenReturn("approver");
@@ -111,6 +113,7 @@ class ApprovalRepositoryTest {
     ApprovalRow mapped = (ApprovalRow) mapper.getValue().mapRow(rs, 1);
     assertThat(mapped.status()).isEqualTo("APPROVED");
     assertThat(mapped.stepKey()).isEqualTo("send-report");
+    assertThat(mapped.payloadFingerprint()).isEqualTo("payload-fingerprint");
     assertThat(mapped.decisionActor()).isEqualTo("approver");
     assertThat(mapped.decisionAt()).isEqualTo(decisionAt);
     assertThat(mapped.idempotencyKey()).isEqualTo(key);

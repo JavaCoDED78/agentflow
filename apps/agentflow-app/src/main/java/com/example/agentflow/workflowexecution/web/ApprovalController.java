@@ -76,7 +76,9 @@ public class ApprovalController {
    *   <li>{@code 404 not_found} when no approval matches {@code (tenant_id, run_id, approvalId)} —
    *       another tenant's approval is indistinguishable from a missing one (invariant 1);
    *   <li>{@code 409 conflict} when the approval is already decided otherwise, expired, its step
-   *       moved on, or a reused {@code Idempotency-Key} carries a different payload;
+   *       moved on, its stored payload fingerprint no longer binds to the run's pinned payload
+   *       (S11-06 — the gated parameters changed since the request), or a reused {@code
+   *       Idempotency-Key} carries a different payload;
    *   <li>{@code 503 unavailable} when no database is configured.
    * </ul>
    *
@@ -95,9 +97,11 @@ public class ApprovalController {
       description =
           "Records the human decision on a PENDING approval and its audit row in one transaction "
               + "(S11-04/S11-05, ADR-018). approve resumes the run (WAITING_FOR_APPROVAL -> "
-              + "RUNNING, workflow.run.resumed.v1 through the outbox); reject refuses the side "
-              + "effect (run and gated step -> FAILED, workflow.run.rejected.v1) — the gated side "
-              + "effect never executes. Idempotent: a repeat — with or without the "
+              + "RUNNING, workflow.run.resumed.v1 through the outbox) — after re-validating that "
+              + "the stored payload fingerprint still binds to the run's pinned graph (S11-06), so "
+              + "an approved argument set can never execute a different one; reject refuses the "
+              + "side effect (run and gated step -> FAILED, workflow.run.rejected.v1) — the gated "
+              + "side effect never executes. Idempotent: a repeat — with or without the "
               + "Idempotency-Key — replays the recorded decision instead of writing a second one; "
               + "a reused key with a different payload is a 409. Requires the run:approve "
               + "authority (S04-08); tenant-scoped so another tenant's approval is a 404, never a "
@@ -113,7 +117,9 @@ public class ApprovalController {
   @ApiResponse(
       responseCode = "409",
       description =
-          "already decided otherwise, expired, the step moved on, or a reused key carries a different payload")
+          "already decided otherwise, expired, the step moved on, the stored payload fingerprint"
+              + " no longer binds to the run's pinned payload (S11-06), or a reused key carries a"
+              + " different payload")
   @ApiResponse(responseCode = "503", description = "no database connection is configured")
   @PostMapping("/{runId}/approvals/{approvalId}")
   ResponseEntity<ApprovalDecisionDto> decide(

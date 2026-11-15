@@ -17,6 +17,10 @@ import com.example.agentflow.audit.domain.AuditAction;
 import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
+import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
+import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
+import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
+import com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprint;
 import com.example.agentflow.workflowexecution.domain.ApprovalStatus;
 import com.example.agentflow.workflowexecution.domain.ConflictException;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
@@ -24,12 +28,16 @@ import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import com.example.agentflow.workflowexecution.persistence.ApprovalRepository;
 import com.example.agentflow.workflowexecution.persistence.ApprovalRow;
 import com.example.agentflow.workflowexecution.persistence.OverdueApprovalRow;
+import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStateSnapshot;
+import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -54,11 +62,26 @@ class ApprovalServiceTest {
   private static final UUID TENANT = UUID.randomUUID();
   private static final UUID RUN = UUID.randomUUID();
   private static final UUID APPROVAL = UUID.randomUUID();
+  private static final UUID VERSION = UUID.randomUUID();
   private static final String STEP = "send-monthly-report";
   private static final String ACTOR = "approver@acme.example";
+  // the exact gated payload the approval pins: the tool, its arguments and the display summary —
+  // the fingerprint below is computed by the same production algorithm the worker pauses with
+  private static final Map<String, Object> GATE_CONFIG =
+      Map.of(
+          "action",
+          "Send the monthly financial report",
+          "tool",
+          "email.send",
+          "arguments",
+          Map.of("to", "finance@acme.example"));
+  private static final String PAYLOAD_FINGERPRINT =
+      ApprovalPayloadFingerprint.compute(STEP, GATE_CONFIG);
 
   private final ApprovalRepository approvalRepository = mock(ApprovalRepository.class);
   private final WorkflowStepRunRepository stepRepository = mock(WorkflowStepRunRepository.class);
+  private final WorkflowRunRepository runRepository = mock(WorkflowRunRepository.class);
+  private final WorkflowVersionService versionService = mock(WorkflowVersionService.class);
   private final AuditService auditService = mock(AuditService.class);
   private final RunStateMachineService transitionService = mock(RunStateMachineService.class);
   private final OutboxService outboxService = mock(OutboxService.class);
@@ -67,6 +90,8 @@ class ApprovalServiceTest {
       new ApprovalService(
           approvalRepository,
           stepRepository,
+          runRepository,
+          versionService,
           auditService,
           transitionService,
           outboxService,
@@ -84,6 +109,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 3)));
+    stubPinnedGraph();
 
     ApprovalDecisionDto dto =
         service.approve(TENANT, ACTOR, RUN, APPROVAL, "looks safe", null, null);
@@ -154,6 +180,7 @@ class ApprovalServiceTest {
             APPROVAL,
             RUN,
             STEP,
+            PAYLOAD_FINGERPRINT,
             ApprovalStatus.REJECTED.name(),
             null,
             1,
@@ -204,6 +231,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
 
     ApprovalDecisionDto dto = service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null);
 
@@ -251,6 +279,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
     doThrow(new ConflictException("another decision won the race"))
         .when(approvalRepository)
         .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
@@ -275,6 +304,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
     doThrow(new ConflictException("the row moved"))
         .when(approvalRepository)
         .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
@@ -340,6 +370,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
     doThrow(new DuplicateKeyException("approvals_tenant_idempotency_key"))
         .when(approvalRepository)
         .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
@@ -357,7 +388,7 @@ class ApprovalServiceTest {
   void no_database_is_a_503() {
     ApprovalService noDb =
         new ApprovalService(
-            null, null, auditService, transitionService, outboxService, FIXED_CLOCK);
+            null, null, null, null, auditService, transitionService, outboxService, FIXED_CLOCK);
 
     assertThatThrownBy(() -> noDb.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
         .isInstanceOf(ResponseStatusException.class)
@@ -388,6 +419,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
 
     service.approve(TENANT, ACTOR, RUN, APPROVAL, null, key, fingerprint);
 
@@ -420,6 +452,7 @@ class ApprovalServiceTest {
             Optional.of(
                 new StepStateSnapshot(
                     UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
 
     service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null);
 
@@ -451,6 +484,144 @@ class ApprovalServiceTest {
     assertThat(event.getValue().aggregateId()).isEqualTo(RUN);
     assertThat(event.getValue().payloadJson()).contains("\"runId\":\"" + RUN + "\"");
     assertThat(event.getValue().eventKey()).isEqualTo(TENANT + ":" + RUN);
+  }
+
+  @Test
+  void an_approve_revalidates_the_payload_fingerprint_against_the_pinned_graph() {
+    // S11-06: the decision is the moment the approved argument set is authorized to execute, so
+    // the service must consult the run's pinned graph and compare the freshly computed digest with
+    // the one stored on the request.
+    when(approvalRepository.find(TENANT, RUN, APPROVAL))
+        .thenReturn(Optional.of(pendingRow(null)))
+        .thenReturn(Optional.of(decidedRow(pendingRow(null), null)));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    stubPinnedGraph();
+
+    service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null);
+
+    verify(runRepository).findRun(TENANT, RUN);
+    verify(versionService).loadGraph(TENANT, VERSION);
+    verify(approvalRepository)
+        .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+  }
+
+  @Test
+  void an_approve_whose_gated_parameters_changed_is_a_409_without_side_effects() {
+    // S11-06 acceptance: an approval of one argument set can never authorize the execution of
+    // another — the pinned graph now carries a different payload than the one fingerprinted on the
+    // request, so the decision is refused and nothing is written.
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(pendingRow(null)));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    when(runRepository.findRun(TENANT, RUN))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    RUN,
+                    VERSION,
+                    WorkflowRunState.WAITING_FOR_APPROVAL,
+                    1,
+                    OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC))));
+    Map<String, Object> tamperedConfig =
+        Map.of(
+            "action",
+            "Send the monthly financial report",
+            "tool",
+            "email.send",
+            "arguments",
+            Map.of("to", "attacker@evil.example"));
+    when(versionService.loadGraph(TENANT, VERSION))
+        .thenReturn(
+            new WorkflowGraph(
+                List.of(new WorkflowNode(STEP, "HUMAN_APPROVAL", tamperedConfig)), List.of()));
+
+    assertThatThrownBy(() -> service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e -> {
+              assertThat(((ResponseStatusException) e).getStatusCode())
+                  .isEqualTo(HttpStatus.CONFLICT);
+              assertThat(e.getMessage()).contains("fingerprint");
+            });
+    verify(approvalRepository, never())
+        .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verify(auditService, never()).record(any(), any(), any(), any(), any(), any());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void an_approve_whose_step_is_gone_from_the_pinned_graph_is_a_409() {
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(pendingRow(null)));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    when(runRepository.findRun(TENANT, RUN))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    RUN,
+                    VERSION,
+                    WorkflowRunState.WAITING_FOR_APPROVAL,
+                    1,
+                    OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC))));
+    // the pinned graph no longer holds the gated step: the binding is unverifiable, so the
+    // decision is refused rather than authorizing an unknown payload
+    when(versionService.loadGraph(TENANT, VERSION))
+        .thenReturn(
+            new WorkflowGraph(
+                List.of(new WorkflowNode("another-step", "NOOP", Map.of())), List.of()));
+
+    assertThatThrownBy(() -> service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    verify(approvalRepository, never())
+        .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
+  }
+
+  @Test
+  void an_approve_with_a_missing_pinned_graph_is_a_409() {
+    when(approvalRepository.find(TENANT, RUN, APPROVAL)).thenReturn(Optional.of(pendingRow(null)));
+    when(stepRepository.findState(TENANT, RUN, STEP))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(
+                    UUID.randomUUID().toString(), WorkflowStepState.WAITING_FOR_APPROVAL, 0)));
+    when(runRepository.findRun(TENANT, RUN))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    RUN,
+                    VERSION,
+                    WorkflowRunState.WAITING_FOR_APPROVAL,
+                    1,
+                    OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC))));
+    when(versionService.loadGraph(TENANT, VERSION)).thenReturn(null);
+
+    assertThatThrownBy(() -> service.approve(TENANT, ACTOR, RUN, APPROVAL, null, null, null))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.CONFLICT));
+    verify(approvalRepository, never())
+        .recordApprove(any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    verifyNoInteractions(transitionService);
+    verifyNoInteractions(outboxService);
   }
 
   @Test
@@ -696,6 +867,7 @@ class ApprovalServiceTest {
         APPROVAL,
         RUN,
         STEP,
+        PAYLOAD_FINGERPRINT,
         ApprovalStatus.PENDING.name(),
         expiry,
         0,
@@ -711,6 +883,7 @@ class ApprovalServiceTest {
         from.id(),
         from.runId(),
         from.stepKey(),
+        from.payloadFingerprint(),
         ApprovalStatus.APPROVED.name(),
         from.expiry(),
         from.version() + 1,
@@ -726,6 +899,7 @@ class ApprovalServiceTest {
         from.id(),
         from.runId(),
         from.stepKey(),
+        from.payloadFingerprint(),
         ApprovalStatus.REJECTED.name(),
         from.expiry(),
         from.version() + 1,
@@ -741,6 +915,7 @@ class ApprovalServiceTest {
         from.id(),
         from.runId(),
         from.stepKey(),
+        from.payloadFingerprint(),
         from.status(),
         from.expiry(),
         from.version(),
@@ -749,5 +924,26 @@ class ApprovalServiceTest {
         from.decisionComment(),
         key,
         fingerprint);
+  }
+
+  /**
+   * The S11-06 pinned-graph stubs every approve decision consults: the run names its pinned
+   * workflow version, the version resolves to the graph holding the gated step with the exact
+   * payload the approval fingerprinted.
+   */
+  private void stubPinnedGraph() {
+    when(runRepository.findRun(TENANT, RUN))
+        .thenReturn(
+            Optional.of(
+                new RunView(
+                    RUN,
+                    VERSION,
+                    WorkflowRunState.WAITING_FOR_APPROVAL,
+                    1,
+                    OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC))));
+    when(versionService.loadGraph(TENANT, VERSION))
+        .thenReturn(
+            new WorkflowGraph(
+                List.of(new WorkflowNode(STEP, "HUMAN_APPROVAL", GATE_CONFIG)), List.of()));
   }
 }

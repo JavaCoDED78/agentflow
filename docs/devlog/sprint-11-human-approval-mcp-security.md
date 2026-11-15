@@ -7,7 +7,57 @@
 - [S11-03](#s11-03-durable-approval-pause) — the durable approval pause (WAITING_FOR_APPROVAL): the worker parks a run at a HUMAN_APPROVAL boundary and releases the worker lease (S11-03)
 - [S11-04](#s11-04-the-approve-endpoint) — the approve endpoint: the human decision on a HUMAN_APPROVAL pause, recorded atomically with its audit row (S11-04)
 - [S11-05](#s11-05--reject-and-the-expiry-lifecycle-the-full-approval-lifecycle) — reject and the expiry lifecycle: the resume/refusal completion, the two outbox events, and the poll that never steals a paused run (S11-05)
-- [S11-06](#s11-06) — future: the payload-bound approval — the fingerprint checked at execution (S11-06)
+- [S11-06](#s11-06--the-payload-bound-approval-the-fingerprint-re-validated-at-the-decision) — the payload-bound approval: the canonical fingerprint of the exact arguments re-validated at the decision (S11-06)
+
+---
+
+## S11-06 — the payload-bound approval: the fingerprint re-validated at the decision
+
+**Task (P0):** bind an approval to an immutable payload — compute the fingerprint of the exact arguments / tool / version; re-check the fingerprint at execution; when the parameters change, require a new approval.
+
+**Deliverable:** the payload binding — a canonical, deterministic fingerprint over the exact gated config, stored on the `approvals` row at the pause and re-validated against the run's pinned graph at the decision, so an approved set of arguments can never execute a different one.
+
+### What changed
+
+- **One canonical fingerprint algorithm.** `workflowexecution.domain.ApprovalPayloadFingerprint` — a pure, DB-free component hashing the lowercase-hex SHA-256 of the canonical JSON `{"step": …, "config": …}`: map keys sorted lexicographically at every depth, fixed RFC 8259 string escaping, plain-JSON value types only (null / boolean / string / number / object / array — anything else is a contract `IllegalArgumentException`). It replaces the S11-03 ad-hoc `key=value` concatenation, which hashed `Map.toString()` for nested argument maps — an iteration order that is unspecified, so two logically identical argument sets could digest differently. The worker's `pauseForApproval` now pins this digest; a hand-rolled canonicalizer (rather than a Jackson feature flag) keeps the algorithm byte-stable across library bumps — a fingerprint must never drift.
+- **The binding read back.** `ApprovalRow` gains `payloadFingerprint` (`ApprovalRepository`'s read column set and row mapper carry `payload_fingerprint` — the insert path always wrote it) so the decision path can see what the request was pinned to.
+- **The re-validation at the decision — the only seam where approve and execute are one atomic step.** `ApprovalService#approve` gains the S11-06 guard after the expiry/step guards: it loads the run's pinned workflow version through the existing `workflowexecution -> workflowdefinition` public edge (`WorkflowRunRepository#findRun` + `WorkflowVersionService#loadGraph` — the same pair the worker loads graphs through, no new compile edge), recomputes the digest for the gated step and compares it with the stored one. A mismatch, a gated step missing from the pinned graph, or an unverifiable (missing) graph refuses the decision with `409` and writes nothing — no decision row, no audit row, no run/step transition, no outbox event. The run stays parked in `WAITING_FOR_APPROVAL`: the stale request must be rejected or expired and a new approval requested. Reject and expiry carry no such check on purpose — they refuse the side effect, so a drifted binding creates no risk there, and an unguarded reject is how an operator retires a stale request.
+- **The two halves pinned to one algorithm.** `WorkflowWorkerTest`'s restart acceptance captures the fingerprint the pause stores and asserts it equals `ApprovalPayloadFingerprint.compute(...)` — the digest the worker pins and the digest the decision re-validates cannot drift apart.
+- **The contract says so.** `ApprovalController`'s `409` description and `@Operation` text document the payload-fingerprint case; `contracts/openapi/openapi.json` regenerated.
+
+### Why
+
+- **The S11-05 design decision stands.** The human decision is the gate step's whole execution: there is no later handler invocation at which a second check could run. The decision *is* the moment the approved argument set is authorized to execute, which makes it the right — and only — seam for the re-check. Reversing the instant-`SUCCEEDED` completion to re-drive the gate would have reopened the S11-05 re-pause races for no runtime gain: the pinned graph is immutable (invariant 13), so within one run the payload cannot legitimately change between pause and decision.
+- **What the guard actually catches** is the illegitimate change: a digest stored under an older algorithm (the very refinement this task lands), a corrupted or tampered row, a run pinned to a graph that no longer holds the gated step, or a future dynamic-payload resolution — in every case the fail-closed answer is the same: no decision, no side effect, a human-visible `409`.
+- **A digest, never the payload (invariant 8).** The arguments stay inside the pinned graph; only the hash rides the `approvals` row, and the `ApprovalDecisionDto` still carries no fingerprint preimage.
+
+### Verification
+
+```bash
+./gradlew :apps:agentflow-app:test \
+  --tests 'com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprintTest' \
+  --tests 'com.example.agentflow.workflowexecution.application.ApprovalServiceTest' \
+  --tests 'com.example.agentflow.workflowexecution.persistence.ApprovalRepositoryTest' \
+  --tests 'com.example.agentflow.workflowexecution.application.WorkflowWorkerTest' \
+  --rerun-tasks
+```
+
+`BUILD SUCCESSFUL`, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`): `ApprovalPayloadFingerprintTest` **11** (insertion-order stability including nested argument maps, tamper sensitivity, the exact canonical-JSON digest, string escaping, list order vs. sorted map keys, number canonicalization, the contract guards), `ApprovalServiceTest` **30** (the S11-04/S11-05 suite plus: the approve path consults the pinned graph before deciding; changed gated parameters → `409` with no decision/audit/transition/outbox writes; the gated step gone from the pinned graph → `409`; a missing pinned graph → `409`), `ApprovalRepositoryTest` **13** (the read model now carries `payload_fingerprint`), `WorkflowWorkerTest` **15** (the pause pins exactly the digest the component computes). `:apps:agentflow-app:check --rerun-tasks` → `BUILD SUCCESSFUL` — unit + architecture gates (`ArchitectureBoundaryTest` `tests="1"`, `PackageDependencyGraphTest` `tests="4"`, `NoCyclicModuleDependenciesTest` `tests="1"` — no new compile edge, the `workflowexecution -> workflowdefinition` arrow already existed) + no-cycles + formatting (`spotless`) + the OpenAPI contract gate green against the regenerated `contracts/openapi/openapi.json`.
+
+Integration on `pgvector/pgvector:0.8.6-pg18`: `ApprovalDecisionWriteIT` re-run green — the stored `payload_fingerprint` reads back verbatim on the decided row.
+
+### Documentation
+
+- `contracts/openapi/openapi.json` — regenerated (the `409` wording and the operation description now name the payload-fingerprint re-validation).
+- `docs/architecture/module-api.md` — the `ApprovalService` entry: the payload re-validation replaces the "lands in S11-06" forward reference.
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-05).
+- The S11-04 / S11-05 follow-up notes that deferred the binding to S11-06 now point here.
+
+### Risks / follow-up
+
+- An approval created before this change carries the old-format digest, so the first decision after the deploy re-validates against the new algorithm and can `409` on a drifted binding — the intended fail-closed behaviour for an unverifiable binding; the stale request is rejected and a new approval requested. No persistent data exists outside dev databases.
+- The mismatch `409` parks the run until the stale request is rejected/expired (the partial unique index allows exactly one `PENDING` per step) — a deliberate fail-safe for an invariant-violation path, visible in the API and the audit trail.
+- The reject/expiry paths intentionally re-validate nothing (see Why); if a future task makes gate payloads dynamic (resolved at execution), the check seam documented here is the place to extend.
 
 ---
 
@@ -58,7 +108,7 @@ Integration on `pgvector/pgvector:0.8.6-pg18` (the same image as Compose — nev
 
 - The expiry sweep runs per workflow-worker role and scans across tenants (like the S07-09 recovery scan); each item is fenced by its own guarded write and the run pre-check, and the counter carries no tenant label (invariant 9).
 - A human decision racing the sweep between the scan and the write wins or loses on the `version` fence — the loser makes no progress, at-least-once (ADR-003), never exactly-once.
-- The fingerprint is stored and compared for idempotency; binding it to execution (re-check at side-effect time) is S11-06 — until then a decision authorizes the step, not a re-validated argument set.
+- The payload binding lands in [S11-06](#s11-06--the-payload-bound-approval-the-fingerprint-re-validated-at-the-decision): the canonical fingerprint of the exact arguments is re-validated against the run's pinned graph at the decision, so a decision authorizes the step only while the stored digest still binds to the payload that would execute.
 
 ---
 
@@ -115,7 +165,7 @@ The schema probe `MigrationsTest#approvals_idempotency_key_is_nullable_and_uniqu
 ### Risks / follow-up
 
 - The approve endpoint records the decision; the resume of the run (step/run transition out of `WAITING_FOR_APPROVAL`, published only through the outbox) landed in [S11-05](#s11-05--reject-and-the-expiry-lifecycle-the-full-approval-lifecycle), together with reject and the expiry lifecycle.
-- The fingerprint is stored and compared for idempotency; binding it to execution (re-check at side-effect time) is S11-06 — until then a decision authorizes the step, not a re-validated argument set.
+- The payload binding lands in [S11-06](#s11-06--the-payload-bound-approval-the-fingerprint-re-validated-at-the-decision): the canonical fingerprint of the exact arguments is re-validated against the run's pinned graph at the decision, so a decision authorizes the step only while the stored digest still binds to the payload that would execute.
 
 ---
 

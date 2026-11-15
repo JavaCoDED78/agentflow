@@ -17,6 +17,7 @@ import com.example.agentflow.workflowdefinition.application.WorkflowVersionServi
 import com.example.agentflow.workflowdefinition.domain.WorkflowEdge;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
+import com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprint;
 import com.example.agentflow.workflowexecution.domain.StepExecutionContext;
 import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
@@ -833,9 +834,21 @@ class WorkflowWorkerTest {
     assertThat(stepState.get("send-report")).isEqualTo(WorkflowStepState.WAITING_FOR_APPROVAL);
     assertThat(stepState.get("send-email")).isEqualTo(WorkflowStepState.PENDING);
     assertThat(downstreamRuns).isEmpty();
-    // the durable approval was recorded at the pause (the checkpoint of where execution stopped)
+    // the durable approval was recorded at the pause (the checkpoint of where execution stopped),
+    // and the payload fingerprint it pins is the exact digest the decision re-validates (S11-06) —
+    // both halves share one algorithm, so a drifted binding can never pass the decision
+    ArgumentCaptor<String> pinnedFingerprint = ArgumentCaptor.forClass(String.class);
     verify(approvalRepository)
-        .create(eq(tenant), eq(runId), eq("send-report"), anyString(), anyString(), any(), any());
+        .create(
+            eq(tenant),
+            eq(runId),
+            eq("send-report"),
+            anyString(),
+            pinnedFingerprint.capture(),
+            any(),
+            any());
+    assertThat(pinnedFingerprint.getValue())
+        .isEqualTo(ApprovalPayloadFingerprint.compute("send-report", gateConfig));
     // the run is parked in WAITING_FOR_APPROVAL (the higher-level pause), not concluded; the step
     // ran READY -> RUNNING -> WAITING_FOR_APPROVAL
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);

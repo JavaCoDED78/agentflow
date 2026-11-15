@@ -18,6 +18,9 @@ import java.util.UUID;
  * @param id the approval record id (UUID primary key)
  * @param runId the run the approval gates (its tenant isolation flows through the parent run)
  * @param stepKey the graph node / step the request is gating
+ * @param payloadFingerprint the digest of the exact gated payload the decision binds to (S11-06:
+ *     the canonical-JSON SHA-256 of the step plus the node config — never the payload preimage,
+ *     invariant 8)
  * @param status the storage status token (one of the {@code approvals_status_check} set)
  * @param expiry the instant after which a decision is no longer valid, or {@code null}
  * @param version the optimistic-lock counter the conditional decision update is guarded on
@@ -31,6 +34,7 @@ public record ApprovalRow(
     UUID id,
     UUID runId,
     String stepKey,
+    String payloadFingerprint,
     String status,
     OffsetDateTime expiry,
     int version,

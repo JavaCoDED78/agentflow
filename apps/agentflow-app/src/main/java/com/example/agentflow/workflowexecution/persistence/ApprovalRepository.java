@@ -51,8 +51,8 @@ public class ApprovalRepository {
   private static final String TABLE = "approvals";
 
   private static final String COLUMNS =
-      "id, run_id, step_key, status, expiry, version, decision_actor, decision_at,"
-          + " decision_comment, idempotency_key, idempotency_fingerprint";
+      "id, run_id, step_key, payload_fingerprint, status, expiry, version, decision_actor,"
+          + " decision_at, decision_comment, idempotency_key, idempotency_fingerprint";
 
   private final JdbcTemplate jdbc;
 
@@ -69,9 +69,10 @@ public class ApprovalRepository {
    *     workflow_step_runs.step_key})
    * @param action a short, human-readable summary of the gated side effect (never a secret —
    *     invariant 8)
-   * @param payloadFingerprint the lowercase-hex SHA-256 digest the decision is bound to (S11-06
-   *     refines it to the exact tool arguments / tool / version; it is a digest, never the
-   *     arguments)
+   * @param payloadFingerprint the lowercase-hex SHA-256 digest the decision binds to (S11-06:
+   *     {@link com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprint} over the
+   *     step plus the node's exact config — the tool / arguments / version it carries; a digest,
+   *     never the arguments)
    * @param requester the actor who triggered the gated side effect (nullable when begun without
    *     one)
    * @param createdBy the actor that created the request (nullable when begun without one)
@@ -381,6 +382,7 @@ public class ApprovalRepository {
                     rs.getObject("id", UUID.class),
                     rs.getObject("run_id", UUID.class),
                     rs.getString("step_key"),
+                    rs.getString("payload_fingerprint"),
                     rs.getString("status"),
                     rs.getObject("expiry", OffsetDateTime.class),
                     rs.getInt("version"),

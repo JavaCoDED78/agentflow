@@ -1,10 +1,10 @@
 package com.example.agentflow.workflowexecution.application;
 
-import com.example.agentflow.common.Fingerprint;
 import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
+import com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprint;
 import com.example.agentflow.workflowexecution.domain.DagReadinessResolver;
 import com.example.agentflow.workflowexecution.domain.StepExecutionContext;
 import com.example.agentflow.workflowexecution.domain.StepHandler;
@@ -549,31 +549,16 @@ public class WorkflowWorker implements DisposableBean {
   }
 
   /**
-   * The payload fingerprint the decision binds to (S11-06 refines this to the exact tool arguments
-   * / tool / version). Here it is the lowercase-hex SHA-256 of the node's canonical config — a
-   * stable digest, so the same request fingerprints identically on every pause, and the decision is
-   * bound to that digest, never the raw payload (invariant 8: a fingerprint is a digest, not the
-   * payload).
+   * The payload fingerprint the decision binds to (S11-06): the canonical-JSON SHA-256 of the step
+   * plus the node's exact config — the tool / arguments / version it carries — so the same request
+   * fingerprints identically on every pause, and the decision is bound to that digest, never the
+   * raw payload (invariant 8: a fingerprint is a digest, not the payload). {@link ApprovalService}
+   * recomputes the same digest from the run's pinned graph at the decision and refuses to approve a
+   * request whose stored fingerprint no longer matches — the approve path can never authorize a
+   * different argument set than the one pinned here.
    */
   private String approvalFingerprint(WorkflowNode node, String stepKey) {
-    return Fingerprint.sha256Hex(canonicalConfig(node, stepKey));
-  }
-
-  /**
-   * A canonical, order-independent serialization of the node's config for fingerprinting: the node
-   * id, the step key and each config entry as {@code key=value}, sorted by key, so two nodes with
-   * the same logical config fingerprint identically regardless of insertion order.
-   */
-  private static String canonicalConfig(WorkflowNode node, String stepKey) {
-    return "node="
-        + node.id()
-        + ";step="
-        + stepKey
-        + ";"
-        + node.config().entrySet().stream()
-            .sorted(java.util.Map.Entry.comparingByKey())
-            .map(entry -> entry.getKey() + "=" + entry.getValue())
-            .collect(java.util.stream.Collectors.joining(","));
+    return ApprovalPayloadFingerprint.compute(stepKey, node.config());
   }
 
   /**
