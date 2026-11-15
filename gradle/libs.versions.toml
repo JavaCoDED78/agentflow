@@ -44,6 +44,11 @@ spring-ai-openai = { module = "org.springframework.ai:spring-ai-openai" }
 # isolated agentflow-mcp-lab artifact. Version comes from the spring-ai BOM (S01-08); nothing
 # is pinned inline. The main app never takes this dependency — it is an MCP client only.
 spring-ai-starter-mcp-server-webmvc = { module = "org.springframework.ai:spring-ai-starter-mcp-server-webmvc" }
+# MCP client (S11-09, ADR-019): the JDK-HttpClient MCP client starter (STDIO + Streamable-HTTP/SSE
+# transports) for the main app. Version comes from the spring-ai BOM; nothing is pinned inline.
+# Only servers and tools named in the agentflow.mcp.* allowlist policy are ever reachable
+# (toolexecution.mcp.McpClientAdapter); an unconfigured app boots with no MCP connections (S01-02).
+spring-ai-starter-mcp-client = { module = "org.springframework.ai:spring-ai-starter-mcp-client" }
 # Structured JSON logging (S01-19); version pinned above.
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstash-logback-encoder" }
 # Schema migrations (S03-01): Flyway Core is BOM-managed by the Spring Boot BOM,

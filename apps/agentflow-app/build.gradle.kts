@@ -86,6 +86,11 @@ dependencies {
     // forward an outbox envelope to the broker. BOM-managed by the Spring Boot BOM, so no version
     // is pinned inline and the app never pins a client version that diverges from Spring Kafka.
     implementation(libs.kafka.clients)
+    // MCP client (S11-09, ADR-019): the JDK-HttpClient MCP client starter. It is inert until a
+    // profile configures spring.ai.mcp.client.streamable-http.connections AND agentflow.mcp.*
+    // allowlists the server/tools — the adapter (toolexecution.mcp.McpClientAdapter) refuses
+    // anything outside the allowlist, and with none configured the app boots unchanged (S01-02).
+    implementation(libs.spring.ai.starter.mcp.client)
     // Document extraction (S10-07): Apache Tika. tika-core drives magic-byte content-type
     // detection; tika-parser-pdf-module drives PDFBox for PDF text extraction. Text-like content
     // types are decoded directly by the parser (no text parser module needed). The DocumentParser

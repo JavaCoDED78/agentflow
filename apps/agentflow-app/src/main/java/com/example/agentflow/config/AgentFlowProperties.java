@@ -6,7 +6,10 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
@@ -47,6 +50,7 @@ public class AgentFlowProperties {
   private final Ingestion ingestion = new Ingestion();
   private final Chunking chunking = new Chunking();
   @Valid private final Retrieval retrieval = new Retrieval();
+  @Valid private final Mcp mcp = new Mcp();
 
   /**
    * @return the logical application name, used in logs and identity
@@ -310,6 +314,14 @@ public class AgentFlowProperties {
    */
   public Retrieval getRetrieval() {
     return retrieval;
+  }
+
+  /**
+   * @return the validated MCP client allowlist policy (S11-09: allowlisted servers/tools, the
+   *     per-server timeout and the response-size bound)
+   */
+  public Mcp getMcp() {
+    return mcp;
   }
 
   /**
@@ -2028,6 +2040,116 @@ public class AgentFlowProperties {
      */
     public void setThreshold(double threshold) {
       this.threshold = threshold;
+    }
+  }
+
+  /**
+   * The MCP client allowlist policy (S11-09, ADR-019). Bound from {@code agentflow.mcp.*}.
+   *
+   * <p>This group is <b>authorization policy</b>, not transport: it names exactly which MCP servers
+   * — and which tools on each server — the platform may call, plus the per-server call timeout and
+   * response-size bound. The transport URLs live in the Spring AI connection map ({@code
+   * spring.ai.mcp.client.streamable-http.connections.<name>.url}); both must name a server for it
+   * to be reachable. A server named here but not connected, or connected but not named here, is
+   * refused (the adapter fails closed), and a server entry with an empty tool list fails startup.
+   * The map defaults to empty: an unconfigured app has no MCP surface at all (S01-02 — the skeleton
+   * boots unchanged).
+   */
+  public static class Mcp {
+
+    /**
+     * The allowlisted servers, keyed by the Spring AI connection name. Each entry names the only
+     * tools on that server the platform may call, with the per-server timeout and response bound.
+     * Empty by default.
+     */
+    @Valid private Map<String, Server> servers = new LinkedHashMap<>();
+
+    /**
+     * @return the allowlisted servers (empty by default)
+     */
+    public Map<String, Server> getServers() {
+      return servers;
+    }
+
+    /**
+     * @param servers the allowlisted servers, keyed by connection name
+     */
+    public void setServers(Map<String, Server> servers) {
+      this.servers = servers == null ? new LinkedHashMap<>() : servers;
+    }
+
+    /** One allowlisted MCP server (S11-09). */
+    public static class Server {
+
+      /**
+       * The exact tool names on this server the platform may call. The list is the allowlist: a
+       * tool the server advertises but the operator did not name here is never invoked, and an
+       * entry without any tool fails startup (an allowlist that allows nothing is a
+       * misconfiguration, not a policy).
+       */
+      @NotEmpty(message = "agentflow.mcp.servers.<name>.tools must name at least one tool")
+      private List<@NotBlank String> tools = List.of();
+
+      /**
+       * Per-call timeout for this server, in seconds. Bounds how long one MCP call may occupy a
+       * worker thread before the outcome is treated as ambiguous and the thread is released ({@code
+       * ToolCallTimeout}, S08-10 semantics). Default 10; at least 1.
+       */
+      @Min(value = 1, message = "agentflow.mcp.servers.<name>.timeout-seconds must be at least 1")
+      private long timeoutSeconds = 10;
+
+      /**
+       * Maximum size, in bytes, of one MCP tool result the platform accepts. A larger answer is
+       * refused before it reaches the workflow state — an MCP server is untrusted input, so its
+       * response is bounded exactly like an upload or a provider completion. Default 64 KiB; at
+       * least 1.
+       */
+      @Min(
+          value = 1,
+          message = "agentflow.mcp.servers.<name>.max-response-bytes must be at least 1")
+      private int maxResponseBytes = 65_536;
+
+      /**
+       * @return the allowlisted tool names (never {@code null})
+       */
+      public List<String> getTools() {
+        return tools;
+      }
+
+      /**
+       * @param tools the exact tool names the platform may call on this server
+       */
+      public void setTools(List<String> tools) {
+        this.tools = tools == null ? List.of() : tools;
+      }
+
+      /**
+       * @return the per-call timeout in seconds (default {@code 10})
+       */
+      public long getTimeoutSeconds() {
+        return timeoutSeconds;
+      }
+
+      /**
+       * @param timeoutSeconds the per-call timeout in seconds (at least 1)
+       */
+      public void setTimeoutSeconds(long timeoutSeconds) {
+        this.timeoutSeconds = timeoutSeconds;
+      }
+
+      /**
+       * @return the maximum accepted result size in bytes (default {@code 65536}, 64 KiB)
+       */
+      public int getMaxResponseBytes() {
+        return maxResponseBytes;
+      }
+
+      /**
+       * @param maxResponseBytes the maximum accepted result size in bytes (at least 1)
+       */
+      public void setMaxResponseBytes(int maxResponseBytes) {
+        this.maxResponseBytes = maxResponseBytes;
+      }
     }
   }
 }

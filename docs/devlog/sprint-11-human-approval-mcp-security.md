@@ -10,6 +10,101 @@
 - [S11-06](#s11-06--the-payload-bound-approval-the-fingerprint-re-validated-at-the-decision) — the payload-bound approval: the canonical fingerprint of the exact arguments re-validated at the decision (S11-06)
 - [S11-07](#s11-07--mcp-transport-streamable-http-verified-against-the-stable-spring-ai-20x-line) — MCP transport: Streamable-HTTP on the stable Spring AI 2.0.x line, with the client/server compatibility matrix (S11-07)
 - [S11-08](#s11-08--the-isolated-mcp-demo-server-agentflow-mcp-lab) — the isolated MCP demo server: agentflow-mcp-lab, a separate artifact with one read-only fixture tool and no path to the business database (S11-08)
+- [S11-09](#s11-09--the-mcp-client-adapter-an-allowlist-the-model-cannot-leave) — the MCP client adapter: an allowlist the model cannot leave (S11-09)
+
+---
+
+## S11-09 — the MCP client adapter: an allowlist the model cannot leave
+
+**Task (P1):** implement the MCP client adapter that calls configured MCP servers only for
+tools in the allowlist; the model must not be able to call targets outside the allowlist
+configuration.
+
+**Deliverable:** `toolexecution.mcp` — `McpServerPolicy`, `McpAllowlist`,
+`McpClientAdapter`, `McpAccessDeniedException` — plus `config.McpClientConfiguration` and the
+`agentflow.mcp.*` property group. The main app gains the BOM-managed
+`spring-ai-starter-mcp-client` dependency.
+
+### What changed
+
+- **The two-sided seam.** A server is reachable only when *both* sides name it: the Spring AI
+  connection map (`spring.ai.mcp.client.streamable-http.connections.<name>.url`) owns
+  transport, the new `agentflow.mcp.servers.<name>` group owns authorization — the exact tool
+  names, the per-call `timeout-seconds` (default 10) and the `max-response-bytes` result
+  bound (default 64 KiB; an MCP server is untrusted input, so its answer is bounded like an
+  upload). An entry with an empty `tools` list fails startup (`@NotEmpty`); the map defaults
+  to empty, so the unconfigured app has no MCP surface at all and the skeleton boots
+  unchanged (S01-02 — verified by the full-boot `AgentflowApplicationTests` with the starter
+  on the classpath).
+- **Fail-closed invocation.** `McpClientAdapter.invoke(server, tool, argumentsJson)` refuses
+  in order, before any avoidable I/O: unknown server (`UNKNOWN_SERVER` — not allowlisted, or
+  allowlisted but not connected), tool outside the allowlist (`TOOL_NOT_ALLOWLISTED` —
+  refused without even listing capabilities), tool the server does not advertise
+  (`TOOL_NOT_ADVERTISED` — the catalogue is fetched once per server and cached; only the
+  intersection of operator policy and server advertisement is callable). Arguments must be a
+  JSON object and validate against the server's advertised input schema through the existing
+  `SchemaValidator`/`JsonSchema` machinery (a tool advertising no schema accepts any JSON
+  object — the MCP contract). The call runs on the shared tool-call pool under the per-server
+  timeout via `ToolCallTimeout` (ambiguous outcome + released thread, invariant 6); a result
+  above `max-response-bytes` is refused (`RESPONSE_LIMIT_EXCEEDED`) and an `isError` result
+  surfaces as `ToolExecutionError`.
+- **No target from the untrusted side.** The planner only *proposes* a `(server, tool)` pair
+  (ADR-006, invariant 7); the adapter decides from the operator's configuration alone. There
+  is no path that takes a server or tool name from the model, a document, or a server
+  response and calls it — that is the S11-09 acceptance, tested deny-path first.
+- **Wiring without new edges.** `McpClientConfiguration` builds the allowlist bean, a
+  `McpClientCustomizer` names each connection's client info after its connection name (the
+  adapter's deterministic client → policy mapping) and applies the per-server transport
+  request timeout, and the adapter bean maps the starter-managed `McpSyncClient`s by
+  connection name. Everything is DataSource-free and Kafka-free — safe in every profile.
+  The adapter is not yet reachable from a workflow: exposing allowlisted MCP tools as
+  `ToolDescriptor`s and routing `TOOL_CALL` steps to it is **S11-10**, which also owns the
+  per-connection URL SSRF guard.
+
+### Why
+
+- **Policy separate from transport.** The connection map alone would be an allowlist of
+  *hosts*; the planner must not turn "this host is reachable" into "every tool on this host
+  is callable". Naming the tools in `agentflow.mcp.*` keeps the authorization decision in the
+  operator's hands and versionable, while URLs stay where the starter expects them.
+- **Deny is the default state, not a flag.** An empty map is a valid allowlist (no MCP
+  surface), and every refusal is a closed `Reason` vocabulary the future `TOOL_CALL` handler
+  can classify without parsing messages — the same bounded-outcome style as the rest of
+  `toolexecution`.
+
+### Verification
+
+```bash
+./gradlew :apps:agentflow-app:test --tests '*toolexecution.mcp*' --tests '*McpClientConfigurationTest' --rerun-tasks
+./gradlew spotlessApply check --rerun-tasks
+```
+
+`BUILD SUCCESSFUL`, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh reports
+in this session): `McpServerPolicyTest` **6** (canonical-constructor validation: blank
+server, empty/blank tool names, non-positive timeout and response bound), `McpAllowlistTest`
+**5** (deny-by-default resolution, empty allowlist valid, key/policy mismatch refused),
+`McpClientAdapterTest` **16** — deny paths first: unknown server refused with
+`verifyNoInteractions`, unallowlisted tool refused without listing, unadvertised tool
+refused without calling, allowlisted-but-unconnected refused, malformed/non-object JSON
+refused before the call, schema-violating arguments refused before the call; then the happy
+path with the exact request capture, the once-per-server capability cache, the per-server
+timeout (ambiguous outcome), the response-size bound, `isError` classification, structured
+content rendered as JSON, and the reachability seam; `McpClientConfigurationTest` **6**
+(binding with defaults and explicit bounds, empty `tools` failing validation, the client →
+connection-name mapping with generic type preserved, the customizer tolerating connections
+outside the allowlist). The full `./gradlew check` gate — unit tests of both artifacts +
+architecture boundaries + formatting (`spotless`) + the wrapper-integrity verify — green,
+including the full-boot `AgentflowApplicationTests` (S01-02 with the MCP starter on the
+classpath) and `ArchitectureBoundaryTest` (no new module edge — `toolexecution` owns the
+adapter; `config` composes it).
+
+### Docs
+
+- [`docs/ai/mcp.md`](../ai/mcp.md) — the client section is now the real adapter: the
+  two-sided seam, the property contract, the six-step invocation path, the test map.
+- `docs/adr/ADR-019-mcp-streamable-http-transport.md` — implementation note (the allowlist
+  lands as specified).
+- The devlog (this file) and `CHANGELOG.md`.
 
 ---
 
