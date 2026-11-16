@@ -18,8 +18,14 @@ import tools.jackson.databind.ObjectMapper;
  * turn, so a model can never read its own policy as user content ({@link PromptCataloguePort#build}
  * owns that split). The model returns a structured plan through {@link
  * ChatOptions#outputSchemaJson()}; the backend validates it server-side before any step runs
- * ({@code S09-07}). Referencing a tool is <em>not</em> execution and is <em>not</em> permission —
- * the backend re-checks the registry and the caller's scopes.
+ * ({@code S09-07}, since {@code S11-12} the <em>double</em> policy gate: after the answer, the gate
+ * re-checks every referenced tool's required scopes against the caller's current permission set and
+ * its human-approval requirement). The request carries <b>no tool-calling channel</b> — no provider
+ * tools parameter exists on {@link ChatRequest} — so the model can only answer with plan JSON and a
+ * raw provider tool call has no path into execution: a provider tool-call payload deserializes into
+ * a plan with no steps and the gate refuses it before the executor. Referencing a tool is
+ * <em>not</em> execution and is <em>not</em> permission — the backend re-checks the registry and
+ * the caller's scopes.
  *
  * <p>It depends on the provider through the neutral {@link ChatModelPort} (the only code, besides
  * the {@code provider} adapter, that names the port) and on {@link PromptCataloguePort} for the

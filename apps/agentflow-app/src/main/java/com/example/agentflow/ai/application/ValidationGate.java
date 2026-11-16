@@ -4,6 +4,7 @@ import com.example.agentflow.ai.application.PlannerPlanDto.PlanStepDto;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -13,7 +14,10 @@ import java.util.Set;
  * PlannerPlanDto} against the closed node vocabulary, the tool allowlist, the plan's own field
  * contract, the dependency graph and the system-defined {@link
  * com.example.agentflow.ai.domain.plan.PlanLimits} bounds — before a single step is allowed to
- * reach the executor.
+ * reach the executor. Since S11-12 it is the <em>double</em> policy gate: a {@code TOOL_CALL} step
+ * that passes the allowlist is then re-checked against the live tool policy facts (required scopes
+ * against the caller's current permission set, human-approval requirement) the caller supplies
+ * through {@link ValidationContext}.
  *
  * <p>This is the server-side half of {@code ADR-006}: the model <em>proposes</em>, the backend
  * <em>authorizes</em>. The Planner only ever sees the allowlist it was given; the gate re-checks
@@ -38,6 +42,13 @@ import java.util.Set;
  *   <li><b>tool membership.</b> a {@code TOOL_CALL} step references a tool in the allowlist and
  *       carries a {@code toolId}; a non-{@code TOOL_CALL} step carries {@code null} {@code toolId}
  *       (a non-tool step referencing a tool would smuggle a capability);
+ *   <li><b>tool authorization.</b> the second policy stage (S11-12): a {@code TOOL_CALL} step that
+ *       passed the allowlist is re-checked, after the model answered, against the live policy facts
+ *       the caller supplied — the tool's required scopes against the caller's <em>current</em>
+ *       permission set, and its human-approval requirement on the automatic path (a model-proposed
+ *       plan can never attest a human grant). Membership in the catalogue is not authorization
+ *       (invariant 7): a malicious plan that names an allowlisted tool the caller lacks the scope
+ *       for is refused here, before any step reaches the executor;
  *   <li><b>DAG.</b> the {@code dependsOn} graph is acyclic — no cycle, no self-loop;
  *   <li><b>step limit.</b> the step count is within {@code limits.maxSteps()};
  *   <li><b>output size.</b> the plan's serialized size is within {@code limits.maxOutputSize()}.
@@ -86,7 +97,13 @@ public final class ValidationGate {
     }
 
     for (PlanStepDto step : plan.steps()) {
-      validateStep(step, ctx.allowedNodeTypes(), ctx.allowedToolNames(), violations);
+      validateStep(
+          step,
+          ctx.allowedNodeTypes(),
+          ctx.allowedToolNames(),
+          ctx.toolPolicies(),
+          ctx.callerScopes(),
+          violations);
     }
     detectCycle(plan.steps(), violations);
 
@@ -124,6 +141,8 @@ public final class ValidationGate {
       PlanStepDto step,
       Set<String> allowedNodeTypes,
       Set<String> allowedToolNames,
+      Map<String, ToolGatePolicy> toolPolicies,
+      Set<String> callerScopes,
       List<String> violations) {
     if (step.id() == null || step.id().isBlank()) {
       violations.add("step has a null or blank id");
@@ -139,6 +158,14 @@ public final class ValidationGate {
       violations.add("step " + safeId(step.id()) + " is a TOOL_CALL without a toolId");
     } else if (isToolCall && !allowedToolNames.contains(step.toolId())) {
       violations.add("step " + safeId(step.id()) + " references an unknown tool: " + step.toolId());
+    } else if (isToolCall) {
+      // The second policy stage (S11-12): the tool passed the structural allowlist, so the gate
+      // now re-checks it against the live policy facts the caller supplied — the tool's required
+      // scopes against the caller's CURRENT permission set, and its human-approval requirement.
+      // Membership in the catalogue is not authorization (invariant 7): an allowlisted tool the
+      // caller lacks the scope for, or one gated on a human decision, is refused here, after the
+      // model answered, before any step reaches the executor.
+      validateToolPolicy(step, toolPolicies.get(step.toolId()), callerScopes, violations);
     } else if (!isToolCall && step.toolId() != null && !step.toolId().isBlank()) {
       violations.add("step " + safeId(step.id()) + " of type " + step.type() + " carries a toolId");
     }
@@ -147,6 +174,61 @@ public final class ValidationGate {
       if (dependency.equals(step.id())) {
         violations.add("step " + step.id() + " depends on itself");
       }
+    }
+  }
+
+  /**
+   * The second policy stage (S11-12): re-check one allowlisted tool reference against the policy
+   * facts the caller resolved from the verified security context and the cross-module registries.
+   * The structural allowlist check has already passed; this is the authorization half of the double
+   * policy gate.
+   *
+   * <p>When the caller supplied no {@link ToolGatePolicy} for the tool, the stage cannot re-check
+   * scopes and skips — the structural allowlist still held, and the invocation-time permission
+   * guard (S08-09) re-checks the current scopes again before any tool runs, so the check degrades
+   * to the mandatory backstop, never to an open gate.
+   *
+   * <ul>
+   *   <li><b>scope re-check.</b> every scope the tool's policy requires must be in the caller's
+   *       current permission set ({@code callerScopes}); the missing ones are named. A read-only
+   *       tool (empty required scopes) grants no side effect and passes regardless;
+   *   <li><b>approval re-check.</b> a tool whose action is gated on a human decision is refused on
+   *       the automatic path: a model-proposed plan is untrusted, so it can never attest a human
+   *       grant. Running an approval-gated tool from a plan would require a separate, explicit
+   *       approval-attested entry point (the workflow-DSL {@code HUMAN_APPROVAL} lifecycle is that
+   *       path for workflow runs), not a wider gate.
+   * </ul>
+   *
+   * @param step the {@code TOOL_CALL} step whose tool passed the allowlist; never {@code null}
+   * @param policy the policy facts the caller supplied for the tool, or {@code null} when none were
+   *     supplied (the stage skips)
+   * @param callerScopes the caller's current permission scopes; never {@code null} (the context
+   *     snapshots empty when unset)
+   * @param violations the collected violations; a refused check adds one entry
+   */
+  private static void validateToolPolicy(
+      PlanStepDto step, ToolGatePolicy policy, Set<String> callerScopes, List<String> violations) {
+    if (policy == null) {
+      return;
+    }
+    Set<String> missing = new LinkedHashSet<>(policy.requiredScopes());
+    missing.removeAll(callerScopes);
+    if (!missing.isEmpty()) {
+      violations.add(
+          "step "
+              + step.id()
+              + " references tool "
+              + step.toolId()
+              + " but the caller misses scopes "
+              + missing);
+    }
+    if (policy.requiresHumanApproval()) {
+      violations.add(
+          "step "
+              + step.id()
+              + " references tool "
+              + step.toolId()
+              + " that requires human approval, which the automatic gate never authorizes");
     }
   }
 
