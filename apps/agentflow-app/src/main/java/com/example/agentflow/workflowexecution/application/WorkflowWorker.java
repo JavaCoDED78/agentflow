@@ -6,6 +6,9 @@ import com.example.agentflow.workflowdefinition.domain.WorkflowGraph;
 import com.example.agentflow.workflowdefinition.domain.WorkflowNode;
 import com.example.agentflow.workflowexecution.domain.ApprovalPayloadFingerprint;
 import com.example.agentflow.workflowexecution.domain.DagReadinessResolver;
+import com.example.agentflow.workflowexecution.domain.RunExecutionLimitExceeded;
+import com.example.agentflow.workflowexecution.domain.RunExecutionLimits;
+import com.example.agentflow.workflowexecution.domain.RunExecutionMonitor;
 import com.example.agentflow.workflowexecution.domain.StepExecutionContext;
 import com.example.agentflow.workflowexecution.domain.StepHandler;
 import com.example.agentflow.workflowexecution.domain.StepResult;
@@ -16,6 +19,8 @@ import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -82,6 +87,20 @@ public class WorkflowWorker implements DisposableBean {
   private final AgentFlowProperties properties;
 
   /**
+   * The injectable clock (invariant 10): the only source of "now" for the per-run wall-clock bound
+   * (S11-13). The poll loop is driven by {@link WorkerLifecycle}, so tests inject a clock whose
+   * instant advances to exercise the wall-clock breach deterministically.
+   */
+  private final Clock clock;
+
+  /**
+   * The per-run hard execution limits (S11-13), read once from the configuration (or the defaults
+   * when no database-less skeleton leaves {@code AgentFlowProperties#getExecution()} unset): the
+   * bounds the per-run {@link RunExecutionMonitor} checks the loop against.
+   */
+  private final RunExecutionLimits executionLimits;
+
+  /**
    * The DAG readiness resolver (S08-11): the pure gate that turns the pinned graph plus the
    * persisted step states into this pass's ready / skipped / cancelled step lists. Stateless, so a
    * single instance serves the worker's whole lifetime.
@@ -130,6 +149,39 @@ public class WorkflowWorker implements DisposableBean {
       ApprovalRepository approvalRepository,
       List<StepHandler> handlers,
       AgentFlowProperties properties) {
+    this(
+        runRepository,
+        stepRepository,
+        versionService,
+        leaseService,
+        heartbeat,
+        transitionService,
+        checkpointAdapter,
+        approvalRepository,
+        handlers,
+        properties,
+        Clock.systemUTC());
+  }
+
+  /**
+   * Full constructor: also injects the {@link Clock} the per-run wall-clock bound is measured
+   * against (S11-13, invariant 10). The lifecycle drives the loop, so production wiring passes the
+   * application clock and only tests inject a controllable one.
+   *
+   * @param clock the injectable clock (invariant 10)
+   */
+  public WorkflowWorker(
+      WorkflowRunRepository runRepository,
+      WorkflowStepRunRepository stepRepository,
+      WorkflowVersionService versionService,
+      RunLeaseService leaseService,
+      RunHeartbeatService heartbeat,
+      RunStateMachineService transitionService,
+      CheckpointAdapter checkpointAdapter,
+      ApprovalRepository approvalRepository,
+      List<StepHandler> handlers,
+      AgentFlowProperties properties,
+      Clock clock) {
     this.runRepository = runRepository;
     this.stepRepository = stepRepository;
     this.versionService = versionService;
@@ -141,6 +193,11 @@ public class WorkflowWorker implements DisposableBean {
     this.handlers = handlers;
     this.actor = resolveActor(properties);
     this.properties = properties;
+    this.clock = clock;
+    // A DB-less skeleton may leave the execution config unset; the defaults keep the loop stopping
+    // the run on a limit, never silently ignoring one (S11-13).
+    AgentFlowProperties.Execution execution = properties.getExecution();
+    this.executionLimits = execution == null ? RunExecutionLimits.defaults() : toLimits(execution);
     // A heartbeat thread only helps when there is a lease to extend. Guard on the same
     // {@code null} the {@link #executeStep} heartbeat path guards, so a DB-less skeleton builds no
     // scheduler at all.
@@ -148,6 +205,16 @@ public class WorkflowWorker implements DisposableBean {
         heartbeat == null
             ? null
             : Executors.newSingleThreadScheduledExecutor(heartbeatThreadFactory());
+  }
+
+  private static RunExecutionLimits toLimits(AgentFlowProperties.Execution execution) {
+    return new RunExecutionLimits(
+        execution.getMaxSteps(),
+        execution.getMaxToolCalls(),
+        execution.getMaxRetries(),
+        execution.getMaxWallClockSeconds(),
+        execution.getMaxOutputBytes(),
+        execution.getMaxParallelCalls());
   }
 
   /**
@@ -282,8 +349,24 @@ public class WorkflowWorker implements DisposableBean {
       return false;
     }
     materializeSteps(tenantId, runId, graph, epoch);
-    executeUntilQuiesced(tenantId, runId, graph, owner, epoch);
-    reconcileRun(tenantId, runId);
+    // S11-13: a fresh per-run execution-limits monitor for this drive. The step handlers report
+    // tool calls and concurrent-call slots into it (through the step context) so the loop can stop
+    // the run the moment a per-run hard limit is reached.
+    RunExecutionMonitor monitor = new RunExecutionMonitor(executionLimits, clock);
+    try {
+      executeUntilQuiesced(tenantId, runId, graph, owner, epoch, monitor);
+      reconcileRun(tenantId, runId);
+    } catch (RunExecutionLimitExceeded limitEx) {
+      // The worker already failed the current step and closed the run to a documented, controlled
+      // {@code FAILED} in {@link #failRunDueToLimit}: count the run as progressed this poll and do
+      // not let the breach escape the poll loop to the next run.
+      log.info(
+          "run {} stopped at the {} execution limit: {} > {}",
+          runId,
+          limitEx.limit(),
+          limitEx.used(),
+          limitEx.limitValue());
+    }
     return true;
   }
 
@@ -342,7 +425,12 @@ public class WorkflowWorker implements DisposableBean {
    * through {@link CheckpointAdapter} so its output can be reused on recovery (S07-07).
    */
   private void executeUntilQuiesced(
-      UUID tenantId, UUID runId, WorkflowGraph graph, UUID owner, int leaseEpoch) {
+      UUID tenantId,
+      UUID runId,
+      WorkflowGraph graph,
+      UUID owner,
+      int leaseEpoch,
+      RunExecutionMonitor monitor) {
     Map<String, WorkflowNode> nodes = byId(graph);
     for (; ; ) {
       Map<String, WorkflowStepState> statusByKey =
@@ -361,7 +449,7 @@ public class WorkflowWorker implements DisposableBean {
       // for the next pass.
       DagReadinessResolver.Resolution resolution = readinessResolver.resolve(graph, statusByKey);
       boolean progressed =
-          applyResolution(tenantId, runId, resolution, nodes, outputs, owner, leaseEpoch);
+          applyResolution(tenantId, runId, resolution, nodes, outputs, owner, leaseEpoch, monitor);
       if (!progressed) {
         break;
       }
@@ -381,7 +469,8 @@ public class WorkflowWorker implements DisposableBean {
       Map<String, WorkflowNode> nodes,
       Map<String, String> outputs,
       UUID owner,
-      int leaseEpoch) {
+      int leaseEpoch,
+      RunExecutionMonitor monitor) {
     boolean progressed = false;
     // Cancel propagation and the failure cascade are decided outcomes: record them through the
     // state machine before any new step starts, so this pass's executions never outrun a
@@ -397,7 +486,7 @@ public class WorkflowWorker implements DisposableBean {
     // Ready steps run sequentially, in the resolver's deterministic topological order (S08-11) —
     // a parallel executor is a later, measured change.
     for (String stepKey : resolution.ready()) {
-      executeStep(tenantId, runId, stepKey, nodes, outputs, owner, leaseEpoch);
+      executeStep(tenantId, runId, stepKey, nodes, outputs, owner, leaseEpoch, monitor);
       progressed = true;
     }
     return progressed;
@@ -427,7 +516,8 @@ public class WorkflowWorker implements DisposableBean {
       Map<String, WorkflowNode> nodes,
       Map<String, String> outputs,
       UUID owner,
-      int leaseEpoch) {
+      int leaseEpoch,
+      RunExecutionMonitor monitor) {
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.READY, "step.ready");
     transitionStep(tenantId, runId, stepKey, WorkflowStepState.RUNNING, "step.running");
     WorkflowNode node = nodes.get(stepKey);
@@ -437,10 +527,22 @@ public class WorkflowWorker implements DisposableBean {
     // without starting a heartbeat or running a handler — so the blocked side effect never executes
     // and no worker thread is held while the run waits (the acceptance: a restart neither skips the
     // approval nor leaves a thread occupied). The step never reaches a StepHandler; the resume is a
-    // separate decision (S11-04).
+    // separate decision (S11-04). A boundary step does not consume the execution budgets below.
     if (HUMAN_APPROVAL.equals(node.type())) {
       pauseForApproval(tenantId, runId, stepKey, node, leaseEpoch);
       return;
+    }
+    // S11-13 — per-run hard limits checked before the handler runs. A run already at its step,
+    // wall-clock or tool-call budget stops here, before any call, into a documented, controlled
+    // FAILED (invariant: the stop is a controlled state, not an unhandled fault).
+    // S11-13 — a per-run hard limit reached before the handler still closes the run: the breach is
+    // contained here so the current step and the run are failed into a documented, controlled
+    // {@code FAILED} (the step was just marked RUNNING), matching the in-handler breach path.
+    try {
+      enforcePreStepLimits(monitor);
+    } catch (RunExecutionLimitExceeded limitEx) {
+      failRunDueToLimit(tenantId, runId, stepKey, limitEx);
+      throw limitEx;
     }
     // Heartbeat (S07-04, the gap-b fix): while this step's handler runs — it may outlive the lease
     // lifetime — extend the run's lease so the stale-run recovery scan (S07-09) does not mistake an
@@ -456,8 +558,22 @@ public class WorkflowWorker implements DisposableBean {
       // IllegalArgumentException, classified `validation`: permanent, never retried), so a broken
       // wiring is rejected before any call, not mid-call.
       StepResult result =
-          resolve(node.type()).handle(stepContext(tenantId, runId, stepKey, node, nodes, outputs));
+          resolve(node.type())
+              .handle(stepContext(tenantId, runId, stepKey, node, nodes, outputs, monitor));
+      // S11-13: a step handler that overran the parallel bound reports it on the monitor even if it
+      // did not throw; the worker closes the run.
+      if (monitor.isParallelBudgetExceeded()) {
+        throw new RunExecutionLimitExceeded(
+            RunExecutionLimits.Limit.PARALLEL_CALLS,
+            executionLimits.maxParallelCalls(),
+            monitor.parallelCallsAttempted());
+      }
       if (WorkflowStepState.SUCCEEDED.equals(result.outcome())) {
+        // S11-13: a step whose output exceeds the step-output size bound rejects the step and
+        // closes
+        // the run into a documented, controlled FAILED (independent of the storage-only checkpoint
+        // inline bound).
+        enforceOutputSize(monitor, result.output());
         transitionStep(tenantId, runId, stepKey, WorkflowStepState.SUCCEEDED, "step.succeeded");
         checkpointAdapter.saveCheckpoint(
             tenantId, runId, stepKey, leaseEpoch, STEP_OUTPUT_SCHEMA_VERSION, result.output());
@@ -465,6 +581,13 @@ public class WorkflowWorker implements DisposableBean {
         // A non-throwing FAILED is a decided domain outcome: permanent, no fault to classify.
         transitionStep(tenantId, runId, stepKey, WorkflowStepState.FAILED, "step.failed");
       }
+    } catch (RunExecutionLimitExceeded limitEx) {
+      // A per-run limit was exceeded: close the run and the current step to a documented,
+      // controlled
+      // FAILED (S11-13), then unwind so the poll loop starts no further step for this run this
+      // poll.
+      failRunDueToLimit(tenantId, runId, stepKey, limitEx);
+      throw limitEx;
     } catch (Throwable failure) {
       // S07-11: classify the fault the handler threw. Retry transient infra / provider faults;
       // every other fault is terminal. The transition is contained to this step, so a fault never
@@ -472,6 +595,19 @@ public class WorkflowWorker implements DisposableBean {
       StepFailure failureInfo = StepFailureClassifier.defaults().classify(failure);
       WorkflowStepState next =
           failureInfo.isRetryable() ? WorkflowStepState.RETRY_WAIT : WorkflowStepState.FAILED;
+      if (next == WorkflowStepState.RETRY_WAIT && !monitor.recordRetry()) {
+        // S11-13: the run's retry budget is exhausted — close the run into a documented, controlled
+        // FAILED instead of retrying a step that would keep failing (a per-run budget, not a
+        // per-step
+        // one). The step ends FAILED with the breach recorded.
+        RunExecutionLimitExceeded limitEx =
+            new RunExecutionLimitExceeded(
+                RunExecutionLimits.Limit.RETRIES,
+                executionLimits.maxRetries(),
+                monitor.retriesUsed());
+        failRunDueToLimit(tenantId, runId, stepKey, limitEx);
+        throw limitEx;
+      }
       transitionStepError(
           tenantId,
           runId,
@@ -487,6 +623,69 @@ public class WorkflowWorker implements DisposableBean {
       // releases the lease when the run reaches a lease-releasing state.
       stopHeartbeat(leaseHeartbeat);
     }
+  }
+
+  /**
+   * Enforce the per-run budgets checked <em>before</em> a step's handler runs (S11-13): the step
+   * budget, the wall-clock duration and the tool-call budget. The first breached bound throws a
+   * {@link RunExecutionLimitExceeded} the worker maps to a controlled {@code FAILED} run. A bound
+   * of {@code 0} permits nothing of that kind (the first step / the first tool call stops the run).
+   */
+  private void enforcePreStepLimits(RunExecutionMonitor monitor) {
+    if (!monitor.beginStep()) {
+      throw new RunExecutionLimitExceeded(
+          RunExecutionLimits.Limit.STEPS, executionLimits.maxSteps(), monitor.stepsUsed());
+    }
+    Instant now = clock.instant();
+    if (!monitor.withinWallClock(now)) {
+      throw new RunExecutionLimitExceeded(
+          RunExecutionLimits.Limit.WALL_CLOCK,
+          executionLimits.maxWallClockSeconds(),
+          monitor.elapsedSeconds(now));
+    }
+    if (monitor.toolCallsUsed() > executionLimits.maxToolCalls()) {
+      throw new RunExecutionLimitExceeded(
+          RunExecutionLimits.Limit.TOOL_CALLS,
+          executionLimits.maxToolCalls(),
+          monitor.toolCallsUsed());
+    }
+  }
+
+  /**
+   * Enforce the per-run step-output size bound (S11-13): a step whose output is larger than {@code
+   * maxOutputBytes} rejects the step. Called only for a {@code SUCCEEDED} result, so the step
+   * output (the persisted document) is never larger than the bound. {@code null} output counts as
+   * empty.
+   */
+  private void enforceOutputSize(RunExecutionMonitor monitor, String output) {
+    long size =
+        output == null ? 0L : output.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    if (size > executionLimits.maxOutputBytes()) {
+      throw new RunExecutionLimitExceeded(
+          RunExecutionLimits.Limit.OUTPUT_SIZE, executionLimits.maxOutputBytes(), size);
+    }
+  }
+
+  /**
+   * Close a run and the current step into the documented, controlled {@code FAILED} state that a
+   * per-run hard execution limit breach requires (S11-13). The current step goes {@code RUNNING ->
+   * FAILED} and the run goes {@code RUNNING -> FAILED}, each recording the breach's {@code
+   * limit_exceeded} {@link com.example.agentflow.common.ErrorClass} and a short, safe (redacted)
+   * reason that carries no secret, prompt, document or high-cardinality id (invariant 8 / rule 9).
+   * A lost-lease {@code 409} on the run transition is contained: the step already committed FAILED,
+   * so the next poll reconciles the run to {@code FAILED}.
+   */
+  private void failRunDueToLimit(
+      UUID tenantId, UUID runId, String stepKey, RunExecutionLimitExceeded limitEx) {
+    transitionStepError(
+        tenantId,
+        runId,
+        stepKey,
+        WorkflowStepState.FAILED,
+        limitEx.errorClass(),
+        limitEx.safeReason(),
+        "step.failed");
+    transitionRunError(tenantId, runId, WorkflowRunState.FAILED, "run.limit-exceeded", limitEx);
   }
 
   /**
@@ -621,7 +820,8 @@ public class WorkflowWorker implements DisposableBean {
       String stepKey,
       WorkflowNode node,
       Map<String, WorkflowNode> nodes,
-      Map<String, String> upstreamOutputs) {
+      Map<String, String> upstreamOutputs,
+      RunExecutionMonitor monitor) {
     return new StepExecutionContext(
         tenantId,
         runId,
@@ -629,7 +829,8 @@ public class WorkflowWorker implements DisposableBean {
         node.type(),
         node.config(),
         stepInputResolver.resolve(node, nodes, upstreamOutputs),
-        upstreamOutputs);
+        upstreamOutputs,
+        monitor);
   }
 
   /**
@@ -695,6 +896,33 @@ public class WorkflowWorker implements DisposableBean {
       transitionService.transitionRun(tenantId, runId, to, eventType, actor);
       return true;
     } catch (ResponseStatusException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Transition a run into the documented, controlled {@code FAILED} state of a per-run execution
+   * limit breach (S11-13), recording the breach's {@code limit_exceeded} error class and safe
+   * reason. A lost-lease / cross-tenant {@code 404}/{@code 409} is contained (returns {@code
+   * false}) rather than propagating: the current step already committed {@code FAILED} in an
+   * earlier transaction, so the next poll reconciles the run to {@code FAILED}.
+   */
+  private boolean transitionRunError(
+      UUID tenantId,
+      UUID runId,
+      WorkflowRunState to,
+      String eventType,
+      RunExecutionLimitExceeded limitEx) {
+    try {
+      transitionService.transitionRun(
+          tenantId, runId, to, eventType, actor, limitEx.errorClass(), limitEx.safeReason());
+      return true;
+    } catch (ResponseStatusException e) {
+      log.debug(
+          "run {} failed at execution limit: transition to {} denied ({})",
+          runId,
+          to,
+          e.getStatusCode());
       return false;
     }
   }

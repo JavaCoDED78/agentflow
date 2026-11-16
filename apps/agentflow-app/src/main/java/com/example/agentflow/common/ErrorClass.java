@@ -51,7 +51,12 @@ public enum ErrorClass {
   PROVIDER_TIMEOUT("provider_timeout", HttpStatus.GATEWAY_TIMEOUT, "provider_timeout", true),
 
   /** Internal catch-all after the classifier runs; operator attention. */
-  INTERNAL("internal", HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", false);
+  INTERNAL("internal", HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", false),
+
+  /**
+   * A per-run hard execution limit was exceeded (S11-13): the run is stopped in a controlled state.
+   */
+  LIMIT_EXCEEDED("limit_exceeded", HttpStatus.BAD_REQUEST, "limit_exceeded", false);
 
   private static final Map<HttpStatus, ErrorClass> BY_STATUS =
       Map.of(

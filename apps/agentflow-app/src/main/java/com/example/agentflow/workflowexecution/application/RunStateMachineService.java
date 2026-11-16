@@ -112,6 +112,59 @@ public class RunStateMachineService {
   }
 
   /**
+   * Move a run to {@code to} (from the tenant-scoped current state) and record the {@link
+   * com.example.agentflow.common.ErrorClass} token of the transition together with its short, safe
+   * (redacted) reason (S11-13). Used by the worker to close a run in the documented, controlled
+   * {@code FAILED} state the moment a per-run hard execution limit is exceeded.
+   *
+   * <p>The error metadata is persisted in the same transaction as the run state and, for the {@code
+   * FAILED} transition, included in the run event payload. A {@code null} error class is recorded
+   * as no error: a clean transition never clobbers an error a prior transition left. This overload
+   * shares the read / assert / conditional-update / append flow of the {@link #transitionRun}
+   * overload — the error is only metadata recorded for observability, it does not change which runs
+   * are eligible.
+   *
+   * @param tenantId the owning tenant, from the verified security context (invariant 1)
+   * @param runId the run to move
+   * @param to the requested next state, one of the allowed successors of the current state
+   * @param eventType the transition / trigger name recorded in {@code workflow_events}
+   * @param actor the authenticated actor recorded in the event payload (nullable)
+   * @param errorClass the {@code ErrorClass#errorClass()} token of the transition (nullable:
+   *     records no error)
+   * @param safeReason the short redacted description ({@code null} / blank preserves the existing
+   *     value)
+   * @return {@code to}, the state the run moved to
+   * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no run
+   *     matches {@code (tenantId, runId)}, {@code 400} if {@code from -> to} is not an allowed edge
+   *     or one state is {@code null}, {@code 409} if the conditional update matched no row (another
+   *     writer won the transition, or the run's {@code lease_epoch} fence moved after the read)
+   */
+  @Transactional
+  public WorkflowRunState transitionRun(
+      UUID tenantId,
+      UUID runId,
+      WorkflowRunState to,
+      String eventType,
+      String actor,
+      String errorClass,
+      String safeReason) {
+    requireRepository(runRepository);
+    RunStateSnapshot current =
+        runRepository
+            .findState(tenantId, runId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "run " + runId + " was not found for this tenant"));
+
+    WorkflowRunState from = current.status();
+    assertRunTransition(from, to);
+    applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
+    appendRunEvent(tenantId, runId, from, to, eventType, actor, errorClass);
+    return to;
+  }
+
+  /**
    * Move a step from its current state to {@code to}, the step-level half of the single transition
    * service.
    *
@@ -367,8 +420,27 @@ public class RunStateMachineService {
       WorkflowRunState to,
       String eventType,
       String actor) {
-    eventService.append(
-        tenantId, runId, null, eventType, buildPayload(from, to) + actorSuffix(actor));
+    appendRunEvent(tenantId, runId, from, to, eventType, actor, null);
+  }
+
+  /**
+   * Appends the run transition fact in the same transaction, and, when a transition was recorded
+   * with an error class (S11-13), appends {@code error=<class>} to the payload so the run's {@code
+   * FAILED} carries the documented reason (mirrors the step payload, {@link #appendStepEvent}).
+   */
+  private void appendRunEvent(
+      UUID tenantId,
+      UUID runId,
+      WorkflowRunState from,
+      WorkflowRunState to,
+      String eventType,
+      String actor,
+      String errorClass) {
+    String payload = buildPayload(from, to) + actorSuffix(actor);
+    if (errorClass != null && !errorClass.isBlank()) {
+      payload = payload + " error=" + errorClass;
+    }
+    eventService.append(tenantId, runId, null, eventType, payload);
   }
 
   /** Appends the step transition fact in the same transaction, scoped to the step's own row. */

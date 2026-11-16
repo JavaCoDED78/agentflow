@@ -51,6 +51,7 @@ for code (`enum ErrorClass` in `common`).
 | `provider_timeout` | Provider timeout | `504` · `code: provider_timeout` | **Yes** — transient. Retry with backoff; the attempt is persisted and the outcome marked (never exactly-once). | Model call exceeds its timeout; the response is lost. |
 | `tool_policy_denial` | Tool policy denial | `403` · `code: tool_denied` | **No** — permanent. Unknown tool, disallowed risk class, or missing approval. | `shell` is not in the allowlist, or a `WRITE` tool runs without `HUMAN_APPROVAL`. |
 | `cancellation` | Cancellation | `202` · `code: cancellation_requested` | **n/a** — not an error; the opposite of retry. | A `CANCEL_REQUESTED` event is processed on a safe boundary → `CANCELLED`. |
+| `limit_exceeded` | Run execution limit | `400` · `code: limit_exceeded` | **No** — permanent for the run. The run is stopped in a controlled state and never retried; the counter is reset by starting a new run. | A run with `maxSteps=1` reports the over-budget second attempt; a step's tool-call counter, retries, output size, wall-clock or concurrent-call budget is exceeded; or a pre-step budget is already exhausted before the handler runs (`S11-13`). |
 | `internal` | Internal (catch-all) | `500` · `code: internal_error` | **No** — operator. Unexpected, unclassified failure after the classifier runs. | Any error not matching a known class. |
 
 > **Not-found mapping.** A missing resource (including another tenant's resource,

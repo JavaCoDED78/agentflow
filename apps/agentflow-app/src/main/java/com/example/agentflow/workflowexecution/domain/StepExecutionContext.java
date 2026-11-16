@@ -25,6 +25,10 @@ import java.util.UUID;
  *     the node declares no wiring; unmodifiable
  * @param upstreamOutputs the completed predecessor steps' raw persisted output documents keyed by
  *     their step key; empty when the node has no completed predecessors
+ * @param budget the per-run execution-limits monitor (S11-13); a handler reports tool calls and
+ *     concurrent-call slots into it so the worker can stop the run when a per-run budget is
+ *     reached. {@code null} only when built by the legacy six-arg constructor — the worker always
+ *     passes one in production.
  */
 public record StepExecutionContext(
     UUID tenantId,
@@ -33,18 +37,12 @@ public record StepExecutionContext(
     String nodeType,
     Map<String, Object> config,
     Map<String, Object> inputs,
-    Map<String, String> upstreamOutputs) {
+    Map<String, String> upstreamOutputs,
+    RunExecutionMonitor budget) {
 
   /**
-   * Convenience constructor for the pre-S08-12 shape: a step with no wiring receives empty resolved
-   * inputs.
-   *
-   * @param tenantId the owning tenant (from the verified security context)
-   * @param runId the run the step belongs to
-   * @param stepKey the graph node the step runs (the node {@code id})
-   * @param nodeType the graph node type
-   * @param config the node's free-form parameters (untrusted data, never executed)
-   * @param upstreamOutputs the completed predecessor steps' raw outputs keyed by step key
+   * Builds this context with a {@code null} budget monitor (the pre-S11-13 shape): a step with no
+   * wiring and no reported tool / parallel calls.
    */
   public StepExecutionContext(
       UUID tenantId,
@@ -53,6 +51,6 @@ public record StepExecutionContext(
       String nodeType,
       Map<String, Object> config,
       Map<String, String> upstreamOutputs) {
-    this(tenantId, runId, stepKey, nodeType, config, Map.of(), upstreamOutputs);
+    this(tenantId, runId, stepKey, nodeType, config, Map.of(), upstreamOutputs, null);
   }
 }
