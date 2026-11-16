@@ -248,6 +248,14 @@ consistent with the run machine (`S05-01`):
 
 ## 7. Interaction with the wider system
 
+- **Bounded by the per-run execution monitor.** A run's budget (steps, tool calls, retries,
+  wall-clock, output size and concurrent calls) is tracked by `RunExecutionMonitor`
+  (`S11-13`). When the handler reports an over-budget attempt — or a budget is already exhausted
+  *before* the handler runs (a pre-step check) — the step's `RUNNING → FAILED` is followed by the
+  run machine's `RUNNING → FAILED: run.limit-exceeded` transition
+  ([`run-state-machine.md`](run-state-machine.md), transition 14); the run is stopped in a
+  controlled state. The breach is permanent for the run and is never retried (a fresh run resets
+  the counters), per [`error-taxonomy.md`](error-taxonomy.md) `limit_exceeded`.
 - **Reconciled with the run machine.** This spec is the step-level counterpart of
   [`run-state-machine.md`](run-state-machine.md) (`S05-01`); run terminal states are derived from
   step aggregation (§4) so the two never disagree. The single transition service enforces
@@ -273,4 +281,6 @@ consistent with the run machine (`S05-01`):
 - **The pure state machine** — the enum and its `canTransitionTo` logic (`workflowexecution.domain`, DB-free, unit tested) in `S05-10`.
 - **Transition service** — the single point where transitions are applied with the optimistic lock and the append-only event (`S05-11`).
 - **Retry vs permanent** — [`error-taxonomy.md`](error-taxonomy.md).
+- **Per-run execution limits** — the run/step budget the monitor enforces and the `limit_exceeded`
+  stop (`S11-13`), [`docs/architecture/run-state-machine.md`](run-state-machine.md) transition 14.
 - **Canonical names** — [`docs/domain-glossary.md`](../domain-glossary.md) §5.

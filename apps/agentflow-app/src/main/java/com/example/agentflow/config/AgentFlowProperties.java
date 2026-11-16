@@ -43,6 +43,7 @@ public class AgentFlowProperties {
   @Valid private final Inbox inbox = new Inbox();
   @Valid private final Kafka kafka = new Kafka();
   @Valid private final Worker worker = new Worker();
+  @Valid private final Execution execution = new Execution();
   @Valid private final Tools tools = new Tools();
   @Valid private final Ai ai = new Ai();
   @Valid private final Upload upload = new Upload();
@@ -260,6 +261,13 @@ public class AgentFlowProperties {
    */
   public Worker getWorker() {
     return worker;
+  }
+
+  /**
+   * @return the validated per-run execution hard limits (S11-13)
+   */
+  public Execution getExecution() {
+    return execution;
   }
 
   /**
@@ -1211,6 +1219,128 @@ public class AgentFlowProperties {
       public void setJitter(boolean jitter) {
         this.jitter = jitter;
       }
+    }
+  }
+
+  /**
+   * Per-run hard execution limits (S11-13). Bound from {@code agentflow.execution.*}. The worker
+   * ({@link com.example.agentflow.workflowexecution.application.WorkflowWorker}) reads these once
+   * per run and stops the run in a documented, controlled state the moment a limit is reached. A
+   * limit of {@code 0} disables the bound. See {@code docs/architecture/run-state-machine.md} and
+   * {@code docs/architecture/step-state-machine.md} for the resulting {@code FAILED} transition and
+   * {@code docs/architecture/error-taxonomy.md} for the {@code limit_exceeded} error class.
+   */
+  public static class Execution {
+
+    /** Maximum number of steps the engine executes on a single run before stopping it. */
+    @Min(0L)
+    private long maxSteps = 1000L;
+
+    /** Maximum number of tool calls a run may make before stopping it. */
+    @Min(0L)
+    private long maxToolCalls = 100L;
+
+    /** Maximum number of retries the engine may spend on a single run. */
+    @Min(0L)
+    private long maxRetries = 10L;
+
+    /** Maximum wall-clock duration a single run may take, in seconds. */
+    @Min(0L)
+    private long maxWallClockSeconds = 3600L;
+
+    /**
+     * Maximum size, in bytes, of the output of a single step. Exceeding it rejects the step and
+     * stops the run (independent of the storage-only {@link Checkpoint#getMaxInlineBytes()}).
+     */
+    @Min(0L)
+    private long maxOutputBytes = 10_000_000L;
+
+    /** Maximum number of calls a single step's handler may run concurrently. */
+    @Min(0L)
+    private long maxParallelCalls = 4L;
+
+    /**
+     * @return the maximum number of steps executed per run
+     */
+    public long getMaxSteps() {
+      return maxSteps;
+    }
+
+    /**
+     * @param maxSteps the maximum number of steps executed per run
+     */
+    public void setMaxSteps(long maxSteps) {
+      this.maxSteps = maxSteps;
+    }
+
+    /**
+     * @return the maximum number of tool calls per run
+     */
+    public long getMaxToolCalls() {
+      return maxToolCalls;
+    }
+
+    /**
+     * @param maxToolCalls the maximum number of tool calls per run
+     */
+    public void setMaxToolCalls(long maxToolCalls) {
+      this.maxToolCalls = maxToolCalls;
+    }
+
+    /**
+     * @return the maximum number of retries per run
+     */
+    public long getMaxRetries() {
+      return maxRetries;
+    }
+
+    /**
+     * @param maxRetries the maximum number of retries per run
+     */
+    public void setMaxRetries(long maxRetries) {
+      this.maxRetries = maxRetries;
+    }
+
+    /**
+     * @return the maximum wall-clock duration of a run in seconds
+     */
+    public long getMaxWallClockSeconds() {
+      return maxWallClockSeconds;
+    }
+
+    /**
+     * @param maxWallClockSeconds the maximum wall-clock duration of a run in seconds
+     */
+    public void setMaxWallClockSeconds(long maxWallClockSeconds) {
+      this.maxWallClockSeconds = maxWallClockSeconds;
+    }
+
+    /**
+     * @return the maximum step-output size in bytes
+     */
+    public long getMaxOutputBytes() {
+      return maxOutputBytes;
+    }
+
+    /**
+     * @param maxOutputBytes the maximum step-output size in bytes
+     */
+    public void setMaxOutputBytes(long maxOutputBytes) {
+      this.maxOutputBytes = maxOutputBytes;
+    }
+
+    /**
+     * @return the maximum number of concurrent calls per step's handler
+     */
+    public long getMaxParallelCalls() {
+      return maxParallelCalls;
+    }
+
+    /**
+     * @param maxParallelCalls the maximum number of concurrent calls per step's handler
+     */
+    public void setMaxParallelCalls(long maxParallelCalls) {
+      this.maxParallelCalls = maxParallelCalls;
     }
   }
 

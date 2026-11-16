@@ -88,6 +88,7 @@ is driven by an explicit event or command, never by an assignment.
 | 11 | `WAITING_FOR_APPROVAL` | `CANCEL_REQUESTED` | `run.cancel` (command) | The caller cancels an approval-paused run. |
 | 12 | `RETRY_WAIT` | `CANCEL_REQUESTED` | `run.cancel` (command) | The caller cancels a run in retry-backoff. |
 | 13 | `CANCEL_REQUESTED` | `CANCELLED` | `run.cancelled` (event; cancellation completes) | Pending steps drained/interrupted and the lease released. |
+| 14 | `RUNNING` | `FAILED` | `run.limit-exceeded` (event; a per-run hard execution limit was reached) | The `RunExecutionMonitor` reported an over-budget limit — a step at `maxSteps`, a step whose tool-call counter, retries, output size, wall-clock or concurrent-call budget was exceeded, or a pre-step budget already exhausted (`error-taxonomy.md`, `S11-13`). The worker stops the run in a controlled state; the breach is permanent for the run and is never retried. |
 
 ### Design notes on the transitions
 

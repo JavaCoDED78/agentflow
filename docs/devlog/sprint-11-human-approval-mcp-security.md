@@ -14,10 +14,112 @@
 - [S11-10](#s11-10--the-mcp-outbound-destination-policy-the-ssrf-guard) — the MCP outbound destination policy: the SSRF guard that refuses loopback/private/metadata destinations before a socket opens (S11-10)
 - [S11-11](#s11-11--the-prompt-injection-red-team-harness) — the prompt-injection red-team harness: fixtures that try to override system rules, disclose the canary, escalate privilege or escape the JSON schema — driven through the production planner, and held (S11-11)
 - [S11-12](#s11-12--the-double-policy-gate-policy-checked-before-and-after-planning) — the double policy gate: policy checked before planning (the minimal catalogue) and re-checked after it answers (scopes / approval) — a malicious plan never bypasses tool permissions (S11-12)
+- [S11-13](#s11-13--the-per-run-execution-limits) — the per-run execution limits: a hard, configurable cap across steps, tool calls, retries, wall-clock, output size and concurrent calls that stops a run in a controlled state instead of consuming unbounded cost (S11-13)
 
 ---
 
-## S11-12 — the double policy gate: policy checked before and after planning
+## S11-13 — the per-run execution limits: a hard cap that stops a run instead of consuming unbounded cost
+
+**Task (P0):** bound a run's spend — so a runaway planner or a stuck step fails the run in a
+controlled state rather than consuming unbounded steps, tool calls, retries, wall-clock time, output
+or concurrency.
+
+**Deliverable:** a tiny, pure value type [`RunExecutionLimits`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/domain/RunExecutionLimits.java)
+(the six bounds), a pure per-run tracker [`RunExecutionMonitor`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/domain/RunExecutionMonitor.java),
+a [`RunExecutionLimitExceeded`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/domain/RunExecutionLimitExceeded.java)
+(`errorClass()` `limit_exceeded`), the worker enforcement gates in [`WorkflowWorker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/application/WorkflowWorker.java),
+and the config binding on [`AgentFlowProperties.Execution`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/AgentFlowProperties.java).
+
+### What changed
+
+- **The value type.** `RunExecutionLimits` carries the six bounds — `maxSteps`, `maxToolCalls`,
+  `maxRetries`, `maxWallClockSeconds`, `maxOutputBytes`, `maxParallelCalls`. The headline semantic:
+  **a bound of `0` permits nothing of that kind** (not a disable flag). `maxSteps=1` executes the
+  first step and the over-budget second attempt stops the run; `maxToolCalls=0` allows no tool call;
+  `maxRetries=0` allows no retry; `maxWallClockSeconds=0` / `maxOutputBytes=0` / `maxParallelCalls=0`
+  similarly permit nothing. It exposes the six bounds through the `maxSteps()` / `maxToolCalls()` /
+  `maxRetries()` / `maxWallClockSeconds()` / `maxOutputBytes()` / `maxParallelCalls()` getters and the
+  production `defaults()` (1000 / 100 / 10 / 3600 / 10M / 4).
+- **The monitor.** `RunExecutionMonitor` is the pure, DB-free per-run tracker the handler reports
+  into through `StepExecutionContext#budget()`: it records the step / tool-call / retry counters and
+  the parallel-slot count, and — with an injected, fixed start instant — the deterministic wall-clock
+  and elapsed seconds. The breach checks live on the monitor itself: `beginStep()` / `stepsUsed()`,
+  `recordToolCall()` / `toolCallsUsed()`, `recordRetry()` / `retriesUsed()`, `withinWallClock(now)` /
+  `elapsedSeconds(now)`, `isParallelBudgetExceeded()` / `parallelCallsAttempted()`, and the
+  step-output size bound checked against `maxOutputBytes()` when the handler returns.
+- **The worker gates.** The run is bounded in two places: a pre-step check (`enforcePreStepLimits`)
+  on steps / wall-clock / tool-calls **before** the handler runs, and the in-handler checks on
+  parallel (`isParallelBudgetExceeded`), output-size (`enforceOutputSize`) and retries
+  (`recordRetry` exhaustion) **after** the handler reports. Both funnel the breach into
+  `failRunDueToLimit`, which stops the run
+  (`RUNNING → FAILED`, `run.limit-exceeded`) in the same controlled state. Because a step or tool
+  call reports its over-budget attempt *before* the side effect runs, the budget gates the planner's
+  spend (S09-10); and a pre-step budget already exhausted closes the run instead of leaving it stuck
+  in `RUNNING`.
+- **The exception.** `RunExecutionLimitExceeded` carries the breached `Limit` and maps to the
+  permanent `limit_exceeded` error class (invariant 12 — never retried); a fresh run resets the
+  counters.
+
+### Why
+
+The plan (§8) fixes the per-run caps as a *hard* limit distinct from the durable, settled usage
+budget (S12). The pre-call reserve-before-the-call guard (S09-10) bounds the *model* spend; these
+bounds stop the run from *consuming* unbounded steps / tool calls / wall-clock / concurrency when the
+model misbehaves, a step hangs, or a graph loops. A breach is permanent for the run — the run is
+stopped in a controlled state, not retried — so cost cannot spiral.
+
+### Verification
+
+Three new DB-free suites, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`):
+`RunExecutionLimitsTest` (6 — the production defaults, the getters return the configured bounds, the
+six `Limit` values, a zero bound permits nothing of that kind, the constructor rejects negatives, the
+monitor rejects a null bound set), `RunExecutionMonitorTest` (11 — each reported counter reports the
+over-budget attempt and the correct limit name; a fixed start instant yields a deterministic
+wall-clock; a `0` bound permits no begin-call; the parallel-slot begin/end tracking) and
+`WorkflowWorkerLimitsTest` (7 — `steps_limit` reports the over-budget second attempt and stops the
+run `FAILED: execution limit exceeded: steps (1)`; `wall_clock_limit` stops the run once the
+wall-clock is exhausted; `tool_call_budget` stops it at the 6th of a `max=5`; `output_size` stops it
+on the oversized step output; `parallel_calls` stops it when the concurrent cap is exceeded;
+`retry_budget` stops the run when `maxRetries` is exhausted; `within_every_budget_completes` runs
+both steps to `SUCCEEDED` with every budget above its peak). Run:
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.workflowexecution.application.WorkflowWorkerLimitsTest' --tests 'com.example.agentflow.workflowexecution.domain.RunExecutionMonitorTest' --tests 'com.example.agentflow.workflowexecution.domain.RunExecutionLimitsTest' --rerun-tasks`, then
+`./gradlew spotlessApply check --rerun-tasks` → `BUILD SUCCESSFUL`, all three architecture gates
+green. No migration, no REST endpoint, no new module edge — `S11-13` does not change module
+ownership.
+
+One new integration suite, `WorkflowWorkerLimitsIT`, reads the documented outcome **back from the
+database** (`pgvector/pgvector:0.8.6-pg18`, Testcontainers). The DB-free suites prove the worker
+*says* `run.limit-exceeded`; this test asserts the durable fact — the `workflow_events` row with
+`event_type = run.limit-exceeded` and `error=limit_exceeded`, plus the `RUNNING → FAILED` run status
+read back from `workflow_runs` — closing the acceptance criterion (every breach ends in a documented,
+controlled state) at the persistence layer, not merely at the worker call. It runs the same worker over
+real SQL over a two-step `a → b` chain: one failure path (`maxSteps=1` — the first step completes and the
+over-budget second step trips the budget, closing the run `FAILED` with the limit event) and one positive
+control (`within_every_budget` completes `SUCCEEDED` with a `run.finished` event). JUnit-XML-verified
+(`tests="2" failures="0" errors="0" skipped="0"`). Run:
+`./gradlew :apps:agentflow-app:integrationTest --tests '*WorkflowWorkerLimitsIT' --rerun-tasks`.
+
+### Documentation
+
+- [`docs/architecture/run-state-machine.md`](../architecture/run-state-machine.md) — transition 14:
+  `RUNNING → FAILED: run.limit-exceeded`.
+- [`docs/architecture/step-state-machine.md`](../architecture/step-state-machine.md) — §7 + Related:
+  the monitor-bound step interaction.
+- [`docs/architecture/error-taxonomy.md`](../architecture/error-taxonomy.md) — the `limit_exceeded`
+  row.
+- [`docs/domain-glossary.md`](../domain-glossary.md) — §5 gains the **Execution limit** row.
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above
+  S11-12).
+
+### Risks / follow-up
+
+- **Config-driven, not code-driven.** The caps live in `agentflow.workflow.max-*`; a new cap is a
+  config change, not a code change.
+- **The `0 = nothing` sentinel is deliberate.** A future reader might read `0` as "unset /
+  unbounded"; the value-type Javadoc, the config Javadoc and the glossary all pin it as *permits
+  nothing*.
+- **S12 (usage metering)** remains the durable, settled cost budget; S11-13's bounds are the
+  immediate hard stop, not the settlement.
 
 **Task (P0):** give the model only the minimal tool catalogue; after the answer, re-check tool ID, scopes, tenant, approval and budget; never execute a raw provider tool call directly. **Result:** the double policy gate. **Acceptance:** a malicious plan does not bypass tool permissions.
 
