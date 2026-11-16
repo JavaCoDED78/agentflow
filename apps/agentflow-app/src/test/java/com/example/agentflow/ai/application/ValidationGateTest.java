@@ -279,4 +279,110 @@ class ValidationGateTest {
     assertThat(result.valid()).isFalse();
     assertThat(result.violations()).containsExactly("plan is null");
   }
+
+  // --- S11-12: the second policy stage (scope / approval re-check after the model answered) ---
+
+  private static ValidationContext policyContext(
+      Map<String, ToolGatePolicy> toolPolicies, Set<String> callerScopes) {
+    return new ValidationContext(
+        UUID.fromString("00000000-0000-0000-0000-000000000001"),
+        Set.copyOf(CLOSED_NODE_TYPES),
+        Set.of("calc", "report"),
+        new PlanLimits(50, 8_192),
+        toolPolicies,
+        callerScopes);
+  }
+
+  @Test
+  void an_allowlisted_tool_the_caller_lacks_scopes_for_is_rejected() {
+    // `report` passes the structural allowlist, but its policy requires `write:report` and the
+    // caller holds no scope — membership in the catalogue is not authorization (S11-12).
+    ValidationContext ctx =
+        policyContext(
+            Map.of("report", new ToolGatePolicy(Set.of("write:report"), false)), Set.of());
+    PlannerPlanDto plan = plan(toolStep("s1", "report"));
+
+    PlanValidationResult result = gate.validate(plan, ctx);
+
+    assertThat(result.valid()).isFalse();
+    assertThat(result.violations())
+        .anyMatch(
+            m ->
+                m.contains("references tool report")
+                    && m.contains("misses scopes")
+                    && m.contains("write:report"));
+  }
+
+  @Test
+  void the_scope_recheck_passes_when_the_caller_holds_every_required_scope() {
+    ValidationContext ctx =
+        policyContext(
+            Map.of("report", new ToolGatePolicy(Set.of("write:report", "report:run"), false)),
+            Set.of("write:report", "report:run"));
+    PlannerPlanDto plan = plan(toolStep("s1", "report"));
+
+    PlanValidationResult result = gate.validate(plan, ctx);
+
+    assertThat(result.valid()).isTrue();
+    assertThat(result.violations()).isEmpty();
+  }
+
+  @Test
+  void a_read_only_tool_passes_the_scope_recheck_without_any_caller_scope() {
+    // Empty required scopes grant no side effect, so any caller the allowlist admitted may
+    // reference the tool.
+    ValidationContext ctx =
+        policyContext(Map.of("calc", new ToolGatePolicy(Set.of(), false)), Set.of());
+    PlannerPlanDto plan = plan(toolStep("s1", "calc"));
+
+    PlanValidationResult result = gate.validate(plan, ctx);
+
+    assertThat(result.valid()).isTrue();
+    assertThat(result.violations()).isEmpty();
+  }
+
+  @Test
+  void an_allowlisted_tool_requiring_human_approval_is_rejected_on_the_automatic_path() {
+    ValidationContext ctx =
+        policyContext(Map.of("report", new ToolGatePolicy(Set.of(), true)), Set.of("write:report"));
+    PlannerPlanDto plan = plan(toolStep("s1", "report"));
+
+    PlanValidationResult result = gate.validate(plan, ctx);
+
+    assertThat(result.valid()).isFalse();
+    assertThat(result.violations())
+        .anyMatch(m -> m.contains("requires human approval") && m.contains("report"));
+  }
+
+  @Test
+  void a_tool_reference_without_policy_facts_skips_the_scope_recheck() {
+    // The caller supplied no ToolGatePolicy for `report`, so the second stage cannot re-check
+    // scopes; the structural allowlist still held and the invocation-time permission guard
+    // remains the mandatory backstop.
+    PlannerPlanDto plan = plan(toolStep("s1", "report"));
+
+    PlanValidationResult result = gate.validate(plan, context());
+
+    assertThat(result.valid()).isTrue();
+    assertThat(result.violations()).isEmpty();
+  }
+
+  @Test
+  void the_scope_recheck_names_the_missing_scopes_of_two_tools_at_once() {
+    ValidationContext ctx =
+        policyContext(
+            Map.of(
+                "calc", new ToolGatePolicy(Set.of("calc:admin"), false),
+                "report", new ToolGatePolicy(Set.of("write:report"), false)),
+            Set.of("calc:run"));
+    PlannerPlanDto plan = plan(toolStep("s1", "calc"), toolStep("s2", "report"));
+
+    PlanValidationResult result = gate.validate(plan, ctx);
+
+    assertThat(result.valid()).isFalse();
+    assertThat(result.violations())
+        .anyMatch(m -> m.contains("step s1 references tool calc") && m.contains("calc:admin"));
+    assertThat(result.violations())
+        .anyMatch(m -> m.contains("step s2 references tool report") && m.contains("write:report"));
+  }
 }

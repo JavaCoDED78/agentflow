@@ -13,6 +13,65 @@
 - [S11-09](#s11-09--the-mcp-client-adapter-an-allowlist-the-model-cannot-leave) — the MCP client adapter: an allowlist the model cannot leave (S11-09)
 - [S11-10](#s11-10--the-mcp-outbound-destination-policy-the-ssrf-guard) — the MCP outbound destination policy: the SSRF guard that refuses loopback/private/metadata destinations before a socket opens (S11-10)
 - [S11-11](#s11-11--the-prompt-injection-red-team-harness) — the prompt-injection red-team harness: fixtures that try to override system rules, disclose the canary, escalate privilege or escape the JSON schema — driven through the production planner, and held (S11-11)
+- [S11-12](#s11-12--the-double-policy-gate-policy-checked-before-and-after-planning) — the double policy gate: policy checked before planning (the minimal catalogue) and re-checked after it answers (scopes / approval) — a malicious plan never bypasses tool permissions (S11-12)
+
+---
+
+## S11-12 — the double policy gate: policy checked before and after planning
+
+**Task (P0):** give the model only the minimal tool catalogue; after the answer, re-check tool ID, scopes, tenant, approval and budget; never execute a raw provider tool call directly. **Result:** the double policy gate. **Acceptance:** a malicious plan does not bypass tool permissions.
+
+**Deliverable:** the second stage of the production [`ValidationGate`] — the same pure, DB-free gate the runtime and the S11-11 red-team harness drive — plus the widened [`ValidationContext`] and the new per-tool policy value [`ToolGatePolicy`].
+
+### What changed
+
+- **The gate gains its authorization half.** The S09-07 gate was structural: a `TOOL_CALL` step's `toolId` had to be in the tenant-scoped allowlist, the node type in the closed vocabulary, the graph a DAG, the plan within `PlanLimits`. That admitted a plan naming an allowlisted tool the caller nonetheless lacked the scope for — membership in the catalogue is not authorization (invariant 7). The second stage closes exactly that: a `TOOL_CALL` step that passed the allowlist is re-checked, after the model answered, against the live policy facts the caller supplies as **data** — `ValidationContext.toolPolicies()` maps each allowlisted tool to a `ToolGatePolicy(requiredScopes, requiresHumanApproval)` and `ValidationContext.callerScopes()` carries the caller's **current** permission set, never a snapshot from when the catalogue was built. A missing scope adds one violation naming it; a tool gated on a human decision is refused on the automatic path, because a model-proposed plan can never attest a human grant — the workflow-DSL `HUMAN_APPROVAL` lifecycle (S11-03…S11-06) stays the approval path for workflow runs, and a planner-plan approval path, if ever needed, must be a separate explicit entry point like `ToolInvocationPolicy`'s attested variant, not a wider gate.
+
+- **The gate stays pure; the boundary stays put.** The gate still compiles against no registry (`S02-08`): the caller owning the verified security context resolves the descriptors into `ToolGatePolicy` facts, exactly as it already supplies the node vocabulary and the allowlist. The four-component `ValidationContext` constructor is kept, so every existing call site (the red-team harness, the baseline eval runner, the unit suites) compiles unchanged; the new components default to empty and snapshot unmodifiable. When the caller supplies **no** policy facts for an allowlisted tool, the stage skips — the structural allowlist still held, and the invocation-time permission guard (S08-09) re-checks the current scopes before any tool runs, so the check degrades to the mandatory backstop, never to an open gate.
+
+- **Budget is honest about where it lives.** The task names budget among the post-planning re-checks; the real seam is the pre-call reservation around every model attempt (`S09-10`) — plan validation itself spends no budget, so there is no budget check at the gate, and the durable usage metering that would settle real costs is `S12`. Claiming a plan-time budget check would be a fake control; the devlog records the seam as it actually is.
+
+- **A raw provider tool call has no path into execution — proven, not asserted.** `ChatRequest` carries no provider tools parameter at all (the only request fields are model, messages, options, prompt version), so the model can only answer with plan JSON. The end-to-end suite feeds the provider's native tool-calling shape (`{"tool_calls":[...]}`) to the production parser: it deserializes into a plan with **no steps** (the `tool_calls` property is not a plan field) and the structural stage refuses it ("plan declares no steps") before the executor — the payload is verified held by the gate, not assumed to fail parsing.
+
+### Why
+
+- **Allowlist membership is necessary, not sufficient.** The catalogue given to the model is a proposal surface, deliberately minimal; the authorization decision must be made by the backend against the caller's *current* permissions, after the answer, when the concrete tool references exist — the same reason the invocation guard (S08-09) re-checks scopes again at run time. Three checkpoints (catalogue minimality, plan-time scope/approval re-check, invocation-time guard) fail closed in sequence.
+- **The model is the untrusted party in both directions.** Before planning it must not see more than the minimal catalogue (prompt-injection surface); after planning its answer is hostile until the gate holds it (the S11-11 red-team posture). The double gate is the second of those two halves made explicit in the runtime gate, not only in the harness.
+
+### Verification
+
+```bash
+./gradlew :apps:agentflow-app:test \
+  --tests 'com.example.agentflow.ai.application.DoublePolicyGateTest' \
+  --tests 'com.example.agentflow.ai.application.ValidationGateTest' \
+  --tests 'com.example.agentflow.ai.application.ValidationContextTest' --rerun-tasks
+./gradlew spotlessApply check --rerun-tasks
+```
+
+JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh reports this session):
+- [`DoublePolicyGateTest`](apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/DoublePolicyGateTest.java) — **4 tests**, the S11-12 acceptance end-to-end over the **production** path (a real `PlannerService` under the same-package fake `PromptCataloguePort` — no `ai.prompt` cycle — and a scripted `ChatModelPort` that *complies*, so only the gate can stop the capability):
+  - `a_malicious_plan_naming_an_allowlisted_tool_the_caller_lacks_the_scope_for_is_held` — the model proposes `report`; the allowlist admits it, the caller holds no `write:report` scope; the second stage refuses the plan naming the missing scope and the recording executor stays empty.
+  - `a_malicious_plan_naming_an_approval_gated_tool_is_held` — `deploy` needs no scope but is human-gated; the automatic gate refuses it (a plan never attests a grant).
+  - `a_compliant_plan_reaches_the_executor_exactly_once` — with every required scope held, the double gate passes the plan through unchanged.
+  - `a_raw_provider_tool_call_payload_declares_no_plan_and_is_held_by_the_gate` — the provider tool-calling shape deserializes to a no-steps plan and the structural stage refuses it; the executor is never consulted.
+- `ValidationGateTest` — **24 tests** (18 structural + 6 second-stage: scope-miss rejection naming the missing scopes, scope-satisfied pass, read-only pass without any caller scope, approval-gated refusal on the automatic path, no-policy-facts degradation to the structural allowlist, two-tool missing-scope reporting).
+- `ValidationContextTest` — **8 tests** (defaults to empty, six-component exposure, unmodifiable snapshots of the policy map and the caller scopes).
+- `AiPlanExecutionServiceTest` (5), the S11-11 red-team harness and the S09 planner eval suites re-run green untouched — the four-component constructor and the defaulted new components changed no existing behavior.
+
+No migration, no REST endpoint, no OpenAPI change, no new module edge — `S11-12` does not change module ownership; the full `./gradlew check --rerun-tasks` gate (unit + architecture boundaries + no-cycles + spotless + OpenAPI contract) is green.
+
+### Documentation
+
+- [`docs/domain-glossary.md`](../domain-glossary.md) — §11 gains the **Double policy gate** row; the **Validation gate** / **ValidationContext** rows updated to the two-stage shape.
+- [`docs/architecture/module-api.md`](../architecture/module-api.md) — the `ai` public-application-services row (the gate is now the double policy gate) and the permitted-types row (`ValidationContext` components, `ToolGatePolicy`).
+- [`docs/threat-model/README.md`](../threat-model/README.md) — the planner-plan policy-bypass section with mitigations linked to tests.
+- `CHANGELOG.md` — an entry in `[Unreleased] > Added`; this devlog section (newest-first, above S11-11).
+
+### Risks / follow-up
+
+- **The policy facts are caller-supplied data.** The gate trusts that the caller resolves the *current* descriptor set; a caller that passes stale or empty facts degrades to the structural allowlist plus the invocation-time guard (S08-09) — still fail-closed, but the strongest guarantee needs the wiring task that feeds live registry facts into `ValidationContext` when a production `PlanExecutor` caller exists (today the port has no production implementation).
+- **Scope revocation between validation and invocation is still covered by S08-09**, not re-solved here — the plan-time re-check is defense in depth on top of the mandatory invocation-time guard, and the two deliberately overlap.
+- **S11-13 (per-run hard limits) and S12 (usage metering)** own the remaining plan-execution bounds: step/tool-call/wall-clock caps and the durable budget settlement the gate deliberately does not fake.
 
 ---
 

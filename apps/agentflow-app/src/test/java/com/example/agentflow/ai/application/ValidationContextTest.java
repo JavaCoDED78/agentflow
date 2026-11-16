@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.agentflow.ai.domain.plan.PlanLimits;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -61,5 +62,50 @@ class ValidationContextTest {
 
     assertThat(ctx.allowedNodeTypes()).isEmpty();
     assertThat(ctx.allowedToolNames()).isEmpty();
+  }
+
+  @Test
+  void the_policy_map_and_caller_scopes_default_to_empty() {
+    ValidationContext ctx =
+        new ValidationContext(TENANT, Set.of("FINALIZE"), Set.of("calc"), LIMITS);
+
+    assertThat(ctx.toolPolicies()).isEmpty();
+    assertThat(ctx.callerScopes()).isEmpty();
+  }
+
+  @Test
+  void the_six_component_form_exposes_tool_policies_and_caller_scopes() {
+    ToolGatePolicy policy = new ToolGatePolicy(Set.of("write:report"), true);
+    ValidationContext ctx =
+        new ValidationContext(
+            TENANT,
+            Set.of("TOOL_CALL"),
+            Set.of("report"),
+            LIMITS,
+            Map.of("report", policy),
+            Set.of("write:report"));
+
+    assertThat(ctx.toolPolicies()).containsExactly(Map.entry("report", policy));
+    assertThat(ctx.callerScopes()).containsExactly("write:report");
+  }
+
+  @Test
+  void the_policy_map_and_caller_scopes_snapshot_unmodifiable() {
+    Map<String, ToolGatePolicy> policies =
+        new java.util.LinkedHashMap<>(Map.of("calc", new ToolGatePolicy(Set.of(), false)));
+    Set<String> scopes = new java.util.LinkedHashSet<>(List.of("write:report"));
+    ValidationContext ctx =
+        new ValidationContext(
+            TENANT, Set.of("TOOL_CALL"), Set.of("calc", "report"), LIMITS, policies, scopes);
+
+    policies.put("report", new ToolGatePolicy(Set.of("write:report"), false));
+    scopes.add("admin");
+
+    assertThat(ctx.toolPolicies()).containsOnlyKeys("calc");
+    assertThat(ctx.callerScopes()).containsExactly("write:report");
+    assertThatThrownBy(() -> ctx.toolPolicies().put("x", new ToolGatePolicy(Set.of(), false)))
+        .isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> ctx.callerScopes().add("admin"))
+        .isInstanceOf(UnsupportedOperationException.class);
   }
 }

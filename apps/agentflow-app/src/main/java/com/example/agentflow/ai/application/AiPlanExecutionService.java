@@ -15,11 +15,17 @@ import org.springframework.stereotype.Service;
  * <p>The gate is deterministic and DB-free, so the service needs no time, randomness, database or
  * provider; it only needs the tenant-scoped facts ({@link ValidationContext}) the caller resolves
  * from the verified security context (invariant 1) and the cross-module registries, plus the
- * optional {@link PlanExecutor} port that runs the plan. The port is injected with
- * {@code @Autowired(required = false)} following the existing opt-in, loud-at-call-time pattern
- * (the same one {@link PlannerService} uses for its provider port): a missing executor is a clear,
- * explicit failure at call time, not a boot failure of the whole app, and the gateway guarantee
- * holds regardless of who implements the port.
+ * optional {@link PlanExecutor} port that runs the plan. Since {@code S11-12} the gate is the
+ * double policy gate: the structural stage (S09-07) is followed by the tool-authorization stage,
+ * which re-checks each allowlisted tool reference against the live policy facts — required scopes
+ * against the caller's <em>current</em> permission set, human-approval requirement on the automatic
+ * path. The model-call budget is guarded around the planner itself ({@code S09-10}, a reservation
+ * before every attempt): plan validation spends no budget, so there is no budget check at this seam
+ * — durable usage metering is {@code S12}. The port is injected with {@code @Autowired(required =
+ * false)} following the existing opt-in, loud-at-call-time pattern (the same one {@link
+ * PlannerService} uses for its provider port): a missing executor is a clear, explicit failure at
+ * call time, not a boot failure of the whole app, and the gateway guarantee holds regardless of who
+ * implements the port.
  */
 @Service
 public class AiPlanExecutionService {
