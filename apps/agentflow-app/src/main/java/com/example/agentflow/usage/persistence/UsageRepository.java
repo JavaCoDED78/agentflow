@@ -55,8 +55,9 @@ public class UsageRepository {
             + TABLE
             + " (id, tenant_id, run_id, step_run_id, attempt, usage_type, measurement,"
             + " provider, model, tool_name, tool_version, input_tokens, output_tokens,"
-            + " estimated_cost, provider_cost, unit, currency, provider_request_id, provider_metadata)"
-            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "estimated_cost, provider_cost, unit, currency, provider_request_id, provider_metadata, "
+            + "price_version, pricing_revision) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ps -> {
           ps.setObject(1, record.id());
           ps.setObject(2, record.tenantId());
@@ -77,6 +78,10 @@ public class UsageRepository {
           ps.setString(17, record.currency());
           ps.setString(18, record.providerRequestId());
           ps.setString(19, record.providerMetadata());
+          // S12-03: the price version + catalogue revision; bound as TEXT, null-safe (a null is
+          // written as SQL NULL — an unpriced estimate stays unknown, never a guessed string).
+          ps.setString(20, record.priceVersion());
+          ps.setString(21, record.pricingRevision());
         });
   }
 
@@ -94,6 +99,7 @@ public class UsageRepository {
         "SELECT id, tenant_id, run_id, step_run_id, attempt, usage_type, measurement, provider, model,"
             + " tool_name, tool_version, input_tokens, output_tokens, estimated_cost, provider_cost,"
             + " unit, currency, provider_request_id, provider_metadata"
+            + ", price_version, pricing_revision"
             + " FROM "
             + TABLE
             + " WHERE tenant_id = ? AND run_id = ? ORDER BY created_at, attempt",

@@ -91,7 +91,16 @@ public record UsageRecordDto(
     String providerRequestId,
 
     /** Remaining provider metadata (JSON text); {@code null} when none. */
-    String providerMetadata) {
+    String providerMetadata,
+
+    /**
+     * The model-plus-version price the estimate was computed against (S12-03), e.g. {@code
+     * gpt-4o/2026-01-01}; {@code null} when no price was resolved (unknown stays unknown, S12-02).
+     */
+    String priceVersion,
+
+    /** The {@code usage.pricing} catalogue revision that produced the estimate (null when none). */
+    String pricingRevision) {
 
   /**
    * Canonical constructor — the metering invariants. A {@code null} tenant / run / id, a stale
@@ -135,6 +144,76 @@ public record UsageRecordDto(
         }
       }
     }
+  }
+
+  /**
+   * Positional constructor for the unpriced path (S12-02): a measurement without a resolved price
+   * carries {@code null} for the two S12-03 versioning columns. It lets the canonical 21-argument
+   * record be built for the common case where no price was resolved; the priced factory ({@link
+   * #fromChatResponse(..., PricingInfo)}) fills the versioning columns once a price is known.
+   *
+   * @param id the row identity
+   * @param tenantId the owning tenant
+   * @param runId the run the measurement belongs to
+   * @param stepRunId the step run the measurement belongs to, or {@code null}
+   * @param attempt the 1-based attempt the measurement belongs to
+   * @param usageType what was measured
+   * @param measurement the recorded source
+   * @param provider the provider that produced the measurement
+   * @param model the measured model id
+   * @param toolName the measured tool name
+   * @param toolVersion the measured tool version
+   * @param inputTokens provider-reported input tokens; {@code null} when unreported
+   * @param outputTokens provider-reported output tokens; {@code null} when unreported
+   * @param estimatedCost the estimated cost; {@code null} until known
+   * @param providerCost the provider-reported cost; {@code null} unless provider-reported
+   * @param unit the cost unit; {@code null} when unknown
+   * @param currency the cost currency; {@code null} when unknown
+   * @param providerRequestId the provider request id; {@code null} when absent
+   * @param providerMetadata provider metadata; {@code null} when none
+   */
+  public UsageRecordDto(
+      UUID id,
+      UUID tenantId,
+      UUID runId,
+      String stepRunId,
+      int attempt,
+      UsageType usageType,
+      Measurement measurement,
+      String provider,
+      String model,
+      String toolName,
+      String toolVersion,
+      Long inputTokens,
+      Long outputTokens,
+      BigDecimal estimatedCost,
+      BigDecimal providerCost,
+      String unit,
+      String currency,
+      String providerRequestId,
+      String providerMetadata) {
+    this(
+        id,
+        tenantId,
+        runId,
+        stepRunId,
+        attempt,
+        usageType,
+        measurement,
+        provider,
+        model,
+        toolName,
+        toolVersion,
+        inputTokens,
+        outputTokens,
+        estimatedCost,
+        providerCost,
+        unit,
+        currency,
+        providerRequestId,
+        providerMetadata,
+        null,
+        null);
   }
 
   /**
@@ -185,7 +264,73 @@ public record UsageRecordDto(
         null,
         null,
         null,
+        null,
+        null,
         null);
+  }
+
+  /**
+   * Priced variant of {@link #fromChatResponse} (S12-03): the estimated cost is computed against
+   * the resolved {@link PricingInfo}, and the row records the exact {@code priceVersion} / {@code
+   * pricingRevision} / {@code unit} / {@code currency} the estimate was computed against, so a
+   * historical estimate is always explainable through the price version that produced it.
+   *
+   * <p>When {@code pricing} is {@code null} (the catalogue does not know the model, S12-02) the row
+   * is the same unknown-cost reservation as the 6-argument factory and the versioning columns stay
+   * {@code null}.
+   *
+   * @param tenantId the owning tenant (from the verified context); never {@code null}
+   * @param runId the run the measurement belongs to; never {@code null}
+   * @param stepRunId the step run the measurement belongs to, or {@code null}
+   * @param attempt the per-attempt number (1-based) the measurement is tied to; at least {@code 1}
+   * @param provider the provider name that answered the call, non-blank (e.g. {@code FAKE} in
+   *     tests)
+   * @param response the provider's response; never {@code null}, {@link ChatResponse#usage()} may
+   *     be {@code null} (a refusal → unknown tokens)
+   * @param pricing the resolved price version for {@code response.model()}, or {@code null} when
+   *     the catalogue does not know the model
+   * @return the priced MODEL measurement, or the unknown-cost reservation when {@code pricing} is
+   *     {@code null}
+   */
+  public static UsageRecordDto fromChatResponse(
+      UUID tenantId,
+      UUID runId,
+      String stepRunId,
+      int attempt,
+      String provider,
+      ChatResponse response,
+      PricingInfo pricing) {
+    if (response == null) {
+      throw new IllegalArgumentException("response must not be null");
+    }
+    Long inputTokens = usageInputTokens(response);
+    Long outputTokens = usageOutputTokens(response);
+    Long total =
+        (inputTokens == null ? 0L : inputTokens) + (outputTokens == null ? 0L : outputTokens);
+    BigDecimal estimatedCost =
+        (pricing == null || total <= 0) ? null : pricing.estimatedCostFor(total.intValue());
+    return new UsageRecordDto(
+        UUID.randomUUID(),
+        tenantId,
+        runId,
+        stepRunId,
+        attempt,
+        UsageType.MODEL,
+        Measurement.ESTIMATED,
+        provider,
+        response.model(),
+        null,
+        null,
+        inputTokens,
+        outputTokens,
+        estimatedCost,
+        null,
+        pricing == null ? null : pricing.unit(),
+        pricing == null ? null : pricing.currency(),
+        null,
+        null,
+        pricing == null ? null : pricing.priceVersion(),
+        pricing == null ? null : pricing.pricingRevision());
   }
 
   /** The response's input tokens, or {@code null} when the provider reported none (unknown). */

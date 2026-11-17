@@ -88,6 +88,10 @@ class UsageRepositoryTest {
     verify(ps).setString(17, "USD");
     verify(ps).setString(18, "req-789");
     verify(ps).setString(19, "{\"trace_id\":\"abc\"}");
+    // S12-03: the price version + catalogue revision are bound last (null for this unpriced
+    // record).
+    verify(ps).setString(20, record.priceVersion());
+    verify(ps).setString(21, record.pricingRevision());
   }
 
   @Test
