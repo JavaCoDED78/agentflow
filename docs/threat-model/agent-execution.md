@@ -10,7 +10,12 @@ accepted.
 The model is an **untrusted planner** ([`ADR-006`](../adr/ADR-006-untrusted-planner.md),
 invariant 7): it is never given authority over its own permissions, policies, allowlists, or
 credentials, and everything it proposes is hostile until a server-side gate holds it. This
-document is written from that posture.
+This document is written from that posture.
+
+For the operational view — how these controls are wired to code, in the order an action crosses
+them (trust boundaries, tool allowlist, policy checks, approval binding, MCP/SSRF guards, prompt
+injection) — see [`docs/security/agent-actions.md`](../security/agent-actions.md). This document is
+the threats; that guide is the mechanisms.
 
 ## How to read this document
 
@@ -316,6 +321,7 @@ deliberately overlapping — defense in depth, not exactly-once.
 - [`docs/security/tenant-claim.md`](../security/tenant-claim.md) — the trusted tenant claim contract (S04-05).
 - [`docs/security/response-policy.md`](../security/response-policy.md) — the `403/404` masking policy (S04-09).
 - [`docs/security/secrets.md`](../security/secrets.md) — the provider-secrets policy and canary guard (S09-03/S09-13).
+- [`docs/security/agent-actions.md`](../security/agent-actions.md) (S11-15) — the operational security guide: the same controls anchored to code, traversed in order, from the trusted request path to the audit.
 - [`docs/threat-model/README.md`](README.md) — the index; the planner-plan policy-bypass and MCP-SSRF sections.
 - [`docs/architecture/system-context.md`](../architecture/system-context.md) — C4 context diagram, process boundaries and trust boundaries.
 - [`docs/adr/ADR-006-untrusted-planner.md`](../adr/ADR-006-untrusted-planner.md) · [`ADR-007-tenant-isolation.md`](../adr/ADR-007-tenant-isolation.md) · [`ADR-012-local-tenant-default-bypass.md`](../adr/ADR-012-local-tenant-default-bypass.md) · [`ADR-017-tool-risk-classification.md`](../adr/ADR-017-tool-risk-classification.md) — the decisions these controls implement.
