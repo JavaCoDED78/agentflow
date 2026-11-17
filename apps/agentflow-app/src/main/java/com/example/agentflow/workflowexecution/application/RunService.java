@@ -3,6 +3,7 @@ package com.example.agentflow.workflowexecution.application;
 import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
+import com.example.agentflow.usage.domain.BudgetCheckResult;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
@@ -70,6 +71,7 @@ public class RunService {
   private final WorkflowVersionService versionService;
   private final RunStateMachineService transitionService;
   private final WorkflowStepAttemptHistoryRepository attemptHistoryRepository;
+  private final BudgetGuard budgetGuard;
 
   @Autowired
   public RunService(
@@ -78,13 +80,15 @@ public class RunService {
       OutboxService outboxService,
       WorkflowVersionService versionService,
       @Autowired(required = false) RunStateMachineService transitionService,
-      @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository) {
+      @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository,
+      @Autowired(required = false) BudgetGuard budgetGuard) {
     this.runRepository = runRepository;
     this.idempotencyKeyService = idempotencyKeyService;
     this.outboxService = outboxService;
     this.versionService = versionService;
     this.transitionService = transitionService;
     this.attemptHistoryRepository = attemptHistoryRepository;
+    this.budgetGuard = budgetGuard;
   }
 
   /**
@@ -311,6 +315,17 @@ public class RunService {
     // Pin to the single active (immutable) version of the workflow (invariant 13). A draft or a
     // foreign version is a 404, so a run can never start against anything but the locked contract.
     WorkflowVersionDto version = versionService.getActiveVersion(tenantId, request.workflowId());
+    // Budget gate (S12-04): a run must not start when the tenant's durable budget is exhausted.
+    // The check runs BEFORE the run is created and the outbox event appended, so an over-budget
+    // tenant is rejected the moment its operation would start, before it is charged. The guard is
+    // absent (no database) in the bootstrap profile, so the check is skipped then.
+    if (budgetGuard != null) {
+      BudgetCheckResult budget = budgetGuard.checkBudget(tenantId);
+      if (!budget.allowed()) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "tenant budget exceeded: " + budget.reason());
+      }
+    }
     // Stable id across a retry; the run row and the event carry it.
     UUID runId = UUID.randomUUID();
     runRepository.create(
