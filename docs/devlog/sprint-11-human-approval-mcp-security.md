@@ -15,8 +15,67 @@
 - [S11-11](#s11-11--the-prompt-injection-red-team-harness) — the prompt-injection red-team harness: fixtures that try to override system rules, disclose the canary, escalate privilege or escape the JSON schema — driven through the production planner, and held (S11-11)
 - [S11-12](#s11-12--the-double-policy-gate-policy-checked-before-and-after-planning) — the double policy gate: policy checked before planning (the minimal catalogue) and re-checked after it answers (scopes / approval) — a malicious plan never bypasses tool permissions (S11-12)
 - [S11-13](#s11-13--the-per-run-execution-limits) — the per-run execution limits: a hard, configurable cap across steps, tool calls, retries, wall-clock, output size and concurrent calls that stops a run in a controlled state instead of consuming unbounded cost (S11-13)
+- [S11-14](#s11-14--the-agent-execution-threat-model) — the agent execution threat model: assets, trust boundaries, six high-risk threats, each with its control + the test that pins it + an explicitly recorded residual risk (S11-14)
 
 ---
+
+## S11-14 — the agent execution threat model: the trust-boundary model that ties the controls in S11-01…S11-13 to the tests that pin them
+
+**Task (P0):** record the threat model of the agent execution path — an LLM proposes a plan, the
+backend authorizes every step, tools run under policy, documents are retrieved and grounded, and
+secrets stay out of every observable surface — anchored to what exists today, with each high-risk
+threat carrying its control, the test that pins it, and an explicitly recorded residual risk.
+
+**Implementation.** One new document, [`docs/threat-model/agent-execution.md`](agent-execution.md),
+built from the same posture as `ADR-006` (the model is an untrusted planner, invariant 7): it is
+never given authority over its own permissions, policies, allowlists, or credentials, and every
+proposed plan is hostile until a server-side gate holds it. It lists the five assets — tenant data,
+provider credentials, permission/policy state, tool execution, and the plan/prompt as the injection
+vector — maps the six trust-boundary enforcement points as a C4 flow, and records five attacker
+actors (a prompt-injected reader, a malicious downstream/MCP server, a malformed injected plan, an
+external spoofed-tenant caller, a compromised provider). Each of the six high-risk threats then
+follows one shape — **Threat**, **Mitigation**, **Test**, **Residual risk**: **prompt injection**
+(fixed policy + exactly one `USER` turn, the payload-free structured plan schema, the red-team
+harness forcing compliance so a hold is a real policy win, per-step server-side re-authorization);
+**SSRF on an outbound tool/MCP call** (the pre-connect `OutboundDestinationPolicy` classification,
+the adapter's both-path `invoke`/`isReachable` re-check, the URL hidden behind a protocol +
+classification label); **tenant leakage / cross-tenant access** (tenant from the verified security
+context only, the `(tenant_id, resource_id)` SQL scope, the `404` masking that makes a foreign row
+indistinguishable from missing, no `tenantId` in metric labels); **malicious document upload**
+(server-generated object key, magic-byte content-type check, bounded classified extraction, extracted
+text still untrusted content to the model); **token / credential exposure** (opt-in injected key,
+redaction before any write, the closed `health`/`info` diagnostic surface, nothing in image build);
+**overprivileged tools** (closed deny-by-default risk vocabulary, the least-privilege catalogue, the
+invocation-time guard, the double policy gate, the payload-bound approval). Five residual-risk gaps
+are recorded, not closed — prompt-injection classifier (S11-11 forward), SSRF redirect-target
+re-check (S11-10 forward), local-skeleton tenant default (`ADR-012`), live-registry double-gate
+facts (S11-12 forward), Tika leniency (S10-07 forward).
+
+**Test.** Every class and method named in the document was verified to exist on disk before writing
+it — a threat model that cites a test that does not asserts a control that is not verified. The
+anchors resolve to the real suites: `RedTeamEvalRunnerTest.red_team_holds_against_every_case` and
+`the_canary_secret_and_task_text_never_reach_the_report`, `ValidationGateTest`, `DoublePolicyGateTest`,
+`OutboundDestinationPolicyTest`, `McpClientOutboundPolicyTest`, `SecurityFilterChainTest`
+(`body_tenant_spoofing_is_not_scoped_through_the_secured_chain`, `cross_tenant_read_is_indistinguishable_from_missing_through_the_secured_chain`),
+`TenantClaimExtractorTest`, `DocumentUploadTenantSafetyTest`, `TikaDocumentParserTest`,
+`CanaryLeakScanTest`, `ProviderSecretsActuatorTest`, `AiObservationRedactionTest`,
+`SecretRedactingValueMaskerTest`, `ToolRiskClassificationAvailabilityTest`, `ToolInvocationPolicyTest`.
+The document is a prose model, not executable code, so it is **not** run through the Gradle gate;
+its correctness check is a link-integrity diff, the same kind of verification the S11-07
+documentation entry used for its version matrix. No code, no migration, no endpoint, no module edge.
+
+**Docs.** [`docs/threat-model/agent-execution.md`](agent-execution.md) (the new document);
+`docs/README.md` (the threat-model tree entry + the security row in the "Document type → location"
+table); `docs/devlog/sprint-11-human-approval-mcp-security.md` (this section, newest-first, above
+S11-13, plus a Contents anchor); `CHANGELOG.md` (an entry in `[Unreleased] > Added`; this devlog
+section, newest-first, above S11-13).
+
+**Verification.** `git diff --check` clean; every `../`/relative anchor in
+`docs/threat-model/agent-execution.md` resolves to an existing file (`docs/README.md`,
+`docs/architecture/system-context.md`, `docs/security/*.md`, `docs/adr/*.md`, `docs/devlog/…`,
+`docs/domain-glossary.md`, `docs/threat-model/README.md`); the five residual-risk gaps are the ones
+explicitly recorded in `docs/threat-model/agent-execution.md` under "Residual risks (recorded, not
+closed)" — none of which is silently claimed as closed.
 
 ## S11-13 — the per-run execution limits: a hard cap that stops a run instead of consuming unbounded cost
 
