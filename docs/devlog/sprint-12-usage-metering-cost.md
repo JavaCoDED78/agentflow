@@ -3,6 +3,7 @@
 ## Contents
 
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: migration `V3_3_24` tying each measurement to a specific attempt (S12-01)
+- [S12-02](#s12-02-the-uniform-usage-recording-path) — the uniform usage recording path: `UsageMeteringService` / `UsageRecordDto`, unknown recorded as unknown, the `domain` placement that keeps the module acyclic
 
 ---
 
@@ -81,3 +82,59 @@ JUnit-XML-verified, `tests="24"` `failures="0"` `errors="0"`):
 unified audit `created_at`; the two measurement sources explained); this file. Follow-up `S12-02`
 (settle/estimate), `S12-03` (price catalogue), `S12-04` (budgets), `S12-06` (settlement) build on
 this table.
+
+## S12-02 — the uniform usage recording path
+
+The code that writes the table above (glossary §10, plan Sprint 12, `S12-02`). The `usage` module
+records one token/cost measurement per call — uniformly for a model, a tool or an embedding — through
+one validated path, so the `usage_records` rows are faithful and the module does not leak a package
+cycle.
+
+The module gains:
+
+- `application.UsageMeteringService` — the single recording service (the `usage → ai` edge of
+  module-map arrow 8): `fromChatResponse` builds the `MODEL` measurement of one chat-completion call
+  from the provider `ChatResponse` through the `ai.application` `ChatResponse` / `ChatUsage` port,
+  and a tool path records a `TOOL` invocation. Each call produces exactly one `UsageRecordDto`.
+- `domain.UsageRecordDto` — the immutable measurement value, the mirror of the `usage_records` row:
+  `id`, `tenantId`, `runId`, `stepRunId`, `attempt`, `usageType` (`MODEL` / `TOOL` / `EMBEDDING`),
+  `measurement` (`ESTIMATED` / `PROVIDER_REPORTED`), `provider`, `model`, `toolName`, `toolVersion`,
+  `inputTokens`, `outputTokens`, `estimatedCost`, `providerCost`, `unit`, `currency`,
+  `providerRequestId`, `providerMetadata`.
+- `domain.UsageType` (`MODEL` / `TOOL` / `EMBEDDING`) and `domain.Measurement` (`ESTIMATED` /
+  `PROVIDER_REPORTED`) — the two bound enums.
+
+**Unknown is recorded as unknown.** The token counts are boxed `Long` (nullable): a value the
+provider did not report is stored as `null`, never coerced to `0` (invariant 8). `fromChatResponse`
+therefore leaves both `inputTokens` and `outputTokens` `null` on a refusal (`ChatResponse.usage()`
+`== null`), and a pre-catalogue record carries `estimatedCost == null` until the price is known — the
+record is truthful with no reported values yet (DEFAULT `ESTIMATED`).
+
+**Contract failures, classified.** The canonical constructor rejects a `null` id / tenant / run, a
+stale `attempt` (< 1), a `null` enum, a blank `provider`, or a missing measured identity — a
+`MODEL` / `EMBEDDING` record without a `model`, a `TOOL` record without a `toolName` — with an
+explicit `IllegalArgumentException`, the same pattern `ToolDescriptor` / `ReportFormatter` use. It is
+deliberately *not* `Objects.requireNonNull` (in JDK 25 that throws `NullPointerException`, which would
+mis-classify a contract failure as a generic fault so the worker could not route it to the
+`FAILURE_CLASS.CONTRACT_FAILURE` path).
+
+**No package cycle.** The shared record lives in `domain` (like `AuditEvent` / `ToolInvocationRecord`),
+so both `application` (the metering service) and `persistence` (`UsageRepository` / `UsageRowMapper`)
+depend on `domain` — and only on `domain` — without either importing the other. An earlier
+`application` placement made `application ↔ persistence` a cycle the acyclicity gate rejected.
+
+**Verification.** Four DB-free suites, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`,
+fresh reports this session), 22 tests total: `UsageRecordDtoTest` (13 — the 19-field constructor,
+`fromChatResponse` from a real `ChatResponse`, the refusal leaves tokens `null`, every
+contract-failure branch, `usageType` / `measurement` round-trip through the enums);
+`UsageMeteringServiceTest` (3 — uniform recording via `@InjectMocks`); `UsageRowMapperTest` (2);
+`UsageRepositoryTest` (4 — the tenant-scoped select with the verified SQL). The full
+`./gradlew :apps:agentflow-app:check` gate — unit + architecture (`ArchitectureBoundaryTest`
+`tests="1"`, `NoCyclicModuleDependenciesTest` `tests="1"` `failures="0"` `errors="0"`, the `usage`
+package now `application ↔ domain` and `persistence ↔ domain` only) + no-cycles + formatting
+(`spotlessApply`) — green; `git diff --check` clean.
+
+**Docs.** `docs/architecture/module-api.md` (the `usage` public-application-services row — uniform
+model/tool/embedding recording — and the permitted-types row, the full `UsageRecordDto` field set and
+its `domain` placement); `docs/architecture/module-map.md` (arrow 8 `usage → ai`); the `usage` module
+`AGENTS.md`.
