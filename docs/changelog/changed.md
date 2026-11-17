@@ -100,7 +100,7 @@
 
 
 - **Workflow graph edge validation (`S05-05`).** The `workflowdefinition` module's structural gate now rejects the topology violations that the portable JSON Schema cannot express. `WorkflowGraphValidator.validate` (the pre-persistence gate added in `S03-09`) additionally rejects, before a version is persisted or serialized, a **duplicate node id**, a `from`/`to` referencing an **unknown node**, a **duplicate edge**, and a **self-referencing edge** (both endpoints equal) — alongside the existing at-least-one-node / non-blank id & type / known-type checks. Every rejection names the offending JSON path (`nodes[i]`, `nodes[i].id`, `edges[j]`, `edges[j].from`, `edges[j].to`) so a client can locate the problem; the error is the controlled `InvalidGraphException` (`workflowdefinition` validation-error class, HTTP 400 by the global error handler, `S03-11`). Cycles **are** checked now (S05-06): a cyclic graph is rejected before a version is persisted, so a
-cyclic graph is never activated — see the `S05-06` entry above. The input boundary now reads the contract's `edges` (the parser `WorkflowGraphParser` had never done before) into a new value object `WorkflowEdge(from, to)` (`domain` package); `WorkflowGraph` gains an ordered, non-null `edges` list and the codec round-trips it unchanged. Absent or `null` `edges` still default to an empty list (a single-node graph has no ordering constraint); a `nodes` or `edges` that is not an array, or an edge that is not an object, fails closed with `InvalidGraphException`. The four forbidden shapes are the contract of the topology fixtures in [`contracts/workflow-graph/topology/`](contracts/workflow-graph/topology). Verified: `./gradlew check` is green — unit (`WorkflowGraphParserTest`, `WorkflowGraphCodecTest`, `WorkflowGraphValidatorTest`, and the fixtures-driven `WorkflowGraphTopologyTest` that exercises the committed `topology/` and `valid/` fixtures), the architecture gates (`ArchitectureBoundaryTest` + `NoCyclicModuleDependenciesTest`, cycle-free `workflowdefinition` module), and the OpenAPI contract gate (no new API): 160 tests, 0 skipped. No DB/migration change (the store table is `S05-08`), so the Docker-backed `integrationTest` is out of scope for this change. Updated docs: the new `WorkflowEdge` concept in [`docs/domain-glossary.md`](docs/domain-glossary.md) §4.
+cyclic graph is never activated — see the `S05-06` entry above. The input boundary now reads the contract's `edges` (the parser `WorkflowGraphParser` had never done before) into a new value object `WorkflowEdge(from, to)` (`domain` package); `WorkflowGraph` gains an ordered, non-null `edges` list and the codec round-trips it unchanged. Absent or `null` `edges` still default to an empty list (a single-node graph has no ordering constraint); a `nodes` or `edges` that is not an array, or an edge that is not an object, fails closed with `InvalidGraphException`. The four forbidden shapes are the contract of the topology fixtures in [`contracts/workflow-graph/topology/`](../../contracts/workflow-graph/topology). Verified: `./gradlew check` is green — unit (`WorkflowGraphParserTest`, `WorkflowGraphCodecTest`, `WorkflowGraphValidatorTest`, and the fixtures-driven `WorkflowGraphTopologyTest` that exercises the committed `topology/` and `valid/` fixtures), the architecture gates (`ArchitectureBoundaryTest` + `NoCyclicModuleDependenciesTest`, cycle-free `workflowdefinition` module), and the OpenAPI contract gate (no new API): 160 tests, 0 skipped. No DB/migration change (the store table is `S05-08`), so the Docker-backed `integrationTest` is out of scope for this change. Updated docs: the new `WorkflowEdge` concept in [`docs/domain-glossary.md`](../../docs/domain-glossary.md) §4.
 
 
 
@@ -140,7 +140,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 
 
 - **Workflow graph JSON Schema (`S05-03`).**
-  [`contracts/workflow-graph/workflow-graph.json`](contracts/workflow-graph/workflow-graph.json)
+  [`contracts/workflow-graph/workflow-graph.json`](../../contracts/workflow-graph/workflow-graph.json)
   is the new machine-readable contract for `graph_json` (`ADR-005`, domain glossary "Workflow DSL /
   graph"): a v1 graph is `{schemaVersion, nodes, edges}` with `schemaVersion` pinned to `1.0.0`, an
   ordered list of `1..200` typed nodes (`{id, type, config?, input?, output?}`) and `0..1000`
@@ -150,14 +150,14 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   The schema enforces everything portable JSON Schema can; the topology rules that cannot be
   expressed portably (unique ids, no dangling/self-referencing/duplicate edges, acyclicity,
   input-reference linkage) are left to the `workflowdefinition` DSL validator (`S05-05`, `S05-06`,
-  `S05-07`) and documented as such. [`contracts/workflow-graph/README.md`](contracts/workflow-graph/README.md)
+  `S05-07`) and documented as such. [`contracts/workflow-graph/README.md`](../../contracts/workflow-graph/README.md)
   explains the schema-vs-validator boundary, the chosen limits and the exact `jsonschema` check.
-  Fixtures accompany it: [`valid/`](contracts/workflow-graph/valid) (a six-node linear pipeline
+  Fixtures accompany it: [`valid/`](../../contracts/workflow-graph/valid) (a six-node linear pipeline
   covering every node type and a branching DAG that exercises `input`/`output` references) and
-  [`invalid/`](contracts/workflow-graph/invalid) (wrong/missing `schemaVersion`, unknown node
+  [`invalid/`](../../contracts/workflow-graph/invalid) (wrong/missing `schemaVersion`, unknown node
   type, malformed edge, bad id pattern, malformed/object input reference and a 201-node
   over-limit graph); each structurally-valid-but-topology-invalid case lives in
-  [`topology/`](contracts/workflow-graph/topology) for the DSL validator. Verified by the
+  [`topology/`](../../contracts/workflow-graph/topology) for the DSL validator. Verified by the
   external `jsonschema` validator (Draft 2020-12): every `valid/` fixture passes and every
   `invalid/` fixture fails — the `S05-03` acceptance criterion ("a graph can be checked with an
   external schema validator"). Documentation-only change, no build gate.
@@ -237,7 +237,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 
 
 - **Authentication/authorization guide (S04-15).**
-  [`docs/security/authentication-authorization.md`](docs/security/authentication-authorization.md) is
+  [`docs/security/authentication-authorization.md`](../../docs/security/authentication-authorization.md) is
   the new authn/authz reference. It ties the Sprint 4 pieces into one picture — the OAuth 2.0
   Resource Server (`S04-03`), the claims-to-authorities mapper and the closed permission catalogue
   (`S04-04`), the `tenant_id` claim (`S04-05`), the tenant scope (`S04-07`) and the endpoint access
@@ -247,9 +247,9 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   Authorization Code + PKCE), the claims a token must carry, what the Resource Server validates
   (signature, issuer, audience `agentflow-api`, expiry), the catalogue ids, tenant resolution and
   the actuator allow-list, and links to the executable local-login walkthrough
-  [`docs/runbooks/local-auth.md`](docs/runbooks/local-auth.md) (`S04-14`) and the
-  [`tenant-claim.md`](docs/security/tenant-claim.md) / [`permissions.md`](docs/security/permissions.md)
-  / [`response-policy.md`](docs/security/response-policy.md) guides. No secrets are in the
+  [`docs/runbooks/local-auth.md`](../../docs/runbooks/local-auth.md) (`S04-14`) and the
+  [`tenant-claim.md`](../../docs/security/tenant-claim.md) / [`permissions.md`](../../docs/security/permissions.md)
+  / [`response-policy.md`](../../docs/security/response-policy.md) guides. No secrets are in the
   examples. It also notes a **follow-up**: the realm currently assigns realm roles
   (`workflow:approve`, `knowledge:read`, `tenant:admin`) that the deny-by-default mapper drops until
   the realm converges on the closed `Permission` catalogue. Config fix alongside: the local issuer
@@ -268,7 +268,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 
 
 
-- **Local authentication runbook (S04-14).** [`docs/runbooks/local-auth.md`](docs/runbooks/local-auth.md)
+- **Local authentication runbook (S04-14).** [`docs/runbooks/local-auth.md`](../../docs/runbooks/local-auth.md)
   is the new developer guide for logging in locally against the secured `/api/v1` API with a real
   Keycloak token. It covers both local login flows — the machine-to-machine `agentflow-service`
   (Client Credentials, `curl` only) and the public `agentflow-web` browser client (Authorization
@@ -366,7 +366,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 
 
 - **403/404 masking policy (S04-09).** The security response policy is now written down as a
-  single, authoritative statement in [`docs/security/response-policy.md`](docs/security/response-policy.md):
+  single, authoritative statement in [`docs/security/response-policy.md`](../../docs/security/response-policy.md):
   a resource that exists but belongs to another tenant is **indistinguishable** from a resource
   that does not exist — the response is always `404 not_found`, never `403`, so an attacker can
   never probe a guessed UUID and learn that another tenant owns a resource with that id (invariant
@@ -440,7 +440,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   cross-tenant read denial is already covered by the service and repository tests). Child
   resources inherit the same rule: their lookups are scoped by the owning tenant too — the
   parent's tenant is the trust anchor, a child id is never an authorization on its own —
-  documented in [`docs/architecture/api-conventions.md`](docs/architecture/api-conventions.md).
+  documented in [`docs/architecture/api-conventions.md`](../../docs/architecture/api-conventions.md).
   Verification: `./gradlew :apps:agentflow-app:test` is green.
 
 
@@ -504,8 +504,8 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   it against PostgreSQL for async workers. Acceptance ("substituting another tenant's id does not
   change the access scope") is enforced by construction; the `S04-13` HTTP-boundary suite is the
   HTTP-level proof, and the primitive is unit-tested in `TenantClaimExtractorTest`. Documentation: the tenant
-  claim contract at [`docs/security/tenant-claim.md`](docs/security/tenant-claim.md); the
-  `Tenant claim` term added to [`docs/domain-glossary.md`](docs/domain-glossary.md).
+  claim contract at [`docs/security/tenant-claim.md`](../../docs/security/tenant-claim.md); the
+  `Tenant claim` term added to [`docs/domain-glossary.md`](../../docs/domain-glossary.md).
   `./gradlew :apps:agentflow-app:test` is green (see below).
 
 
@@ -549,7 +549,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   :apps:agentflow-app:test --tests "com.example.agentflow.identity.*"` is green
   (5/5 for the mapper); the `SecurityFilterChainTest` context-load suite passes (the
   mapper is now a real bean the secured chain wires in). Documentation: the new focused
-  catalogue at [`docs/security/permissions.md`](docs/security/permissions.md);
+  catalogue at [`docs/security/permissions.md`](../../docs/security/permissions.md);
   `docs/architecture/module-api.md` and `docs/domain-glossary.md` updated to the
   implemented `Permission` catalogue (they previously named a different `PermissionScope`
   id set — aligned here with the plan's S04-04 list). `./gradlew :apps:agentflow-app:check`
@@ -600,7 +600,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 - **Split user and machine-to-machine clients (S04-02).** The single
   `agentflow-api` client (S04-01), which mixed user login, service accounts and the
   password grant, is split into three purpose-built clients in
-  [`infra/compose/keycloak/realm-agentflow.json`](infra/compose/keycloak/realm-agentflow.json):
+  [`infra/compose/keycloak/realm-agentflow.json`](../../infra/compose/keycloak/realm-agentflow.json):
   **`agentflow-web`** — a *public* SPA client using only the Authorization Code flow
   + PKCE (`publicClient`, `standardFlowEnabled`, no secret); **`agentflow-service`** —
   a *confidential* machine-to-machine client using only Client Credentials
@@ -620,7 +620,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   Admin API shows the three clients with the correct grant flags; a Client Credentials
   request for `agentflow-service` issues a token, a wrong secret returns `401`, and
   no client carries a committed secret (the old hardcoded secret was removed). Realm import is declarative from Git (Keycloak assigns client ids at
-  import time). New reference [`infra/compose/keycloak/README.md`](infra/compose/keycloak/README.md)
+  import time). New reference [`infra/compose/keycloak/README.md`](../../infra/compose/keycloak/README.md)
   documents the model; `infra/compose/README.md` links to it.
 
 
@@ -630,7 +630,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 
 
 - **Keycloak realm: client scope and OIDC mappers (S04-01).** The declarative
-  realm in [`infra/compose/keycloak/realm-agentflow.json`](infra/compose/keycloak/realm-agentflow.json)
+  realm in [`infra/compose/keycloak/realm-agentflow.json`](../../infra/compose/keycloak/realm-agentflow.json)
   is now a complete, import-ready model instead of just a realm with clients
   and roles. It defines a single default client scope, `agentflow`, attached to
   the `agentflow-api` client via
@@ -666,9 +666,9 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   via `./gradlew generateOpenApiContract`, the `OpenApiContractCheckTest` gate
   that fails on breaking changes, and the baseline-approval flow). Anonymized
   create/list/get/error request-response examples match
-  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json). The
+  [`contracts/openapi/openapi.json`](../../contracts/openapi/openapi.json). The
   migration process is already covered by
-  [`docs/architecture/database-migrations.md`](docs/architecture/database-migrations.md)
+  [`docs/architecture/database-migrations.md`](../../docs/architecture/database-migrations.md)
   (`S03-02`), so this guide links it instead of duplicating it. The root
   `README.md` gains `API`, `Database`, `Migrations` and `Tests` sections pointing
   at the reference. Both index trees (`docs/README.md`,
@@ -684,7 +684,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
 
 
 - **OpenAPI contract gate (S03-16).** A committed baseline
-  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is now compared against the
+  [`contracts/openapi/openapi.json`](../../contracts/openapi/openapi.json) is now compared against the
   live spec on every `./gradlew check`, so a contract drift fails the build instead of slipping
   through. The classifier `OpenApiCompatibility`
   (`apps/agentflow-app/src/test/java/com/example/agentflow/openapi/OpenApiCompatibility.java`)
@@ -771,7 +771,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   {@code 404}; {@code WorkflowDefinitionControllerTest} covers the {@code 200} list/get paths and a
   {@code 400} for a non-UUID id. All green with {@code ./gradlew check} (unit + architecture +
   formatting).
-  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is regenerated to include the
+  [`contracts/openapi/openapi.json`](../../contracts/openapi/openapi.json) is regenerated to include the
   new paths and the {@code WorkflowDefinitionPageDto} schema (generated deterministically from the
   running application; never edited by hand). {@code docs/architecture/module-api.md},
   {@code docs/domain-glossary.md} and {@code docs/architecture/engineering-conventions.md} are
@@ -787,7 +787,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   DRAFT definition and returns {@code 201 Created} with the {@code workflowdefinition} DTO; a
   blank {@code name} fails bean validation and is rendered as a {@code 400} validation Problem
   Details by the global error handler.
-  [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json) is regenerated to include the
+  [`contracts/openapi/openapi.json`](../../contracts/openapi/openapi.json) is regenerated to include the
   new path (generated deterministically from the running application; never edited by hand).
 
 - **Create workflow definition endpoint (S03-13).** `WorkflowDefinitionController`
@@ -838,8 +838,8 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   `io.swagger.v3.oas.models.security.SecurityScheme` / `SecurityRequirement`), so the config imports
   the relocated types and the fluent setters are unchanged. springdoc serves the description at
   `/api/v1/v3/api-docs` (Swagger UI enabled per profile) and the spec is regenerated and checked in
-  under [`contracts/openapi/openapi.json`](contracts/openapi/openapi.json);
-  [`contracts/openapi/README.md`](contracts/openapi/README.md) documents that it is generated
+  under [`contracts/openapi/openapi.json`](../../contracts/openapi/openapi.json);
+  [`contracts/openapi/README.md`](../../contracts/openapi/README.md) documents that it is generated
   deterministically and that breaking changes need a baseline update (the CI gate is `S03-16`).
   `OpenApiContractTest` (a `@SpringBootTest` context-load test) asserts the model is generated, the
   metadata is documented (`v1`), the `bearerAuth` scheme is an HTTP bearer and the global security
@@ -1071,7 +1071,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   controlled step (`./gradlew flywayMigrate`, never on startup — `spring.flyway.enabled=false`,
   ADR-008) and is applied to a fresh PostgreSQL with its constraints verified by the
   migration integration suite (`S03-15`). The illustrative example in
-  [`docs/architecture/database-migrations.md`](docs/architecture/database-migrations.md)
+  [`docs/architecture/database-migrations.md`](../../docs/architecture/database-migrations.md)
   (`S03-02`) is corrected to match the glossary: its `name` column becomes the unique
   `slug`. Documentation and migration change together — verified by integrity
   (`git diff --check`) and a real `flywayMigrate` apply; SQL migrations have no Java
@@ -1083,7 +1083,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   API, connection from `FLYWAY_*` env vars falling back to the Compose `local`
   defaults) rather than on application startup — `spring.flyway.enabled=false`.
   Verified against PostgreSQL 18.6; documented in
-  [`docs/adr/ADR-008`](docs/adr/ADR-008-database-migrations.md).
+  [`docs/adr/ADR-008`](../../docs/adr/ADR-008-database-migrations.md).
 
 
 
@@ -1102,7 +1102,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   the one controlled apply step (`./gradlew flywayMigrate`, later a Helm Job —
   never on startup, never concurrently). Rollback is a new forward migration or a
   backup restore, not `flyway rollback`. It complements
-  [`ADR-008`](docs/adr/ADR-008-database-migrations.md) (the Flyway tool choice) and
+  [`ADR-008`](../../docs/adr/ADR-008-database-migrations.md) (the Flyway tool choice) and
   precedes `database-conventions.md` (`S03-06`). The `⚠ planned (S03-16)`
   `database.md` placeholder in `docs/README.md` and `docs/architecture/README.md` is
   replaced by the two plan-named files (`database-migrations.md` now,
@@ -1131,7 +1131,7 @@ cyclic graph is never activated — see the `S05-06` entry above. The input boun
   against the build: the twelve modules plus `common` live under
   `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/` and match the
   base package `com.example.agentflow` (`AgentflowApplication`). The parent
-  [`docs/README.md`](docs/README.md) index now points at this architecture
+  [`docs/README.md`](../../docs/README.md) index now points at this architecture
   index instead of `dependency-management.md`. Documentation-only change —
   verified by integrity (`git diff --check`, link resolution against the repo) —
   no build gate for a documentation-only task.

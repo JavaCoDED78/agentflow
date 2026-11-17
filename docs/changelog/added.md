@@ -32,8 +32,8 @@
   makes the bypass visible, scoped it to local/dev, and **mandates removal** as soon as that edge
   lands: both controllers resolve the tenant from the verified `TenantContext` (`identity`) and the
   `@Value` defaults are deleted — that edge is its own ADR, which supersedes `ADR-012`. **Docs:** the
-  new [`docs/adr/ADR-012-local-tenant-default-bypass.md`](docs/adr/ADR-012-local-tenant-default-bypass.md);
-  the ADR register ([`docs/adr/README.md`](docs/adr/README.md), `ADR-012` row added). **Verification:
+  new [`docs/adr/ADR-012-local-tenant-default-bypass.md`](../../docs/adr/ADR-012-local-tenant-default-bypass.md);
+  the ADR register ([`docs/adr/README.md`](../../docs/adr/README.md), `ADR-012` row added). **Verification:
   documentation-only — there is no `./gradlew check` gate for a docs change.** Link integrity
   verified: `git diff --check` passes and every relative in-document link resolves to a present,
   on-topic destination (the cited `ADR-007`, `S03-13`/`S03-14`/`S04-05`/`S04-10`, the `TenantContext`,
@@ -50,7 +50,7 @@
 
 
 - **Workflow DSL v1 documentation (`S05-17`).** `docs/workflows/dsl-v1.md` is the human-readable
-  companion to the machine-readable contract [`contracts/workflow-graph/workflow-graph.json`](contracts/workflow-graph/workflow-graph.json)
+  companion to the machine-readable contract [`contracts/workflow-graph/workflow-graph.json`](../../contracts/workflow-graph/workflow-graph.json)
   (JSON Schema, draft 2020-12, `$id` `.../workflow-graph/1.0.0.json`): the top-level shape
   (`schemaVersion` const `"1.0.0"`, `nodes`, `edges`), the closed node-type set
   (`RETRIEVE_CONTEXT`, `LLM_PLAN`, `TOOL_CALL`, `HUMAN_APPROVAL`, `LLM_EVALUATE`, `FINALIZE`) owned

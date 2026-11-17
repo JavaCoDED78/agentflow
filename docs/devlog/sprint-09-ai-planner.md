@@ -156,7 +156,7 @@ The S09-15 acceptance: the AI integration guide must be usable without binding i
 
 ### What changed
 The redaction guard from `S09-03` proved that the registered
-[`SecretRedactingValueMasker`](apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
+[`SecretRedactingValueMasker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
 masks a *single-token* secret embedded in a log line (`api_key=<canary>` → `api_key=***`), but it left
 the whole value of a sensitive prompt / document field untouched: `documentBody=<body>` and
 `prompt=<text>` were logged verbatim. Such a value is untrusted content (`ADR-006`) that can span many
@@ -418,11 +418,11 @@ diagnostic-surface coverage follows the same pattern.
 ## S09-08
 
 ### What changed
-- Bounded repair of the S09-06 malformed-plan signal. The four ways a model attempt can fail are distinguished by [`PlannerFailure`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerFailure.java) — `MALFORMED_JSON`, `SCHEMA_MISMATCH`, `PROVIDER_REFUSAL`, `TRANSPORT_FAILURE` — with `isRepairable()` marking the three a retry can fix (`MALFORMED_JSON` / `SCHEMA_MISMATCH` / `TRANSPORT_FAILURE`) and never the refusal.
-- [`PlannerRepairPolicy`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerRepairPolicy.java) is the bounded descriptor (`of(int)` with canonical-constructor validation rejecting `maxRetries < 0`; `ofDefaults() == 1` — the production single-second-chance). Pure value object with value equality, no Spring.
-- The S09-06 signal [`PlannerPlanParseException`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParseException.java) now carries the classification (`PlannerFailure classification()`, new three-argument constructor `(message, classification, cause)`), so the caller can tell a provider formatting fault apart from a structural violation or a refusal.
-- [`PlannerPlanParser`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParser.java): a `JacksonException` (unparseable body) becomes `MALFORMED_JSON`; an `IllegalArgumentException` from the structural mapper becomes `SCHEMA_MISMATCH`; both carry the classification.
-- [`PlannerService.propose`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java): runs the model at least once, and — only for a repairable failure, only while the budget `Supplier<Boolean>` permits, and at most `repairPolicy.maxRetries()` times — calls it again, then lets the last allowed retry's failure be terminal (never a silent `null` plan, never an infinite model-call loop). The budget is evaluated *before every retry* (a budget spent by the initial call blocks it). The `ai` module boundary is unchanged — `ai` still compiles only against `ai`.
+- Bounded repair of the S09-06 malformed-plan signal. The four ways a model attempt can fail are distinguished by [`PlannerFailure`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerFailure.java) — `MALFORMED_JSON`, `SCHEMA_MISMATCH`, `PROVIDER_REFUSAL`, `TRANSPORT_FAILURE` — with `isRepairable()` marking the three a retry can fix (`MALFORMED_JSON` / `SCHEMA_MISMATCH` / `TRANSPORT_FAILURE`) and never the refusal.
+- [`PlannerRepairPolicy`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerRepairPolicy.java) is the bounded descriptor (`of(int)` with canonical-constructor validation rejecting `maxRetries < 0`; `ofDefaults() == 1` — the production single-second-chance). Pure value object with value equality, no Spring.
+- The S09-06 signal [`PlannerPlanParseException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParseException.java) now carries the classification (`PlannerFailure classification()`, new three-argument constructor `(message, classification, cause)`), so the caller can tell a provider formatting fault apart from a structural violation or a refusal.
+- [`PlannerPlanParser`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParser.java): a `JacksonException` (unparseable body) becomes `MALFORMED_JSON`; an `IllegalArgumentException` from the structural mapper becomes `SCHEMA_MISMATCH`; both carry the classification.
+- [`PlannerService.propose`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java): runs the model at least once, and — only for a repairable failure, only while the budget `Supplier<Boolean>` permits, and at most `repairPolicy.maxRetries()` times — calls it again, then lets the last allowed retry's failure be terminal (never a silent `null` plan, never an infinite model-call loop). The budget is evaluated *before every retry* (a budget spent by the initial call blocks it). The `ai` module boundary is unchanged — `ai` still compiles only against `ai`.
 
 ### Why
 - Invariant 7 (the model is an untrusted planner) forbids letting a model's own output drive control flow: a malformed or refused plan must not spin forever, and a refusal must not be "repaired" by burning the budget on another attempt that will refuse again.
@@ -505,10 +505,10 @@ tenant); `S09-08`: bounded repair of a malformed plan.
 ### What changed
 
 `S09-06` asked the model for a typed plan and returned it *without executing* it. `S09-07` is the
-server-side half of `ADR-006` made live: [`AiPlanExecutionService`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/AiPlanExecutionService.java)
-(`ai.application`) runs a [`ValidationGate`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ValidationGate.java)
+server-side half of `ADR-006` made live: [`AiPlanExecutionService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/AiPlanExecutionService.java)
+(`ai.application`) runs a [`ValidationGate`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ValidationGate.java)
 *before* a single step is allowed to reach the executor, and only a plan the gate passes is handed to
-the optional [`PlanExecutor`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanExecutor.java)
+the optional [`PlanExecutor`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanExecutor.java)
 port.
 
 The gate re-checks, purely and DB-free, the boundary plan (`PlannerPlanDto`) the Planner produced:
@@ -523,13 +523,13 @@ The gate re-checks, purely and DB-free, the boundary plan (`PlannerPlanDto`) the
 The gate is a plain, deterministic value (`new ValidationGate()`), exactly as `PlannerService`
 constructs its `PlannerPlanParser`. It reads the external facts it cannot derive from the plan alone —
 the tenant, the allowed node types, the allowed tool names and the `PlanLimits` — through
-[`ValidationContext`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ValidationContext.java),
+[`ValidationContext`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ValidationContext.java),
 a value the caller (the layer with the verified security context and the cross-module registry reach)
 assembles and passes in. Keeping the gate free of those edges leaves the `ai` module boundary
 unchanged (`S02-08`): the gate validates, it does not compile-depend on the registries it validates
-against. A rejected plan is one loud [`PlanValidationException`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanValidationException.java)
+against. A rejected plan is one loud [`PlanValidationException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanValidationException.java)
 carrying every failing check (`PlanValidationException#violations()`); the fail-safe
-[`PlanValidationResult`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanValidationResult.java)
+[`PlanValidationResult`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlanValidationResult.java)
 carries `valid` (true only when `violations` is empty) plus the ordered violations.
 
 `AiPlanExecutionService` is opt-in around the executor too: the `PlanExecutor` port is injected with
@@ -596,24 +596,24 @@ second provider (`ADR-014`).
 ### What changed
 
 `S09-05` defined the schema; `S09-06` adds the code that *asks the model* for a plan and hands it to
-the backend. [`PlannerService`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java)
+the backend. [`PlannerService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerService.java)
 (`com.example.agentflow.ai.application`) renders the fixed policy from the bundled
 `resources/ai/planner.txt` and appends the caller's task plus the allowed-tool list as a single,
 untrusted `USER` turn, then performs **one** structured-output call through the neutral
-[`ChatModelPort`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ChatModelPort.java)
-and maps the response into a [`PlannerPlan`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/domain/plan/PlannerPlan.java)
+[`ChatModelPort`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/ChatModelPort.java)
+and maps the response into a [`PlannerPlan`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/domain/plan/PlannerPlan.java)
 — never a step it runs. The plan crosses the module boundary as
-[`PlannerPlanDto`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanDto.java)
+[`PlannerPlanDto`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanDto.java)
 (typed, allowed node types only, no provider SDK type); the attempt metadata (model id, the
 `PromptVersion` used, the token `ChatUsage`) rides in
-[`PlannerPlanResult`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanResult.java),
+[`PlannerPlanResult`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanResult.java),
 so the attempt is traceable without the plan ever being executed. The model returning no content, or
 content that is not a valid plan (bad JSON, a structurally invalid graph, an unknown node), is one
-clear signal — [`PlannerPlanParseException`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParseException.java)
+clear signal — [`PlannerPlanParseException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PlannerPlanParseException.java)
 — never a silent `null` plan or a guessed one.
 
 The Planner depends on the prompt catalogue through a narrow
-[`PromptCataloguePort`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PromptCataloguePort.java)
+[`PromptCataloguePort`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/application/PromptCataloguePort.java)
 defined in `ai.application` and implemented by `ai.prompt.PromptCatalogue` — so it never imports
 `ai.prompt`, and the `S02-09` acyclicity gate (enforced by the architecture tests) stays green:
 `ai.prompt` still depends only on `ai.application`, never the reverse. It depends on the model
@@ -631,9 +631,9 @@ gate (invariant 7).
 
 ### Verification
 
-Two DB-free unit suites (10 tests): [`PlannerPlanParserTest`](apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/PlannerPlanParserTest.java)
+Two DB-free unit suites (10 tests): [`PlannerPlanParserTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/PlannerPlanParserTest.java)
 (structured-output parse: success, structural violation, malformed JSON, duplicate id) and
-[`PlannerServiceTest`](apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/PlannerServiceTest.java)
+[`PlannerServiceTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/PlannerServiceTest.java)
 (policy+USER split, metadata mapping, missing-provider failure, refusal-as-parse-signal, blank-task
 guard). The architecture and acyclicity suites (`AiProviderPortArchitecturalTest`,
 `NoCyclicModuleDependenciesTest`, `PackageDependencyGraphTest`, `AiProviderPortContractTest`) stay
@@ -668,7 +668,7 @@ the acceptance — *every model attempt indicates the prompt version/hash it pla
 Three pieces make it up:
 
 - **Bundled, hashed templates.** The policy ships as a plain text resource at
-  [`resources/ai/planner.txt`](apps/agentflow-app/src/main/resources/ai/planner.txt). It is a *fixed
+  [`resources/ai/planner.txt`](../../apps/agentflow-app/src/main/resources/ai/planner.txt). It is a *fixed
   SYSTEM message*: the file content is the source of truth for the prompt hash, and the task plus any
   retrieved document fragments are appended by the backend as a separate, untrusted USER message
   (the prompt-injection surface).
@@ -695,7 +695,7 @@ com.example.agentflow.ai.prompt.AiPromptProperties AiPromptProperties}
 so a blank {@code version} fails context startup as a {@code ConfigurationPropertiesBindException} — the
 project's typed-configuration idiom, the same path every other required property uses (`S01-17`). The
 template and declaration are pinned in
-[{@code application.yml}](apps/agentflow-app/src/main/resources/application.yml):
+[{@code application.yml}](../../apps/agentflow-app/src/main/resources/application.yml):
 {@code ai.prompt.prompts[0]: planner / version "1"}.
 
 
@@ -739,13 +739,13 @@ formatting, OpenAPI contract).
 
 
 ### Docs
-- [`apps/agentflow-app/src/main/resources/application.yml`](apps/agentflow-app/src/main/resources/application.yml)
+- [`apps/agentflow-app/src/main/resources/application.yml`](../../apps/agentflow-app/src/main/resources/application.yml)
   — the {@code ai.prompt.prompts} declaration (the pinned template + version).
-- [`apps/agentflow-app/src/main/resources/ai/planner.txt`](apps/agentflow-app/src/main/resources/ai/planner.txt)
+- [`apps/agentflow-app/src/main/resources/ai/planner.txt`](../../apps/agentflow-app/src/main/resources/ai/planner.txt)
   — the bundled, versioned planner policy (the header documents the "bump version on change" rule).
-- [`apps/agentflow-app/AGENTS.md`](apps/agentflow-app/AGENTS.md)
+- [`apps/agentflow-app/AGENTS.md`](../../apps/agentflow-app/AGENTS.md)
   — noted the bundled prompt templates with a version/hash under `ai.prompt`.
-- [`docs/security/secrets.md`](docs/security/secrets.md) — the S09-04 prompt-versioning hygiene rule
+- [`docs/security/secrets.md`](../../docs/security/secrets.md) — the S09-04 prompt-versioning hygiene rule
   (versioned / hashable templates) recorded alongside the provider-secrets handling.
 - `CHANGELOG.md` — added the S09-04 bullet under `Unreleased → Added` (newest-first).
 - This file.
@@ -848,13 +848,13 @@ prompts (`S09-04`) and define the Planner's response schema (`S09-05`); add the 
 `S09-03` closes the three ways the OpenAI provider API key could leak: into Git / build, into the
 logs / stack traces / diagnostic endpoints, and into the image build. The key is read from
 `agentflow.ai.provider.openai.api-key` (falling back to `OPENAI_API_KEY`) by the opt-in
-[`OpenAiChatModelConfiguration`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/OpenAiChatModelConfiguration.java)
+[`OpenAiChatModelConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/OpenAiChatModelConfiguration.java)
 (`@ConditionalOnProperty agentflow.ai.provider=openai`) — with no provider profile there is no
 `ChatModel` bean and no key on the classpath, so the core app boots exactly as before. It is masked
-by [`SecretRedactingValueMasker`](apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
-(registered as the `<valueMasker>` in [`logback-spring.xml`](apps/agentflow-app/src/main/resources/logback-spring.xml))
+by [`SecretRedactingValueMasker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
+(registered as the `<valueMasker>` in [`logback-spring.xml`](../../apps/agentflow-app/src/main/resources/logback-spring.xml))
 so a key embedded in a message is masked before stdout; only `health` and `info` are exposed over the
-Actuator ([`application.yml`](apps/agentflow-app/src/main/resources/application.yml)), so `env` /
+Actuator ([`application.yml`](../../apps/agentflow-app/src/main/resources/application.yml)), so `env` /
 `configprops` cannot be read back; and unhandled errors go through the `internal`/500 path
 (`GlobalExceptionHandler`) without the raw exception message. The image is not built yet (no
 Dockerfile in the repository); the Compose / Helm manifests inject secrets through runtime environment

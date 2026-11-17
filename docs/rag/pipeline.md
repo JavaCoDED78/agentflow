@@ -9,7 +9,7 @@
 > `docs/architecture/document-lifecycle.md` (the `UPLOADED → QUEUED → PROCESSING → INDEXED` lifecycle) ·
 > `docs/architecture/events/README.md` (the `ingestion-requested` / `indexed` topics) ·
 > `docs/evaluation/rag/` (the eval that compares retrieval changes) ·
-> [`adr/ADR-002`](../adr/ADR-002-postgres-source-of-truth.md), [`adr/ADR-006`](../adr/ADR-006-untrusted-planner.md), [`adr/ADR-007`](../adr/ADR-007-tenant-isolation.md), [`adr/ADR-009`](../adr/ADR-009-single-persistence-spring-data-jdbc.md), [`adr/ADR-013`](../adr/ADR-013-s3-object-storage-garage.md), [`adr/ADR-014`](../adr/ADR-014-opt-in-ports.md) (persistence, planner, tenant isolation, object storage, the opt-in embedding seam).
+> [`adr/ADR-002`](../adr/ADR-002-postgresql-source-of-truth.md), [`adr/ADR-006`](../adr/ADR-006-untrusted-planner.md), [`adr/ADR-007`](../adr/ADR-007-tenant-isolation.md), [`adr/ADR-009`](../adr/ADR-009-single-persistence-spring-data-jdbc.md), [`adr/ADR-013`](../adr/ADR-013-s3-object-storage-garage.md), [`adr/ADR-014`](../adr/ADR-014-provider-port.md) (persistence, planner, tenant isolation, object storage, the opt-in embedding seam).
 > **Purpose:** the end-to-end RAG pipeline **as it runs today** — upload → chunk → embed → index → retrieve → ground — anchored to the current code (`RetrievalService`, `CitationBuilder`, `GroundingPolicy`, the `ingestion` worker), not the plan's target state. The two directions run at different times: indexing writes vectors (`ingestion` + `ai`), retrieval reads them (`knowledgebase`).
 
 ---

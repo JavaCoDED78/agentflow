@@ -1,6 +1,6 @@
 # Devlog (detailed changelog, recent)
 
-Detailed per-task changelog records for recent work (Sprint 6 messaging, Sprint 7 durable execution). Slim one-line summaries with links are in the root [`CHANGELOG.md`](../CHANGELOG.md).
+Detailed per-task changelog records for recent work (Sprint 6 messaging, Sprint 7 durable execution). Slim one-line summaries with links are in the root [`CHANGELOG.md`](../../CHANGELOG.md).
 
 ## Contents
 

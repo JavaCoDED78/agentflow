@@ -26,7 +26,7 @@ backend authorizes every step, tools run under policy, documents are retrieved a
 secrets stay out of every observable surface — anchored to what exists today, with each high-risk
 threat carrying its control, the test that pins it, and an explicitly recorded residual risk.
 
-**Implementation.** One new document, [`docs/threat-model/agent-execution.md`](agent-execution.md),
+**Implementation.** One new document, [`docs/threat-model/agent-execution.md`](../threat-model/agent-execution.md),
 built from the same posture as `ADR-006` (the model is an untrusted planner, invariant 7): it is
 never given authority over its own permissions, policies, allowlists, or credentials, and every
 proposed plan is hostile until a server-side gate holds it. It lists the five assets — tenant data,
@@ -64,7 +64,7 @@ The document is a prose model, not executable code, so it is **not** run through
 its correctness check is a link-integrity diff, the same kind of verification the S11-07
 documentation entry used for its version matrix. No code, no migration, no endpoint, no module edge.
 
-**Docs.** [`docs/threat-model/agent-execution.md`](agent-execution.md) (the new document);
+**Docs.** [`docs/threat-model/agent-execution.md`](../threat-model/agent-execution.md) (the new document);
 `docs/README.md` (the threat-model tree entry + the security row in the "Document type → location"
 table); `docs/devlog/sprint-11-human-approval-mcp-security.md` (this section, newest-first, above
 S11-13, plus a Contents anchor); `CHANGELOG.md` (an entry in `[Unreleased] > Added`; this devlog
@@ -210,7 +210,7 @@ control (`within_every_budget` completes `SUCCEEDED` with a `run.finished` event
 ```
 
 JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh reports this session):
-- [`DoublePolicyGateTest`](apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/DoublePolicyGateTest.java) — **4 tests**, the S11-12 acceptance end-to-end over the **production** path (a real `PlannerService` under the same-package fake `PromptCataloguePort` — no `ai.prompt` cycle — and a scripted `ChatModelPort` that *complies*, so only the gate can stop the capability):
+- [`DoublePolicyGateTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/application/DoublePolicyGateTest.java) — **4 tests**, the S11-12 acceptance end-to-end over the **production** path (a real `PlannerService` under the same-package fake `PromptCataloguePort` — no `ai.prompt` cycle — and a scripted `ChatModelPort` that *complies*, so only the gate can stop the capability):
   - `a_malicious_plan_naming_an_allowlisted_tool_the_caller_lacks_the_scope_for_is_held` — the model proposes `report`; the allowlist admits it, the caller holds no `write:report` scope; the second stage refuses the plan naming the missing scope and the recording executor stays empty.
   - `a_malicious_plan_naming_an_approval_gated_tool_is_held` — `deploy` needs no scope but is human-gated; the automatic gate refuses it (a plan never attests a grant).
   - `a_compliant_plan_reaches_the_executor_exactly_once` — with every required scope held, the double gate passes the plan through unchanged.
