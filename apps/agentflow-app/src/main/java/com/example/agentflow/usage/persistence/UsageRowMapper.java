@@ -11,10 +11,10 @@ import org.springframework.jdbc.core.RowMapper;
 
 /**
  * Maps one {@code usage_records} row to the immutable {@link UsageRecordDto} (S12-01 / {@code
- * V3_3_24}). The read is the mirror of the repository's insert: same column order, same nullable
- * handling, the enums restored from their stored names, the nullable {@code BIGINT} / {@code
- * NUMERIC} token / cost columns read as {@code null} when the row stored SQL NULL (an unknown is
- * read back as unknown, never a coerced zero — S12-02).
+ * V3_3_24, S12-03). The read is the mirror of the repository's insert: same column order, same
+ * nullable handling, the enums restored from their stored names, the nullable {@code BIGINT} /
+ * {@code NUMERIC} token / cost columns read as {@code null} when the row stored SQL NULL (an
+ * unknown is read back as unknown, never a coerced zero — S12-02).
  */
 class UsageRowMapper implements RowMapper<UsageRecordDto> {
 
@@ -39,7 +39,11 @@ class UsageRowMapper implements RowMapper<UsageRecordDto> {
         rs.getString("unit"),
         rs.getString("currency"),
         rs.getString("provider_request_id"),
-        rs.getString("provider_metadata"));
+        rs.getString("provider_metadata"),
+        // S12-03: the price version + catalogue revision the estimate was computed against; both
+        // nullable, so an unpriced estimate is read back as unknown (never invented).
+        rs.getString("price_version"),
+        rs.getString("pricing_revision"));
   }
 
   /**

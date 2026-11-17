@@ -4,6 +4,7 @@
 
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: migration `V3_3_24` tying each measurement to a specific attempt (S12-01)
 - [S12-02](#s12-02-the-uniform-usage-recording-path) — the uniform usage recording path: `UsageMeteringService` / `UsageRecordDto`, unknown recorded as unknown, the `domain` placement that keeps the module acyclic
+- [S12-03](#s12-03-the-usage-price-catalogue-and-versioning) — the usage price catalogue: `PricingResolver` / `PricingInfo` / `UnitDivisor`, migration `V3_3_25` `price_version` / `pricing_revision`, the priced `fromChatResponse`
 
 ---
 
@@ -138,3 +139,55 @@ package now `application ↔ domain` and `persistence ↔ domain` only) + no-cyc
 model/tool/embedding recording — and the permitted-types row, the full `UsageRecordDto` field set and
 its `domain` placement); `docs/architecture/module-map.md` (arrow 8 `usage → ai`); the `usage` module
 `AGENTS.md`.
+
+## S12-03 — the usage price catalogue and versioning
+
+The price catalogue the `S12-02` recording path settles against (glossary, plan Sprint 12, `S12-03`).
+A usage record that carries `estimated_cost` was computed from *some* price — this task records *which*
+one, so every historical estimate stays explainable through the exact price version that produced it.
+
+The `usage` module gains the resolution layer:
+
+- `application.PricingResolver` — pure, DB-free: given a resolved `PricingInfo` it applies the unit
+  divisor (e.g. a `1k-tokens` price is per 1,000 tokens) and returns the resolved cost, mirroring how
+  the pre-call budget reservation (`S09-10`) estimated a model call.
+- `application.PricingProperties` — the `agentflow.usage.pricing` config group (currency, and the
+  price catalogue keyed by `model` → `pricing_revision`); typed and validated, like every other
+  `agentflow.*` group.
+- `domain.PricingInfo` — the resolved price the record carries: `price_version` (the specific
+  `model+version`, e.g. `gpt-4o/2026-01-01`), `pricing_revision` (the catalogue revision tag), `unit`,
+  `currency` and the resolved cost.
+- `domain.UnitDivisor` — how many tokens one price unit covers (`1` for `token`, `1_000` for
+  `1k-tokens`); the closed vocabulary the resolver maps the `PricingInfo.unit` string to.
+
+**The migration.** `usage_records` gains migration `V3_3_25` (owner `usage`, forward-only, `IF NOT
+EXISTS` for quiet Testcontainers rebuilds): two nullable `TEXT` columns.
+
+- `price_version` — the specific `model+version` price the estimate was computed against; `NULL` when
+  the catalogue does not yet know the model, so an unpriced estimate is recorded as **unknown**, never
+  invented (invariant 8, `S12-02`).
+- `pricing_revision` — the revision tag of the `usage.pricing` catalogue that produced the estimate;
+  `NULL` when no price was resolved.
+
+Both are nullable on purpose: a `NULL` here means "no price was resolved" — a real state (the `S12-02`
+unknown path), not a missing value to be rejected. They are written together by the `usage` module, so
+a row never stores one without the other. The column `COMMENT`s attribute both to `S12-03`.
+
+**The record.** `UsageRecordDto` gains `priceVersion()` / `pricingRevision()`, plus a **priced**
+factory — `fromChatResponse(tenantId, runId, stepRunId, attempt, model, response, pricing)` fills the
+two versioning columns from a resolved `PricingInfo`. The unchanged 19-argument positional constructor
+(the common `S12-02` recording) leaves them `null` — the unpriced path.
+
+**Unknown is recorded as unknown.** A record with no resolved price stores `null` for both versioning
+columns, so the row truthfully records that no price was applied rather than a guessed one.
+
+**Verification.** DB-free unit suites, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`,
+fresh reports this session), **33 usage tests total** — `UsageRecordDtoTest` (15, including the two
+new priced `fromChatResponse` cases — `estimatedCostFor` maths and the unpriced record leaving
+versioning `null`); `PricingResolverTest` (8 — the divisor / latest-price / currency resolution and the
+`null`-price unknown path); `UsageRowMapperTest` (3 — the two columns round-trip, `null`-safe);
+`UsageRepositoryTest` (4 — the two columns bind last, `null`-safe); `UsageMeteringServiceTest` (3).
+The real-PostgreSQL `MigrationsTest` (`integrationTest`) asserts `V3_3_25` is applied and the two
+columns are nullable with `S12-03` attribution.
+
+**Docs.** `CHANGELOG.md` (Unreleased); this file.

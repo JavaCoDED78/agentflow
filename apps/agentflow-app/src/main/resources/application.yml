@@ -114,6 +114,27 @@ ai:
       - name: planner
         version: "1"
 
+usage:
+  pricing:
+    # S12-03: versioned price catalogue. `revision` is the tag every priced usage record stores as
+    # its pricing_revision (so a historical estimate is explainable through the price version);
+    # `currency` is used for every estimated cost. Each entry prices one model per its `unit`
+    # (token / 1k-tokens / 1m-tokens), effective from `effective`. A model not listed resolves to
+    # unknown (never invented). Replace with real catalogue values.
+    revision: "pricing-2026-05-01"
+    currency: "USD"
+    entries:
+      - model: "gpt-4o"
+        version: "2026-01-01"
+        unit: "1k-tokens"
+        price: "0.03"
+        effective: "2026-01-01"
+      - model: "nomic-embed-text"
+        version: "v2"
+        unit: "1k-tokens"
+        price: "0.0001"
+        effective: "2026-03-01"
+
 # Health endpoints (S01-18).
 #
 # Boot 4.x exposes web endpoints through an allow-list

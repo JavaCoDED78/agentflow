@@ -73,7 +73,8 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23", "3.3.24");
+              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23", "3.3.24",
+              "3.3.25");
     }
   }
 
@@ -1192,6 +1193,12 @@ class MigrationsTest {
     assertThat(nullableColumn("usage_records", "output_tokens")).isTrue();
     assertThat(tableComment("usage_records")).contains("S12-01").contains("usage");
     assertThat(columnComment("usage_records", "attempt")).contains("S12-01");
+    // S12-03: the price-versioning columns are nullable (NULL = "no price was resolved", a real
+    // unknown state, not a rejected missing value) and carry their S12-03 attribution.
+    assertThat(nullableColumn("usage_records", "price_version")).isTrue();
+    assertThat(nullableColumn("usage_records", "pricing_revision")).isTrue();
+    assertThat(columnComment("usage_records", "price_version")).contains("S12-03");
+    assertThat(columnComment("usage_records", "pricing_revision")).contains("S12-03");
   }
 
   /**
