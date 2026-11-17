@@ -117,7 +117,13 @@ class WorkflowCancelEndToEndIT {
     OutboxService outboxService = new OutboxService(null);
     runService =
         new RunService(
-            runRepo, idempotencyKeyService, outboxService, versionService, transitionService, null);
+            runRepo,
+            idempotencyKeyService,
+            outboxService,
+            versionService,
+            transitionService,
+            null,
+            null);
 
     worker =
         new WorkflowWorker(

@@ -5,6 +5,7 @@
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: migration `V3_3_24` tying each measurement to a specific attempt (S12-01)
 - [S12-02](#s12-02-the-uniform-usage-recording-path) — the uniform usage recording path: `UsageMeteringService` / `UsageRecordDto`, unknown recorded as unknown, the `domain` placement that keeps the module acyclic
 - [S12-03](#s12-03-the-usage-price-catalogue-and-versioning) — the usage price catalogue: `PricingResolver` / `PricingInfo` / `UnitDivisor`, migration `V3_3_25` `price_version` / `pricing_revision`, the priced `fromChatResponse`
+- [S12-04](#s12-04-the-durable-per-tenant-cost-budget) — the durable per-tenant cost budget: `tenant_budgets` / `budget_reservations` (`V3_3_26`), idempotent reserve-before-the-call / settle-after, the `usage → workflowexecution` execution-SPI budget gate
 
 ---
 
@@ -191,3 +192,75 @@ The real-PostgreSQL `MigrationsTest` (`integrationTest`) asserts `V3_3_25` is ap
 columns are nullable with `S12-03` attribution.
 
 **Docs.** `CHANGELOG.md` (Unreleased); this file.
+
+## S12-04 — the durable per-tenant cost budget
+
+The durable budget the domain glossary "Cost budget" / "Budget" names (glossary §10 "Cost budget",
+§9 "Budget", plan Sprint 12, `S12-04`). `usage` owns it — the same owner as `usage_records` — backed
+by migration `V3_3_26` (forward-only, `IF NOT EXISTS`, `ADR-008`): two tables.
+
+- `tenant_budgets` — one per-tenant row of limits (`period`, `max_runs`, `max_tokens`, `max_cost`),
+  measured over a `period`. One row per tenant. `tenant_id` is a plain, tenant-scoped value, **not**
+  a cross-module FK (`tenants` / `workflow_runs` are owned by other modules — a cross-module FK would
+  couple the schemas, exactly as `tool_invocations` scopes `run_id`).
+- `budget_reservations` — one row per reservation an operation makes against that budget: the
+  estimated amount reserved **before** the operation, reconciled to the **actual cost** when the
+  operation settles. Every reservation counts toward the tenant's consumption at its reserved
+  estimate until it settles, and at its reconciled `actual_cost` afterwards — both count, so the
+  budget stays meaningful once everything settled.
+
+**Reserve before the call, settle after — idempotently.** `application.BudgetService` `reserve(...)`
+keys the reservation on an idempotency id (`reservation_id`); the repository's
+`ON CONFLICT (reservation_id) DO NOTHING` primary key makes a duplicate delivery / crash-retry a
+no-op, so it never double-charges (invariant 3). `reserve` locks the tenant's budget row
+(`SELECT ... FOR UPDATE`) and checks the reservation against the remaining budget, throwing
+`BudgetExhaustedException` when it would exceed it — blocking the operation *before* it starts.
+`settle(...)` reconciles the reservation to its actual cost once, guarded by `settled_at IS NULL`
+(a second settle is a no-op; at-least-once, never exactly-once). `consumed(...)` sums the accrual
+`COALESCE(actual_cost, reserved_amount)` — an unsettled reservation counts at its reserve estimate,
+a settled one at its reconciled actual cost. A tenant with no budget configured is **allowed**
+(unlimited, never blocked). The refusal signal `BudgetExhaustedException` is the `usage` mirror of
+`ai`'s pre-call `InsufficientBudgetException` (S09-10).
+
+The value vocabulary: `domain.BudgetDto` (`tenantId`, `period`, `maxRuns`, `maxTokens`, `maxCost`),
+`domain.BudgetPeriod` and `domain.BudgetMetric` (`COST` / `TOKEN`), `domain.BudgetReservation`
+(`reservationId`, `tenantId`, `runId`, `metric`, `reservedAmount`) and `domain.BudgetCheckResult`
+(`allowed`, `reason`).
+
+**Tenant isolation (invariant 1).** Every read and write is keyed by `(tenantId, …)` with the
+predicate inside the query itself — the accrual `consumed` sum, the `FOR UPDATE` lock and the
+idempotent inserts all carry the `tenant_id` — so another tenant's budget is indistinguishable from
+a missing one.
+
+**The execution-SPI gate.** `workflowexecution` owns the `BudgetGuard` **port** — the same shape as
+the `StepHandler` port; `usage` supplies the `@ConditionalOnBean(DataSource.class)` adapter
+`UsageBudgetGuard` implementing it. This is the single sanctioned compile edge `usage →
+workflowexecution` (module-map edge 9), so `workflowexecution` never compile-depends on `usage`. It
+is wired into `workflowexecution.application.RunService#createAndPin`: a run cannot start against an
+exhausted budget — the check runs **before** the run row and the outbox event are written, and a
+rejected run starts with `409 CONFLICT`. The `@Autowired(required = false)` seam keeps the app
+bootable without a database (a `null` guard skips the check, S01-02).
+
+**Durability (invariant 2).** PostgreSQL is the source of truth — `tenant_budgets` and
+`budget_reservations` are plain rows; no reservation is ever only in memory. No raw prompt, document
+or cost secret is stored — only the reservation id (the idempotency key) and its amount (invariant 8).
+
+**Verification.** Unit: `BudgetServiceTest` (7 DB-free tests — `checkBudget` allows without a budget
+and denies once exhausted, `reserve` blocks when it would exceed the remaining budget, a duplicate
+reservation is an idempotent no-op, `settle` reconciles / is idempotent, a `null` actual cost keeps
+the estimate). Integration on real `pgvector/pgvector:0.8.6-pg18` (`BudgetServiceIT`, 6 tests) — a
+budget round-trips through the store, reserve blocks the moment it would exceed the limit, settlement
+reconciles idempotently, and another tenant's budget is isolated. `MigrationsTest` (now at `v3.3.26`,
+`tests="25"` `failures="0"` `errors="0"` `skipped="0"`, JUnit-XML-verified) asserts the two tables
+are owned by `usage` and the schema guards exist. The full `./gradlew check --rerun-tasks` gate —
+unit + architecture (`ArchitectureBoundaryTest` `tests="1"`, `NoCyclicModuleDependenciesTest`
+`tests="1"` `failures="0"` `errors="0"`, the `usage ↔ workflowexecution` edge 9) + no-cycles +
+formatting (`spotless`) + OpenAPI — green; `git diff --check` clean.
+
+**Docs.** [`docs/architecture/module-api.md`](../architecture/module-api.md) (the `usage`
+public-application-services row — `BudgetService`; the permitted-types row — `BudgetDto` /
+`BudgetPeriod` / `BudgetMetric` / `BudgetReservation` / `BudgetCheckResult` / `BudgetExhaustedException`;
+the `persistence.BudgetRepository` internal package); [`docs/architecture/module-map.md`](../architecture/module-map.md)
+(the `usage` module row — `tenant_budgets` under `usage` — and edge 9 `usage → workflowexecution`,
+no new edge, no ADR); [`docs/domain-glossary.md`](../domain-glossary.md) (the "Cost budget" /
+"Budget" rows); `CHANGELOG.md` (this entry).
