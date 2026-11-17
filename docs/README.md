@@ -73,7 +73,8 @@ docs/
 │   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
 ├── security/                          permissions/permissions.md ← S04-04 catalogue; tenant-claim.md ← S04-05 tenant claim contract; response-policy.md ← S04-09 403/404 masking policy; authentication-authorization.md ← S04-15 authn/authz; secrets.md ← S09-03 secrets policy
 ├── threat-model/
-│   └── README.md                      ← scaffold (S01-03); full model added S11
+│   ├── README.md                      ← scaffold (S01-03); index to the model below
+│   └── agent-execution.md             ← the full threat model: assets, trust boundaries, six high-risk threats with control + test + recorded residual risk (S11-14)
 ├── workflows/
 │   └── dsl-v1.md                      ← workflow DSL v1: shape, node types, validation, examples (S05-17)
 ├── tools/
