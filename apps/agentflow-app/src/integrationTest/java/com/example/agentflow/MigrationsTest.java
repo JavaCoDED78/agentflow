@@ -73,7 +73,7 @@ class MigrationsTest {
           .containsExactly(
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
-              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23");
+              "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23", "3.3.24");
     }
   }
 
@@ -95,7 +95,8 @@ class MigrationsTest {
             "inbox_messages",
             "dlq_messages",
             "document_chunks",
-            "approvals");
+            "approvals",
+            "usage_records");
   }
 
   /**
@@ -1163,6 +1164,132 @@ class MigrationsTest {
         throw e;
       }
     }
+  }
+
+  /**
+   * The S12-01 usage record schema guards live in the schema (declared by {@code V3_3_24}): the
+   * {@code usage_records_tenant_run_created_idx} lookup index, the {@code
+   * usage_records_usage_type_check} / {@code usage_records_measurement_check} CHECK bounds, the NOT
+   * NULL {@code attempt} / {@code tenant_id} / {@code run_id} / {@code created_at} columns that
+   * back the acceptance criterion, and the table / {@code attempt} COMMENT attributing the table to
+   * S12-01 / {@code usage}.
+   */
+  @Test
+  void usage_records_schema_guards_exist() throws SQLException {
+    assertThat(indexes("usage_records")).contains("usage_records_tenant_run_created_idx");
+    assertThat(checkConstraints("usage_records"))
+        .contains("usage_records_usage_type_check", "usage_records_measurement_check");
+    // The required surface — the record is tied to a concrete attempt, tenant and run — is enforced
+    // by the database, not the application layer.
+    assertThat(nullableColumn("usage_records", "tenant_id")).isFalse();
+    assertThat(nullableColumn("usage_records", "run_id")).isFalse();
+    assertThat(nullableColumn("usage_records", "attempt")).isFalse();
+    assertThat(nullableColumn("usage_records", "created_at")).isFalse();
+    // The token / cost columns are nullable: an unknown value is recorded as unknown (S12-02),
+    // never
+    // invented as zero.
+    assertThat(nullableColumn("usage_records", "input_tokens")).isTrue();
+    assertThat(nullableColumn("usage_records", "output_tokens")).isTrue();
+    assertThat(tableComment("usage_records")).contains("S12-01").contains("usage");
+    assertThat(columnComment("usage_records", "attempt")).contains("S12-01");
+  }
+
+  /**
+   * The S12-01 acceptance, proven against data rather than declared: a usage record is tied to a
+   * specific attempt and is tenant-scoped. A valid MODEL usage record (estimated, with token counts
+   * and cost) for (run, step, attempt 1) lands, and so does a record for the same (run, step) but a
+   * different attempt — the attempt is a real dimension, not a duplicate key — and a provider-
+   * reported TOOL record with unknown tokens (NULL) and a provider cost, so the two measurement
+   * sources (estimated vs provider-reported) coexist. No raw prompt / content is stored — only the
+   * token counts and the cost (invariant 8). A record with a missing parent tenant is rejected by
+   * the foreign key, an unknown usage_type by the CHECK, and a missing attempt by NOT NULL.
+   */
+  @Test
+  void usage_records_link_to_attempt_and_tenant_hold_against_data() throws SQLException {
+    // A tenant — the record is tenant-scoped (FK tenants).
+    insert("INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')", uuid(), "t-usage");
+    UUID tenant = tenantId("t-usage");
+    assertThat(tenant).isNotNull();
+
+    // A valid MODEL usage record: estimated, token counts + cost, tied to (run, step, attempt 1).
+    insert(
+        "INSERT INTO usage_records (id, tenant_id, run_id, step_run_id, attempt, usage_type, "
+            + "measurement, provider, model, input_tokens, output_tokens, estimated_cost, unit, "
+            + "currency) VALUES (?, ?, ?, ?, 1, 'MODEL', 'ESTIMATED', 'fake', 'nomic-embed-text', "
+            + "10, 5, '0.010', 'token', 'USD')",
+        uuid(),
+        tenant,
+        uuid(),
+        "step-1");
+
+    // A record for the SAME (run, step) but a DIFFERENT attempt lands too — attempt is a real
+    // dimension, not a duplicate guard. The output token count is unknown (NULL), the cost is the
+    // provider-reported value.
+    insert(
+        "INSERT INTO usage_records (id, tenant_id, run_id, step_run_id, attempt, usage_type, "
+            + "measurement, provider, model, output_tokens, provider_cost, currency) VALUES (?, ?, ?, "
+            + "?, 2, 'MODEL', 'PROVIDER_REPORTED', 'fake', 'gpt-4o', NULL, ?, 'USD')",
+        uuid(),
+        tenant,
+        uuid(),
+        "step-1",
+        7);
+
+    // A provider-reported TOOL record with unknown tokens (NULL) and a provider cost also lands.
+    insert(
+        "INSERT INTO usage_records (id, tenant_id, run_id, step_run_id, attempt, usage_type, "
+            + "measurement, provider, tool_name, tool_version, estimated_cost, provider_cost, "
+            + "currency) VALUES (?, ?, ?, ?, 3, 'TOOL', 'PROVIDER_REPORTED', 'fake', 'calculator', "
+            + "'1.0.0', NULL, '0.002', 'USD')",
+        uuid(),
+        tenant,
+        uuid(),
+        "step-2");
+
+    // A record with a missing parent tenant is rejected by the foreign key (a fresh, non-existent
+    // uuid so the NOT NULL guard is satisfied and only the FK fires).
+    assertThatThrownBy(
+            () ->
+                statement()
+                    .execute(
+                        "INSERT INTO usage_records (id, tenant_id, run_id, step_run_id, attempt, "
+                            + "usage_type, measurement, provider, model) VALUES ('"
+                            + uuid()
+                            + "', '00000001-0000-0000-0000-000000000001', '"
+                            + uuid()
+                            + "', 'step-1', 1, 'MODEL', 'ESTIMATED', 'fake', 'm')"))
+        .isInstanceOf(SQLException.class)
+        .hasMessageContaining("foreign key");
+
+    // An unknown usage_type is rejected by the CHECK.
+    assertThatThrownBy(
+            () ->
+                insert(
+                    "INSERT INTO usage_records (id, tenant_id, run_id, step_run_id, attempt, "
+                        + "usage_type, measurement, provider) VALUES (?, ?, ?, ?, 1, 'NETWORK', "
+                        + "'ESTIMATED', 'fake')",
+                    uuid(),
+                    tenant,
+                    uuid(),
+                    "step-1"))
+        .isInstanceOf(SQLException.class)
+        .hasMessageContaining("check");
+
+    // A missing attempt is rejected by NOT NULL.
+    assertThatThrownBy(
+            () ->
+                statement()
+                    .execute(
+                        "INSERT INTO usage_records (id, tenant_id, run_id, step_run_id, usage_type, "
+                            + "measurement, provider) VALUES ('"
+                            + uuid()
+                            + "','"
+                            + tenant
+                            + "','"
+                            + uuid()
+                            + "', 'step-1', 'MODEL', 'ESTIMATED', 'fake')"))
+        .isInstanceOf(SQLException.class)
+        .hasMessageContaining("not-null");
   }
 
   /**
