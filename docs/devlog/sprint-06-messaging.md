@@ -12,9 +12,9 @@
 
 - **Event catalog and delivery guarantees (`S06-16`).** The event family now has a single
   human-readable catalog
-  [`docs/architecture/events/README.md`](docs/architecture/events/README.md) — the human counterpart
-  to the machine-readable contract family in [`contracts/events/`](contracts/events/) and the topic
-  catalogue in [`docs/architecture/kafka-topics.md`](docs/architecture/kafka-topics.md). It
+  [`docs/architecture/events/README.md`](../../docs/architecture/events/README.md) — the human counterpart
+  to the machine-readable contract family in [`contracts/events/`](../../contracts/events/) and the topic
+  catalogue in [`docs/architecture/kafka-topics.md`](../../docs/architecture/kafka-topics.md). It
   enumerates the six `agentflow.*` topics with their producers and consumers, the
   `tenantId:runId` / `tenantId:documentId` partition key, the `envelope-v1` fields (and that
   `tenantId` is routing/correlation only, never an authorization source), the `schemaVersion`
@@ -56,7 +56,7 @@
   10 000 processed rows); and burst drain throughput. Measured baseline on the CI/dev box: empty
   `pollOnce()` **~0.98 ms** (200 polls, 1 ms index scan), still **~2.1 ms** after 10 000 rows,
   and **~1327 events/sec** draining 500 rows in 50-row batches (376 ms total). The published
-  note [`docs/architecture/observability/outbox-polling-benchmark.md`](docs/architecture/observability/outbox-polling-benchmark.md)
+  note [`docs/architecture/observability/outbox-polling-benchmark.md`](../../docs/architecture/observability/outbox-polling-benchmark.md)
   turns these into a **numerical CDC justification gate**: CDC becomes justified when the required
   propagation latency forces a poll interval small enough that the idle `1/T` polls/sec load
   becomes material, or when sub-poll reactivity is required. CDC is **not** connected — the note
@@ -81,7 +81,7 @@
 
 - **Event envelope contract tests (`S06-13`).** The committed envelope contract is now a
   checked-in CI gate rather than a schema sitting on disk: producer fixtures validate against
-  [`contracts/events/json-schema/envelope-v1.json`](contracts/events/json-schema/envelope-v1.json)
+  [`contracts/events/json-schema/envelope-v1.json`](../../contracts/events/json-schema/envelope-v1.json)
   (draft 2020-12), and a breaking schema change fails `./gradlew check`. `EventContractTest`
   (`com.example.agentflow.eventcontract`) loads the schema once and validates the canonical
   producer fixture (`envelope-v1.example.json`) plus mutated variants: the fixture is accepted;
@@ -567,9 +567,9 @@
 
 
 - **Event envelope v1 contract (`S06-01`).** `contracts/events/json-schema/` gains
-  [`envelope-v1.json`](contracts/events/json-schema/envelope-v1.json) (JSON Schema, draft
+  [`envelope-v1.json`](../../contracts/events/json-schema/envelope-v1.json) (JSON Schema, draft
   2020-12, `$id` `.../event-envelope/1.0.0.json`) and its canonical instance
-  [`envelope-v1.example.json`](contracts/events/json-schema/envelope-v1.example.json). The
+  [`envelope-v1.example.json`](../../contracts/events/json-schema/envelope-v1.example.json). The
   envelope is the minimal payload every Kafka record carries (glossary §6):
   `eventId`, `eventType`, `schemaVersion`, `occurredAt`, `tenantId`, `aggregateType`,
   `aggregateId`, `correlationId`, `causationId`, `payload`. `additionalProperties: false` on

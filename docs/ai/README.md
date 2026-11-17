@@ -105,7 +105,7 @@ one (S09-06 / S09-08):
 - **Empty content** — a `null` completion — is treated as malformed output, never an empty string.
 
 Provider faults are classified separately, by
-[`ProviderExceptionClassifier`](apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/ProviderExceptionClassifier.java)
+[`ProviderExceptionClassifier`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/ProviderExceptionClassifier.java)
 into a neutral `ProviderFailureReason`, so a retryable provider fault (429 / 5xx / timeout / connection)
 is retried within the S09-09 bound while a permanent one (4xx client error) is not.
 
@@ -182,5 +182,5 @@ configuration and report format: [real-provider-contract-test.md](real-provider-
   contract test.
 - [`docs/evaluation/README.md`](../evaluation/README.md) — Planner baseline eval cases, metrics, run/
   compare.
-- [`CHANGELOG.md`](../CHANGELOG.md) — the S09-01 … S09-15 entries under `Unreleased`.
+- [`CHANGELOG.md`](../../CHANGELOG.md) — the S09-01 … S09-15 entries under `Unreleased`.
 - [`docs/devlog/sprint-09-ai-planner.md`](../devlog/sprint-09-ai-planner.md) — the per-sprint record.

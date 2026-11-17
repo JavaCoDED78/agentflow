@@ -14,7 +14,7 @@ written to stdout.
 The key is **injected from outside the image**, never baked into the code or the config file:
 
 - It is read from `agentflow.ai.provider.openai.api-key`, which falls back to the `OPENAI_API_KEY`
-  environment variable — see [`OpenAiChatModelConfiguration`](../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/OpenAiChatModelConfiguration.java).
+  environment variable — see [`OpenAiChatModelConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/ai/provider/OpenAiChatModelConfiguration.java).
 - The whole provider configuration is **opt-in**: the beans exist only when
   `agentflow.ai.provider=openai` (`@ConditionalOnProperty`). On the default, `test` and `local`
   profiles without that property there is **no** `ChatModel` bean and **no** key on the classpath, so
@@ -39,8 +39,8 @@ Kubernetes Secret / external secret store before a real deployment.
 
 Two independent layers keep a key from leaving the process:
 
-1. **Log masking.** [`SecretRedactingValueMasker`](../apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
-   is registered as the `<valueMasker>` in [`logback-spring.xml`](../apps/agentflow-app/src/main/resources/logback-spring.xml).
+1. **Log masking.** [`SecretRedactingValueMasker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java)
+   is registered as the `<valueMasker>` in [`logback-spring.xml`](../../apps/agentflow-app/src/main/resources/logback-spring.xml).
    The encoder calls it for every field value, so a secret embedded in a longer message (for example
    `provider api_key=<key>`) is masked to `***` before it is serialized to structured JSON on stdout
    — and therefore never reaches Loki, disk, or the collector. Since `S09-13` it also masks the whole
@@ -49,7 +49,7 @@ Two independent layers keep a key from leaving the process:
    reaches the collector.
 2. **Actuator exposure.** Only `health` and `info` are reachable over HTTP; the sensitive `env`,
    `configprops`, `beans` and `mappings` endpoints are outside the exposure allow-list and answer
-   `404` anonymously (see [`application.yml`](../apps/agentflow-app/src/main/resources/application.yml)). A configured
+   `404` anonymously (see [`application.yml`](../../apps/agentflow-app/src/main/resources/application.yml)). A configured
    key therefore cannot be read back through the management surface.
 3. **Stack traces.** Unhandled errors are rendered as an `internal`/500 Problem Details without the
    raw exception message (`GlobalExceptionHandler`), so an exception that happens to quote a secret
@@ -70,12 +70,12 @@ build-time ARG.
 appear in Git, logs, or diagnostic endpoints* — with real code:
 
 - The canary is a unique, clearly-fake token stored in exactly one place:
-  [`src/test/resources/secrets/canary-openai-key.txt`](../apps/agentflow-app/src/test/resources/secrets/canary-openai-key.txt).
+  [`src/test/resources/secrets/canary-openai-key.txt`](../../apps/agentflow-app/src/test/resources/secrets/canary-openai-key.txt).
   It is read from there at test time, so it is never written into a source file.
-- [`CanaryLeakScanTest`](../apps/agentflow-app/src/test/java/com/example/agentflow/ai/security/CanaryLeakScanTest.java)
+- [`CanaryLeakScanTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/security/CanaryLeakScanTest.java)
   (DB-free): runs `git ls-files`, scans every tracked file except the fixture, and asserts the
   canary is nowhere in Git; it also asserts the canary is masked by the real `ValueMasker`.
-- [`ProviderSecretsActuatorTest`](../apps/agentflow-app/src/test/java/com/example/agentflow/ai/security/ProviderSecretsActuatorTest.java)
+- [`ProviderSecretsActuatorTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/security/ProviderSecretsActuatorTest.java)
   (`@SpringBootTest`, no provider configured): asserts the canary is not echoed by any reachable
   `/actuator` endpoint and that `env` / `configprops` are closed.
 
