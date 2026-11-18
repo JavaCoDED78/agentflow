@@ -52,8 +52,11 @@ public class DlqService {
    * @param topic the versioned topic the envelope arrived on
    * @param eventId the domain event id (the SAME id as the outbox event id / envelope eventId)
    * @param consumerName the inbox consumer identity whose processing failed
-   * @param status the consumer error policy disposition ({@link DlqMessage.Status#RETRY} / {@link
+   * @param status the consumer error-policy disposition ({@link DlqMessage.Status#RETRY} / {@link
    *     DlqMessage.Status#DEAD_LETTER})
+   * @param errorClass the consumer error classification of the failure ({@link
+   *     DlqMessage.ErrorClass#PERMANENT} / {@link DlqMessage.ErrorClass#TRANSIENT}); recorded
+   *     alongside {@code status} (S12-10)
    * @param attempts the attempt count after the failed attempts (already the exhausted total)
    * @param lastError the last error message; redacted through {@link SecretRedactor} here so a
    *     secret or a full prompt / document the caller cannot scrub never reaches the durable DLQ
@@ -66,6 +69,7 @@ public class DlqService {
       UUID eventId,
       String consumerName,
       DlqMessage.Status status,
+      DlqMessage.ErrorClass errorClass,
       int attempts,
       String lastError) {
     if (repository == null) {
@@ -80,7 +84,13 @@ public class DlqService {
     boolean inserted =
         repository.record(
             DlqMessage.deadLetter(
-                eventId, topic, consumerName, status, attempts, SecretRedactor.redact(lastError)));
+                eventId,
+                topic,
+                consumerName,
+                status,
+                errorClass,
+                attempts,
+                SecretRedactor.redact(lastError)));
     log.debug(
         "recorded {} dead-letter of event {} for consumer {} (attempts {})",
         inserted ? "new" : "duplicate",

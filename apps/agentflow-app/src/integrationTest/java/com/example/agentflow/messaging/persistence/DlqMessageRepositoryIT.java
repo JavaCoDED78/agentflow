@@ -63,6 +63,7 @@ class DlqMessageRepositoryIT {
             "agent-run.v1",
             "agent:run:step",
             DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
             3,
             "IllegalArgumentException: malformed envelope");
 
@@ -77,6 +78,7 @@ class DlqMessageRepositoryIT {
     assertThat(row.topic()).isEqualTo(record.topic());
     assertThat(row.consumerName()).isEqualTo(record.consumerName());
     assertThat(row.status()).isEqualTo(DlqMessage.Status.DEAD_LETTER);
+    assertThat(row.errorClass()).isEqualTo(DlqMessage.ErrorClass.PERMANENT);
     assertThat(row.attempts()).isEqualTo(3);
     assertThat(row.lastError()).isEqualTo("IllegalArgumentException: malformed envelope");
   }
@@ -90,6 +92,7 @@ class DlqMessageRepositoryIT {
             "agent-run.v1",
             "agent:run:step",
             DlqMessage.Status.RETRY,
+            DlqMessage.ErrorClass.TRANSIENT,
             2,
             "transient");
 
@@ -102,6 +105,7 @@ class DlqMessageRepositoryIT {
             "agent-run.v1",
             first.consumerName(),
             DlqMessage.Status.RETRY,
+            DlqMessage.ErrorClass.TRANSIENT,
             2,
             "transient");
 
@@ -121,6 +125,7 @@ class DlqMessageRepositoryIT {
             "agent-run.v1",
             "agent:run:step",
             DlqMessage.Status.RETRY,
+            DlqMessage.ErrorClass.TRANSIENT,
             1,
             "retry");
     DlqMessage dead =
@@ -129,6 +134,7 @@ class DlqMessageRepositoryIT {
             "agent-run.v1",
             "agent:run:step",
             DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
             1,
             "dead");
     DlqMessage other =
@@ -137,6 +143,7 @@ class DlqMessageRepositoryIT {
             "agent-run.v1",
             "other:consumer",
             DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
             1,
             "dead");
 

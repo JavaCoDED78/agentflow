@@ -36,6 +36,7 @@ class DlqMessageRepositoryTest {
             "agent-run.v1",
             "agent:run:step",
             DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
             3,
             "IllegalArgumentException: malformed");
     PreparedStatement ps = mock(PreparedStatement.class);
@@ -48,14 +49,16 @@ class DlqMessageRepositoryTest {
         org.mockito.ArgumentCaptor.forClass(PreparedStatementSetter.class);
     verify(jdbc).update(anyString(), setter.capture());
     setter.getValue().setValues(ps);
-    // bind order matches the INSERT columns (recorded_at is now())
+    // bind order matches the INSERT columns (recorded_at is now()); error_class (S12-10) sits after
+    // status
     verify(ps).setObject(1, record.id()); // id (gen_random_uuid in SQL)
     verify(ps).setObject(2, record.eventId()); // event_id (the envelope id; invariant 3)
     verify(ps).setString(3, record.topic()); // topic
     verify(ps).setString(4, record.consumerName()); // consumer_name (dedup key)
     verify(ps).setString(5, record.status().name()); // status
-    verify(ps).setInt(6, record.attempts()); // attempts
-    verify(ps).setString(7, record.lastError()); // last_error
+    verify(ps).setString(6, record.errorClass().name()); // error_class (S12-10)
+    verify(ps).setInt(7, record.attempts()); // attempts
+    verify(ps).setString(8, record.lastError()); // last_error
   }
 
   @Test
@@ -69,6 +72,7 @@ class DlqMessageRepositoryTest {
             "agent-run.v1",
             "agent:run:step",
             DlqMessage.Status.RETRY,
+            DlqMessage.ErrorClass.TRANSIENT,
             1,
             "transient");
 
@@ -97,7 +101,7 @@ class DlqMessageRepositoryTest {
     verify(jdbc).query(sql.capture(), any(RowMapper.class), first.capture(), second.capture());
     assertThat(sql.getValue())
         .contains(
-            "SELECT id, event_id, topic, consumer_name, status, attempts, last_error, "
+            "SELECT id, event_id, topic, consumer_name, status, error_class, attempts, last_error, "
                 + "recorded_at FROM dlq_messages")
         .contains("WHERE consumer_name = ? AND event_id = ?");
     assertThat(first.getValue()).isEqualTo("agent:run:step");
