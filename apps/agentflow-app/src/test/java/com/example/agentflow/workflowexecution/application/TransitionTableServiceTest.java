@@ -59,7 +59,7 @@ class TransitionTableServiceTest {
 
   @BeforeEach
   void setUp() {
-    service = new RunStateMachineService(runRepository, stepRepository, null, eventService);
+    service = new RunStateMachineService(runRepository, stepRepository, null, eventService, null);
   }
 
   // ---------------------------------------------------------------------------

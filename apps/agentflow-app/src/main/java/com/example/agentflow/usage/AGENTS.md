@@ -12,7 +12,7 @@ token/cost metering, budget reservation/settlement and quotas.
 
 ## Data ownership
 
-`usage` owns exactly one table (plus budgets) and no other module may change its migration or schema: `usage_records`, `tenant_budgets`.
+`usage` owns exactly one table (plus budgets and quota slots) and no other module may change its migration or schema: `usage_records`, `tenant_budgets`, `budget_reservations`, `tenant_run_slots`.
 
 ## Package layout (internal vs public)
 

@@ -53,7 +53,7 @@ class RunStateMachineServiceTest {
 
   @BeforeEach
   void setUp() {
-    service = new RunStateMachineService(runRepository, stepRepository, null, eventService);
+    service = new RunStateMachineService(runRepository, stepRepository, null, eventService, null);
   }
 
   // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ class RunStateMachineServiceTest {
   @Test
   void transition_run_no_database_is_a_503_not_a_silent_no_op() {
     RunStateMachineService noDb =
-        new RunStateMachineService(null, stepRepository, null, eventService);
+        new RunStateMachineService(null, stepRepository, null, eventService, null);
 
     ResponseStatusException ex =
         expectException(
@@ -341,7 +341,7 @@ class RunStateMachineServiceTest {
   @Test
   void transition_step_no_database_is_a_503() {
     RunStateMachineService noDb =
-        new RunStateMachineService(runRepository, null, null, eventService);
+        new RunStateMachineService(runRepository, null, null, eventService, null);
 
     ResponseStatusException ex =
         expectException(

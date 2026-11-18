@@ -141,7 +141,7 @@ class WorkflowWorkerCrashRecoveryIT {
     versionService =
         new WorkflowVersionService(definitionRepo, versionRepo, auditService, properties);
 
-    transitionService = new RunStateMachineService(runRepo, stepRepo, null, eventService);
+    transitionService = new RunStateMachineService(runRepo, stepRepo, null, eventService, null);
     RunHeartbeatService heartbeat = new RunHeartbeatService(runRepo, Clock.systemUTC(), properties);
     checkpointAdapter = new CheckpointAdapter(stepRepo, properties);
   }

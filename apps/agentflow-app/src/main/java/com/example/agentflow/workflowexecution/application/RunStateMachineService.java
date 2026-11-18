@@ -59,16 +59,19 @@ public class RunStateMachineService {
   private final WorkflowStepRunRepository stepRepository;
   private final WorkflowStepAttemptHistoryRepository attemptHistoryRepository;
   private final WorkflowEventService eventService;
+  private final RunQuotaGuard runQuotaGuard;
 
   public RunStateMachineService(
       @Autowired(required = false) WorkflowRunRepository runRepository,
       @Autowired(required = false) WorkflowStepRunRepository stepRepository,
       @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository,
-      WorkflowEventService eventService) {
+      WorkflowEventService eventService,
+      @Autowired(required = false) RunQuotaGuard runQuotaGuard) {
     this.runRepository = runRepository;
     this.stepRepository = stepRepository;
     this.attemptHistoryRepository = attemptHistoryRepository;
     this.eventService = eventService;
+    this.runQuotaGuard = runQuotaGuard;
   }
 
   /**
@@ -108,6 +111,7 @@ public class RunStateMachineService {
     assertRunTransition(from, to);
     applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
     appendRunEvent(tenantId, runId, from, to, eventType, actor);
+    releaseQuotaSlotAtTerminal(tenantId, runId, to);
     return to;
   }
 
@@ -161,6 +165,7 @@ public class RunStateMachineService {
     assertRunTransition(from, to);
     applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
     appendRunEvent(tenantId, runId, from, to, eventType, actor, errorClass);
+    releaseQuotaSlotAtTerminal(tenantId, runId, to);
     return to;
   }
 
@@ -492,6 +497,22 @@ public class RunStateMachineService {
    */
   private static String actorSuffix(String actor) {
     return (actor != null && !actor.isBlank()) ? " (actor=" + actor + ")" : "";
+  }
+
+  /**
+   * Releases the run's parallel-run quota slot when the transition closes the run (S12-05): the
+   * slot lifetime is exactly the run's non-terminal lifetime - it is acquired at run creation and
+   * freed the moment the run reaches {@code SUCCEEDED} / {@code FAILED} / {@code CANCELLED}. Called
+   * from both {@code transitionRun} overloads after the transition and its event are applied, in
+   * the same transaction, so the release is atomic with the terminal state. Idempotent: the usage
+   * side deletes a row keyed {@code (tenantId, runId)}, so a repeat (or a run that never acquired a
+   * slot) changes nothing. The guard is {@code null} when no database is configured (S01-02) or in
+   * tests that construct the service directly.
+   */
+  private void releaseQuotaSlotAtTerminal(UUID tenantId, UUID runId, WorkflowRunState to) {
+    if (runQuotaGuard != null && to.isTerminal()) {
+      runQuotaGuard.releaseRunSlot(tenantId, runId);
+    }
   }
 
   /**
