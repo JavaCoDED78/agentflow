@@ -43,7 +43,7 @@ class InboxConsumerServiceTest {
     InboxConsumeResult result = service().apply(topic, claim, () -> "ok");
 
     assertThat(result).isEqualTo(InboxConsumeResult.PROCESSED);
-    verify(dlq, never()).record(anyString(), any(), anyString(), any(), anyInt(), any());
+    verify(dlq, never()).record(anyString(), any(), anyString(), any(), any(), anyInt(), any());
   }
 
   @Test
@@ -54,7 +54,7 @@ class InboxConsumerServiceTest {
     InboxConsumeResult result = service().apply(topic, claim, () -> "ok");
 
     assertThat(result).isEqualTo(InboxConsumeResult.OTHER_CLAIMED);
-    verify(dlq, never()).record(anyString(), any(), anyString(), any(), anyInt(), any());
+    verify(dlq, never()).record(anyString(), any(), anyString(), any(), any(), anyInt(), any());
   }
 
   @Test
@@ -72,7 +72,14 @@ class InboxConsumerServiceTest {
 
     assertThat(result).isEqualTo(InboxConsumeResult.RETRY);
     verify(dlq)
-        .record(topic, claim.eventId(), claim.consumerName(), DlqMessage.Status.RETRY, 0, null);
+        .record(
+            topic,
+            claim.eventId(),
+            claim.consumerName(),
+            DlqMessage.Status.RETRY,
+            DlqMessage.ErrorClass.TRANSIENT,
+            0,
+            null);
   }
 
   @Test
@@ -91,6 +98,12 @@ class InboxConsumerServiceTest {
     assertThat(result).isEqualTo(InboxConsumeResult.DEAD_LETTER);
     verify(dlq)
         .record(
-            topic, claim.eventId(), claim.consumerName(), DlqMessage.Status.DEAD_LETTER, 0, null);
+            topic,
+            claim.eventId(),
+            claim.consumerName(),
+            DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
+            0,
+            null);
   }
 }

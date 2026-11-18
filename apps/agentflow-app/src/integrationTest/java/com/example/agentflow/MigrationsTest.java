@@ -74,7 +74,7 @@ class MigrationsTest {
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
               "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23", "3.3.24",
-              "3.3.25", "3.3.26", "3.3.27", "3.3.28", "3.3.29");
+              "3.3.25", "3.3.26", "3.3.27", "3.3.28", "3.3.29", "3.3.30");
     }
   }
 
@@ -656,26 +656,30 @@ class MigrationsTest {
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("unique constraint");
 
-        // dlq_messages (S06-11): a failed consumer outcome is held for investigation — a valid
-        // (consumer_name, event_id) row lands with a RETRY disposition. A second insert with the
-        // SAME pair is rejected by the composite UNIQUE constraint, so a duplicate delivery never
-        // dead-letters the event twice (at-least-once, ADR-003); last_error is nullable.
+        // dlq_messages (S06-11, S12-10): a failed consumer outcome is held for investigation — a
+        // valid (consumer_name, event_id) row lands with a RETRY disposition and the TRANSIENT
+        // error_class (S12-10). A second insert with the SAME pair is rejected by the composite
+        // UNIQUE constraint, so a duplicate delivery never dead-letters the event twice (at-least-
+        // once, ADR-003); last_error is nullable but error_class is NOT NULL (S12-10) and supplied
+        // below so the CHECK holds.
         String dlqEvent = uuid();
         insert(
-            "INSERT INTO dlq_messages (event_id, topic, consumer_name, status, attempts) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO dlq_messages (event_id, topic, consumer_name, status, error_class, attempts) VALUES (?, ?, ?, ?, ?, ?)",
             dlqEvent,
             "agentflow.workflow.run-requested.v1",
             "workflowexecution:step-LLM_PLAN",
             "RETRY",
+            "TRANSIENT",
             3);
         assertThatThrownBy(
                 () ->
                     insert(
-                        "INSERT INTO dlq_messages (event_id, topic, consumer_name, status, attempts) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO dlq_messages (event_id, topic, consumer_name, status, error_class, attempts) VALUES (?, ?, ?, ?, ?, ?)",
                         dlqEvent,
                         "agentflow.workflow.run-requested.v1",
                         "workflowexecution:step-LLM_PLAN",
                         "RETRY",
+                        "TRANSIENT",
                         3))
             .isInstanceOf(SQLException.class)
             .hasMessageContaining("unique constraint");
@@ -1205,6 +1209,21 @@ class MigrationsTest {
   }
 
   /**
+   * The S12-10 schema guard for the DLQ: {@code error_class} is NOT NULL (a failed outcome is
+   * always classified as PERMANENT or TRANSIENT), carries its S12-10 attribution in the column
+   * COMMENT, and its vocabulary is enforced by the {@code dlq_messages_error_class_check} CHECK at
+   * the storage layer, so an unknown class can never reach the investigation view (invariant 10:
+   * the vocabulary is a database constraint, not an application assumption).
+   */
+  @Test
+  void dlq_error_class_guard_declared() throws SQLException {
+    assertThat(checkConstraints("dlq_messages")).contains("dlq_messages_error_class_check");
+    assertThat(nullableColumn("dlq_messages", "error_class")).isFalse();
+    assertThat(columnType("dlq_messages", "error_class")).contains("text");
+    assertThat(columnComment("dlq_messages", "error_class")).contains("S12-10");
+  }
+
+  /**
    * The S12-01 acceptance, proven against data rather than declared: a usage record is tied to a
    * specific attempt and is tenant-scoped. A valid MODEL usage record (estimated, with token counts
    * and cost) for (run, step, attempt 1) lands, and so does a record for the same (run, step) but a
@@ -1380,7 +1399,8 @@ class MigrationsTest {
    * V3_3_29}).
    */
   private static Set<String> triggerNames(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT t.tgname AS trigger_name FROM pg_trigger t "
@@ -1399,7 +1419,8 @@ class MigrationsTest {
 
   /** The human-readable COMMENT on the named trigger, if any (null when absent). */
   private static String triggerComment(String trigger) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT d.description AS comment FROM pg_trigger t "
@@ -1414,7 +1435,8 @@ class MigrationsTest {
 
   /** The human-readable COMMENT on the named function, if any (null when absent). */
   private static String functionComment(String func) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT obj_description('" + func + "'::regproc, 'pg_proc') AS comment")) {
@@ -1500,7 +1522,8 @@ class MigrationsTest {
   }
 
   private static UUID tenantId(String slug) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery("SELECT id FROM tenants WHERE slug = '" + slug + "'")) {
       return rs.next() ? rs.getObject("id", UUID.class) : null;
@@ -1508,7 +1531,8 @@ class MigrationsTest {
   }
 
   private static UUID definitionId(String name) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT id FROM workflow_definitions WHERE name = '" + name + "'")) {
@@ -1517,7 +1541,8 @@ class MigrationsTest {
   }
 
   private static Set<String> baseTables() throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT table_name FROM information_schema.tables "
@@ -1531,7 +1556,8 @@ class MigrationsTest {
   }
 
   private static boolean nullableColumn(String table, String column) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT is_nullable FROM information_schema.columns "
@@ -1553,7 +1579,8 @@ class MigrationsTest {
    * ... STORED} one that can never actually hold NULL.
    */
   private static String generatedColumn(String table, String column) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT is_generated FROM information_schema.columns "
@@ -1567,7 +1594,8 @@ class MigrationsTest {
   }
 
   private static Set<String> uniqueConstraints(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT constraint_name FROM information_schema.table_constraints "
@@ -1587,7 +1615,8 @@ class MigrationsTest {
    * {@code (consumer_name, event_id)} inbox dedup guard declared in {@code V3_3_9}.
    */
   private static Set<String> primaryKeyConstraint(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT c.conname AS primary_key "
@@ -1604,7 +1633,8 @@ class MigrationsTest {
   }
 
   private static Set<String> checkConstraints(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT c.conname AS check_constraint "
@@ -1626,7 +1656,8 @@ class MigrationsTest {
    * stays correct if a future migration adds a second key.
    */
   private static Set<String> referencedParents(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT cl.relname AS referenced_table "
@@ -1644,7 +1675,8 @@ class MigrationsTest {
   }
 
   private static Set<String> indexes(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT indexname FROM pg_indexes WHERE tablename = '" + table + "'")) {
@@ -1657,7 +1689,8 @@ class MigrationsTest {
   }
 
   private static String tableComment(String table) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT obj_description('" + table + "'::regclass) AS comment")) {
@@ -1666,7 +1699,8 @@ class MigrationsTest {
   }
 
   private static String columnComment(String table, String column) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT col_description('"
@@ -1683,7 +1717,8 @@ class MigrationsTest {
 
   /** Whether the named extension (for example {@code vector}) is installed in the database. */
   private static boolean extensionEnabled(String name) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = '"
@@ -1698,7 +1733,8 @@ class MigrationsTest {
    * {@code format_type}, so the fixed embedding dimension is asserted as the driver reports it.
    */
   private static String columnType(String table, String column) throws SQLException {
-    try (Statement statement = statement();
+    try (Connection conn = connection();
+        Statement statement = conn.createStatement();
         ResultSet rs =
             statement.executeQuery(
                 "SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute "

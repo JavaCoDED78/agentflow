@@ -10,12 +10,13 @@ import java.util.UUID;
 import org.springframework.jdbc.core.RowMapper;
 
 /**
- * Maps a {@code dlq_messages} row to a {@link DlqMessage} (S06-11).
+ * Maps a {@code dlq_messages} row to a {@link DlqMessage} (S06-11 / S12-10).
  *
  * <p>Kept as a standalone class so it can be unit-tested directly with a mock {@link ResultSet},
  * mirroring {@link InboxMessageRowMapper} and {@link OutboxEventRowMapper}. The {@code last_error}
  * column may be NULL (for example a record appended before the error detail was known); it maps to
- * {@code null} and is not coerced. The dedup key is {@code (consumer_name, event_id)}; {@code
+ * {@code null} and is not coerced. The {@code error_class} column is NOT NULL (S12-10) and maps to
+ * {@link DlqMessage.ErrorClass}. The dedup key is {@code (consumer_name, event_id)}; {@code
  * event_id} is the same id as the outbox event id and the envelope {@code eventId} (invariant 3).
  */
 final class DlqMessageRowMapper implements RowMapper<DlqMessage> {
@@ -28,6 +29,7 @@ final class DlqMessageRowMapper implements RowMapper<DlqMessage> {
         rs.getString("topic"),
         rs.getString("consumer_name"),
         DlqMessage.Status.valueOf(rs.getString("status")),
+        DlqMessage.ErrorClass.valueOf(rs.getString("error_class")),
         rs.getInt("attempts"),
         rs.getString("last_error"),
         timestamp(rs, "recorded_at"));

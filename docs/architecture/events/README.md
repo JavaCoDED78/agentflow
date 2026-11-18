@@ -401,6 +401,16 @@ looping forever, and a malformed message is never retried unboundedly (`S06-11`)
   `tenant_id` (the inbox/DLQ are keyed by `(consumer, event)`; tenant isolation is enforced by the
   consumer, invariant 1), `last_error` is redacted (invariant 8), and the rows are evidence for
   investigation, not reprocessed by default.
+- **DLQ contract (`S12-10`).** A DLQ record carries **two** diagnostics of the same outcome:
+  `status` (the disposition — `RETRY` / `DEAD_LETTER`, S06-11) and `error_class` (the classification
+  of the failure — `PERMANENT` / `TRANSIENT`, S12-10). The consumer's error policy maps
+  `PERMANENT` → `DEAD_LETTER` and `TRANSIENT` → `RETRY` one-to-one, so the class is recorded
+  alongside the disposition, and the CHECK `dlq_messages_error_class_check` holds the vocabulary.
+  **Payload vs pointer (S12-10 decision): the DLQ stores a pointer (`event_id`) to the original
+  event, never the payload inline.** The operator reads the safe, redacted diagnostics
+  (`error_class` / `attempts` / `last_error` / `recorded_at`) and navigates from `event_id` to the
+  redacted payload, so a redacted diagnostic is sufficient without disclosing document text, prompts
+  or secrets (invariants 7/8/9).
 
 ---
 

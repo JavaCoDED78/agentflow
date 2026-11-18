@@ -107,6 +107,13 @@ public class InboxConsumerService {
         result == InboxConsumeResult.RETRY
             ? DlqMessage.Status.RETRY
             : DlqMessage.Status.DEAD_LETTER;
-    dlq.record(topic, claim.eventId(), claim.consumerName(), status, attempts, lastError);
+    // The InboxDedupService classifies PERMANENT -> DEAD_LETTER and TRANSIENT -> RETRY, one-to-one,
+    // so the DLQ error_class mirrors the disposition recorded here (S12-10).
+    DlqMessage.ErrorClass errorClass =
+        result == InboxConsumeResult.RETRY
+            ? DlqMessage.ErrorClass.TRANSIENT
+            : DlqMessage.ErrorClass.PERMANENT;
+    dlq.record(
+        topic, claim.eventId(), claim.consumerName(), status, errorClass, attempts, lastError);
   }
 }

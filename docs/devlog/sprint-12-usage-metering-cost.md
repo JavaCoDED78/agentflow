@@ -11,6 +11,7 @@
 - [S12-08](#s12-08-the-append-only-audit-trail-enforced-at-the-storage-layer) — the append-only audit trail, enforced at the storage layer: `V3_3_29__audit_events_append_only.sql` (owner `audit`, forward-only, `ADR-008`) a `BEFORE UPDATE OR DELETE` trigger blocks rewrite for every role incl. the table owner; `REVOKE ... FROM PUBLIC` least-privilege hardening; recovery re-appends, never rewrites
 - [S12-07](#s12-07-the-audit-action-catalogue-audit-contract) — the audit action catalogue (audit contract): `docs/security/audit-contract.md` enumerates every security-sensitive action + mandatory fields; the `AuditAction` / `AuditResourceType` enums express the canonical catalogue; coverage map (WIRED vs CANON)
 - [S12-09](#s12-09-centralised-secret-redaction) — centralised secret redaction: `common.SecretRedactor` is the one source of truth (bearer / JWT, `AKIA…`, `key=<secret>`, full prompt); `SecretRedactingValueMasker`, `AuditService` and `DlqService` all delegate to it, so logs / audit metadata / DLQ description redact identically; `ADR-020` + a widened architecture ALLOW map
+- [S12-10](#s12-10-the-dead-letter-store-records-why-a-message-failed) — the dead-letter store records *why* a message failed (`error_class`) alongside *what to do* with it (`status`): `dlq_messages.error_class` (`V3_3_30`) with a `PERMANENT`/`TRANSIENT` CHECK, the `DlqMessage.ErrorClass` enum, `DlqService#record` / `DlqMessageRowMapper` / `DlqMessageRepository`; `InboxConsumerService` derives it one-to-one (PERMANENT → DEAD_LETTER, TRANSIENT → RETRY) so the two diagnostics of one outcome are consistent; `ErrorClass` stays inside `messaging`, no new module edge, no ADR
 
 ---
 
@@ -570,3 +571,29 @@ now notes the delegation); `common/AGENTS.md` already lists "secret redaction" a
 primitives — this change is on-ownership, no edit needed; `CHANGELOG.md` (this entry).
 
 **Scope.** The value-bearing patterns (bearer / AWS key) and the `key=value` / `key: <secret>` form — including the JSON-object form with a quoted key — match exactly what the S01-19 masker applied and what the canary test exercises, so the same utility the log path redacts is the one the audit-metadata and DLQ writes use.
+
+## S12-10 — the dead-letter store records *why* a message failed
+
+`S06-11` says a failed inbox event is *held for investigation*, not retried unboundedly. Until `S12-10` the held record recorded **what to do** with it (`status`: `RETRY` / `DEAD_LETTER`) but not **why** it failed. An operator opening a dead-letter row could see "hold this" without knowing the failure was permanent or transient — the very classification that decides whether the message can ever succeed again. `S12-10` stores that classification (`error_class`) alongside the disposition, one-to-one, at the storage layer, so the two never diverge.
+
+**The deliverable is a new column, not a new module.** `dlq_messages` gains `error_class TEXT NOT NULL DEFAULT 'TRANSIENT'` guarded by a CHECK constraint (`dlq_messages_error_class_check`, `PERMANENT` / `TRANSIENT`) declared in a forward-only migration `V3_3_30__add_error_class_to_dlq_messages.sql` (`ADR-008`), with a column comment. `DlqMessage` (messaging.domain) gains the nested `ErrorClass` enum (`PERMANENT` / `TRANSIENT`); `DlqService#record(String topic, UUID eventId, String consumerName, DlqMessage.Status, DlqMessage.ErrorClass, int, String)` takes it and forwards it to the repository; `DlqMessageRowMapper` reads `error_class` into the record and `DlqMessageRepository` persists it. The column is optional at the edge: the repository and row mapper degrade when `error_class` is absent (a row written by an earlier migration), so the column is added without a risky all-at-once cutover.
+
+**The derivation is inside `messaging` — one-to-one, never inconsistent.** `InboxConsumerService` already classifies `PERMANENT` → `DEAD_LETTER` and `TRANSIENT` → `RETRY` on the inbox side; `S12-10` reuses that same decision to set the DLQ `error_class`:
+
+```java
+DlqMessage.ErrorClass errorClass =
+    result == InboxConsumeResult.RETRY
+        ? DlqMessage.ErrorClass.TRANSIENT
+        : DlqMessage.ErrorClass.PERMANENT;
+dlq.record(topic, claim.eventId(), claim.consumerName(), status, errorClass, attempts, lastError);
+```
+
+Because one method sets both, the disposition and the classification of the same failure can never disagree.
+
+**Architecture — no new module edge, no ADR required.** `DlqMessage.ErrorClass` is imported *only* inside `messaging.application` / `messaging.persistence`; the `ingestion.worker.DocumentIndexingWorker` still consumes only the `messaging.application` public API (`DlqService`, `InboxConsumerService`, …) and never references the domain type `DlqMessage`. So `S12-10` does not add a `messaging → other` or `other → messaging.domain` edge. The architecture gate (`moduleBoundaries`, `ArchitectureBoundaryTest`) is unchanged and still passes; no ADR is needed (the classification is a domain-neutral `messaging` concern, the same precedent as the inbox error policy — `ADR-016`). This is the opposite of `S12-09`, where the redaction primitive genuinely pulled `common` into the graph and the ALLOW map had to be widened.
+
+**Verification.** Unit suites, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh reports this session): `DlqServiceTest` (4 — the classification is persisted with the disposition and redacted `lastError`; the null-repository path is a no-op), `DlqMessageRowMapperTest` (2 — `error_class` round-trips, and a NULL `error_class` degrades to `TRANSIENT`), `DlqMessageRepositoryTest` (6 — upsert records the column and a duplicate `(consumer_name, event_id)` collapses), `InboxConsumerServiceTest` (4 — `PERMANENT → DEAD_LETTER` / `TRANSIENT → RETRY` both set the matching `error_class`). Integration: `MigrationsTest` (27 — `dlq_error_class_guard_declared` checks the column type `text`, `NOT NULL`, the CHECK, and the version list now includes `3.3.30`; `acceptance_criteria_hold_against_data` still holds) and `DlqMessageRepositoryIT` (4 — `error_class` round-trips on live PostgreSQL/pgvector). `./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (the unchanged ALLOW map, `moduleBoundaries` passes) + no-cycles + formatting (`spotlessApply`, import ordering / javadoc wrapping; `git diff --check` clean).
+
+**Docs.** `docs/domain-glossary.md` (`error_class`, `dead-letter` rows now carry the classification); `docs/architecture/events/README.md` (the DLQ contract section notes the classification recorded alongside the disposition); `docs/architecture/kafka-topics.md`; `docs/architecture/module-api.md` (`DlqService.record` parameter and the `ErrorClass` type). `CHANGELOG.md` (this entry).
+
+**Acceptance.** The DLQ record captures both the disposition and the *reason* (permanent / transient) for a held message, recorded one-to-one, so investigation reads a single consistent diagnostic rather than a disposition with no cause.

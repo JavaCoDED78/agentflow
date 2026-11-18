@@ -33,7 +33,15 @@ class DlqServiceTest {
     DlqMessage.Status status = DlqMessage.Status.DEAD_LETTER;
     when(repository.record(any(DlqMessage.class))).thenReturn(true);
 
-    boolean inserted = service.record(TOPIC, EVENT_ID, CONSUMER, status, 3, "malformed envelope");
+    boolean inserted =
+        service.record(
+            TOPIC,
+            EVENT_ID,
+            CONSUMER,
+            status,
+            DlqMessage.ErrorClass.PERMANENT,
+            3,
+            "malformed envelope");
 
     assertThat(inserted).isTrue();
     ArgumentCaptor<DlqMessage> captured = ArgumentCaptor.forClass(DlqMessage.class);
@@ -43,6 +51,7 @@ class DlqServiceTest {
     assertThat(record.topic()).isEqualTo(TOPIC);
     assertThat(record.consumerName()).isEqualTo(CONSUMER);
     assertThat(record.status()).isEqualTo(status);
+    assertThat(record.errorClass()).isEqualTo(DlqMessage.ErrorClass.PERMANENT);
     assertThat(record.attempts()).isEqualTo(3);
     assertThat(record.lastError()).isEqualTo("malformed envelope");
   }
@@ -54,7 +63,14 @@ class DlqServiceTest {
     when(repository.record(any(DlqMessage.class))).thenReturn(false);
 
     boolean inserted =
-        service.record(TOPIC, EVENT_ID, CONSUMER, DlqMessage.Status.RETRY, 2, "retry");
+        service.record(
+            TOPIC,
+            EVENT_ID,
+            CONSUMER,
+            DlqMessage.Status.RETRY,
+            DlqMessage.ErrorClass.TRANSIENT,
+            2,
+            "retry");
 
     assertThat(inserted).isFalse();
   }
@@ -64,7 +80,14 @@ class DlqServiceTest {
     DlqService serviceNoDb = new DlqService(null);
 
     boolean inserted =
-        serviceNoDb.record(TOPIC, EVENT_ID, CONSUMER, DlqMessage.Status.DEAD_LETTER, 0, null);
+        serviceNoDb.record(
+            TOPIC,
+            EVENT_ID,
+            CONSUMER,
+            DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
+            0,
+            null);
 
     assertThat(inserted).isFalse();
     verify(repository, never()).record(any(DlqMessage.class));
@@ -78,7 +101,14 @@ class DlqServiceTest {
 
     String secretError = "Bearer abcdef123456";
     boolean inserted =
-        service.record(TOPIC, EVENT_ID, CONSUMER, DlqMessage.Status.DEAD_LETTER, 1, secretError);
+        service.record(
+            TOPIC,
+            EVENT_ID,
+            CONSUMER,
+            DlqMessage.Status.DEAD_LETTER,
+            DlqMessage.ErrorClass.PERMANENT,
+            1,
+            secretError);
 
     assertThat(inserted).isTrue();
     ArgumentCaptor<DlqMessage> captured = ArgumentCaptor.forClass(DlqMessage.class);

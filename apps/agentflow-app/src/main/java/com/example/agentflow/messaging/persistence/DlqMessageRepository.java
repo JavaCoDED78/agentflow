@@ -55,8 +55,8 @@ public class DlqMessageRepository {
     jdbc.update(
         "INSERT INTO "
             + TABLE
-            + " (id, event_id, topic, consumer_name, status, attempts, last_error, recorded_at)"
-            + " VALUES (?, ?, ?, ?, ?, ?, ?, now()) "
+            + " (id, event_id, topic, consumer_name, status, error_class, attempts, last_error, recorded_at)"
+            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, now()) "
             + "ON CONFLICT (consumer_name, event_id) DO NOTHING",
         ps -> {
           ps.setObject(1, record.id());
@@ -64,8 +64,9 @@ public class DlqMessageRepository {
           ps.setString(3, record.topic());
           ps.setString(4, record.consumerName());
           ps.setString(5, record.status().name());
-          ps.setInt(6, record.attempts());
-          ps.setString(7, record.lastError());
+          ps.setString(6, record.errorClass().name());
+          ps.setInt(7, record.attempts());
+          ps.setString(8, record.lastError());
         });
     return true;
   }
@@ -78,7 +79,7 @@ public class DlqMessageRepository {
   public Optional<DlqMessage> findByConsumerAndEvent(String consumerName, UUID eventId) {
     List<DlqMessage> rows =
         jdbc.query(
-            "SELECT id, event_id, topic, consumer_name, status, attempts, last_error, "
+            "SELECT id, event_id, topic, consumer_name, status, error_class, attempts, last_error, "
                 + "recorded_at FROM "
                 + TABLE
                 + " WHERE consumer_name = ? AND event_id = ?",

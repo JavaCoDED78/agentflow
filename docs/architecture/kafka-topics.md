@@ -173,6 +173,11 @@ The topics exist to carry the boundary that the durable engine closes (`S06-05`�
   success *and* ambiguous/failed completion.
 - **Retry + DLQ.** Transient faults retry with bounded backoff; permanent/malformed
   messages go to a per-topic DLQ for investigation, **not** unbounded retry (`S06-11`).
+  The DLQ record (`dlq_messages`) carries the disposition (`RETRY` / `DEAD_LETTER`) plus
+  `error_class` (`PERMANENT` / `TRANSIENT`, `S12-10`) — the failure's classification recorded
+  alongside the disposition — and stores a **pointer** (`event_id`) to the original event
+  rather than the payload inline, so the investigation view never discloses the payload
+  (`S12-10`, invariants 7/8/9).
 
 The per-run partition key supports this: because a run's records stay ordered in one
 partition, a duplicate `step-ready` arrives behind the original and is dropped by the

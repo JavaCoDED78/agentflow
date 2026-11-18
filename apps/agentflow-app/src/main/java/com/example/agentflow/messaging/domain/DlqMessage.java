@@ -21,9 +21,12 @@ import java.util.UUID;
  * key as the inbox). The {@code event_id} is the SAME id as the outbox event id / envelope {@code
  * eventId}, the anchor a consumer re-checks against.
  *
- * <p>Values are immutable; the application-managed {@link #status} is set only by the {@code
- * DlqService}. The {@code status} here is the consumer error policy (S06-11), distinct from the
- * {@code inbox_messages.status} lifecycle set by the inbox dedup helper (S06-10).
+ * <p>Values are immutable; the application-managed {@link #status} and {@link #errorClass} are set
+ * only by the {@code DlqService}. The {@code status} here is the consumer error-policy disposition
+ * (S06-11), distinct from the {@code inbox_messages.status} lifecycle set by the inbox dedup helper
+ * (S06-10); the {@link #errorClass} is the consumer error classification of the failure (S12-10),
+ * distinct from {@code status} (the disposition &mdash; what to do with the message &mdash;) and
+ * records why it failed.
  */
 public record DlqMessage(
     UUID id,
@@ -31,6 +34,7 @@ public record DlqMessage(
     String topic,
     String consumerName,
     Status status,
+    ErrorClass errorClass,
     int attempts,
     String lastError,
     OffsetDateTime recordedAt) {
@@ -48,27 +52,74 @@ public record DlqMessage(
   }
 
   /**
+   * The consumer error classification of a failed inbox outcome (S12-10), the <i>why it failed</i>
+   * half of a DLQ record &mdash; distinct from the {@link #status} disposition, the <i>what to do
+   * with it</i>. It mirrors {@link
+   * com.example.agentflow.messaging.application.InboxErrorClassification} (the classifier the
+   * {@code messaging} consumer applies), expressed in {@code domain} so the record stays free of an
+   * {@code application} dependency, exactly as {@link #status} mirrors {@link
+   * com.example.agentflow.messaging.application.InboxConsumeResult}.
+   *
+   * <ul>
+   *   <li><b>{@link #PERMANENT}</b> &mdash; the envelope can never be processed on a redelivery (a
+   *       malformed / invalid event): the consumer dead-letters it, so this is paired with {@link
+   *       Status#DEAD_LETTER}.
+   *   <li><b>{@link #TRANSIENT}</b> &mdash; a retryable infrastructure / external fault: the
+   *       consumer runs the bounded immediate retry, so this is paired with {@link Status#RETRY}.
+   * </ul>
+   *
+   * <p>It is stored as TEXT and its vocabulary is enforced at the storage layer by the {@code
+   * dlq_messages_error_class_check} CHECK (S12-10), so an unknown class cannot reach the
+   * investigation view.
+   */
+  public enum ErrorClass {
+
+    /**
+     * A permanent, non-retryable failure (malformed / invalid event); paired with {@link
+     * Status#DEAD_LETTER}.
+     */
+    PERMANENT,
+
+    /**
+     * A transient, retryable failure (infrastructure / external fault); paired with {@link
+     * Status#RETRY}.
+     */
+    TRANSIENT
+  }
+
+  /**
    * Build a fresh dead-letter record for a consumer + event pair.
    *
    * @param eventId the domain event id, the SAME id as the outbox event id / envelope eventId
    * @param topic the versioned topic the envelope arrived on
    * @param consumerName the inbox consumer identity whose processing failed
-   * @param status the consumer error policy disposition ({@link Status#RETRY} / {@link
+   * @param status the consumer error-policy disposition ({@link Status#RETRY} / {@link
    *     Status#DEAD_LETTER})
+   * @param errorClass the consumer error classification of the failure ({@link
+   *     ErrorClass#PERMANENT} / {@link ErrorClass#TRANSIENT})
    * @param attempts the attempt count after the failed attempts (already the exhausted total)
    * @param lastError the safe, redacted last error
-   * @return a new {@link DlqMessage} timestamped now (S06-11)
+   * @return a new {@link DlqMessage} timestamped now (S06-11 / S12-10)
    */
   public static DlqMessage deadLetter(
       UUID eventId,
       String topic,
       String consumerName,
       Status status,
+      ErrorClass errorClass,
       int attempts,
       String lastError) {
     UUID id = UUID.randomUUID();
     return new DlqMessage(
-        id, eventId, topic, consumerName, status, attempts, lastError, OffsetDateTime.now());
+        id,
+        eventId,
+        topic,
+        consumerName,
+        status,
+        errorClass,
+        attempts,
+        lastError,
+        OffsetDateTime.now());
   }
 
   /**
@@ -79,6 +130,7 @@ public record DlqMessage(
    * @param topic the versioned topic the envelope arrived on
    * @param consumerName the consumer half of the dedup key
    * @param status the persisted disposition
+   * @param errorClass the persisted error classification (PERMANENT / TRANSIENT)
    * @param attempts the attempt count
    * @param lastError the safe, redacted last error
    * @param recordedAt the instant the record was appended
@@ -90,10 +142,11 @@ public record DlqMessage(
       String topic,
       String consumerName,
       Status status,
+      ErrorClass errorClass,
       int attempts,
       String lastError,
       OffsetDateTime recordedAt) {
     return new DlqMessage(
-        id, eventId, topic, consumerName, status, attempts, lastError, recordedAt);
+        id, eventId, topic, consumerName, status, errorClass, attempts, lastError, recordedAt);
   }
 }
