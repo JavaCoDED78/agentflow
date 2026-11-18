@@ -72,6 +72,7 @@ class RunServiceTest {
             versionService,
             transitionService,
             null,
+            null,
             null);
   }
 
@@ -138,7 +139,14 @@ class RunServiceTest {
   void create_run_without_a_database_reports_unavailable() {
     RunService noDb =
         new RunService(
-            null, new IdempotencyKeyService(null), outboxService, versionService, null, null, null);
+            null,
+            new IdempotencyKeyService(null),
+            outboxService,
+            versionService,
+            null,
+            null,
+            null,
+            null);
 
     assertThatThrownBy(
             () -> noDb.createRun(tenant, "alice", new CreateRunRequest(workflow, null), null))
@@ -270,7 +278,7 @@ class RunServiceTest {
   void get_run_without_a_database_reports_unavailable() {
     RunService noDb =
         new RunService(
-            null, idempotencyKeyService, outboxService, versionService, null, null, null);
+            null, idempotencyKeyService, outboxService, versionService, null, null, null, null);
 
     assertThatThrownBy(() -> noDb.getRun(tenant, runId))
         .isInstanceOf(ResponseStatusException.class)

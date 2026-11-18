@@ -106,7 +106,7 @@ class WorkflowCancelEndToEndIT {
     versionService =
         new WorkflowVersionService(definitionRepo, versionRepo, auditService, properties);
 
-    transitionService = new RunStateMachineService(runRepo, stepRepo, null, eventService);
+    transitionService = new RunStateMachineService(runRepo, stepRepo, null, eventService, null);
     leaseService = new RunLeaseService(runRepo, Clock.systemUTC(), properties);
     RunHeartbeatService heartbeat = new RunHeartbeatService(runRepo, Clock.systemUTC(), properties);
     checkpointAdapter = new CheckpointAdapter(stepRepo, properties);
@@ -122,6 +122,7 @@ class WorkflowCancelEndToEndIT {
             outboxService,
             versionService,
             transitionService,
+            null,
             null,
             null);
 

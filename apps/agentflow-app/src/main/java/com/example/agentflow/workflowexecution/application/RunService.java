@@ -4,6 +4,7 @@ import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import com.example.agentflow.usage.domain.BudgetCheckResult;
+import com.example.agentflow.usage.domain.QuotaCheckResult;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionDto;
 import com.example.agentflow.workflowdefinition.application.WorkflowVersionService;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
@@ -72,6 +73,7 @@ public class RunService {
   private final RunStateMachineService transitionService;
   private final WorkflowStepAttemptHistoryRepository attemptHistoryRepository;
   private final BudgetGuard budgetGuard;
+  private final RunQuotaGuard runQuotaGuard;
 
   @Autowired
   public RunService(
@@ -81,7 +83,8 @@ public class RunService {
       WorkflowVersionService versionService,
       @Autowired(required = false) RunStateMachineService transitionService,
       @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository,
-      @Autowired(required = false) BudgetGuard budgetGuard) {
+      @Autowired(required = false) BudgetGuard budgetGuard,
+      @Autowired(required = false) RunQuotaGuard runQuotaGuard) {
     this.runRepository = runRepository;
     this.idempotencyKeyService = idempotencyKeyService;
     this.outboxService = outboxService;
@@ -89,6 +92,7 @@ public class RunService {
     this.transitionService = transitionService;
     this.attemptHistoryRepository = attemptHistoryRepository;
     this.budgetGuard = budgetGuard;
+    this.runQuotaGuard = runQuotaGuard;
   }
 
   /**
@@ -328,6 +332,20 @@ public class RunService {
     }
     // Stable id across a retry; the run row and the event carry it.
     UUID runId = UUID.randomUUID();
+    // Quota gate (S12-05): a run must not be created when the tenant already holds its limit of
+    // non-terminal runs. The acquisition runs BEFORE the run row and the outbox event are written
+    // and inside the same transaction, so an over-quota tenant is refused with no run row and no
+    // event, and a committed run always holds its slot. Concurrent creations are serialized in
+    // PostgreSQL (the usage-side service takes the tenant's budget-row lock before counting), so
+    // the limit cannot be bypassed by a race. The guard is absent (no database) in the bootstrap
+    // profile, so the check is skipped then.
+    if (runQuotaGuard != null) {
+      QuotaCheckResult quota = runQuotaGuard.acquireRunSlot(tenantId, runId);
+      if (!quota.allowed()) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "tenant quota exceeded: " + quota.reason());
+      }
+    }
     runRepository.create(
         runId, tenantId, version.id(), request.idempotencyKey(), payloadFingerprint, createdBy);
     // Append the request event in the SAME transaction as the run: neither commits without the

@@ -112,7 +112,7 @@ class WorkflowWorkerLimitsIT {
     versionService =
         new WorkflowVersionService(definitionRepo, versionRepo, auditService, properties);
 
-    transitionService = new RunStateMachineService(runRepo, stepRepo, null, eventService);
+    transitionService = new RunStateMachineService(runRepo, stepRepo, null, eventService, null);
     leaseService = new RunLeaseService(runRepo, Clock.systemUTC(), properties);
     heartbeat = new RunHeartbeatService(runRepo, Clock.systemUTC(), properties);
     checkpointAdapter = new CheckpointAdapter(stepRepo, properties);

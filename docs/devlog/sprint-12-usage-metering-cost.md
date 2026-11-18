@@ -6,6 +6,7 @@
 - [S12-02](#s12-02-the-uniform-usage-recording-path) — the uniform usage recording path: `UsageMeteringService` / `UsageRecordDto`, unknown recorded as unknown, the `domain` placement that keeps the module acyclic
 - [S12-03](#s12-03-the-usage-price-catalogue-and-versioning) — the usage price catalogue: `PricingResolver` / `PricingInfo` / `UnitDivisor`, migration `V3_3_25` `price_version` / `pricing_revision`, the priced `fromChatResponse`
 - [S12-04](#s12-04-the-durable-per-tenant-cost-budget) — the durable per-tenant cost budget: `tenant_budgets` / `budget_reservations` (`V3_3_26`), idempotent reserve-before-the-call / settle-after, the `usage → workflowexecution` execution-SPI budget gate
+- [S12-05](#s12-05-the-per-tenant-parallel-run-quota) — the per-tenant parallel-run quota: `tenant_run_slots` (`V3_3_27`), row-lock-serialized acquire-at-create / release-at-terminal, the race-proof quota gate
 
 ---
 
@@ -264,3 +265,70 @@ the `persistence.BudgetRepository` internal package); [`docs/architecture/module
 (the `usage` module row — `tenant_budgets` under `usage` — and edge 9 `usage → workflowexecution`,
 no new edge, no ADR); [`docs/domain-glossary.md`](../domain-glossary.md) (the "Cost budget" /
 "Budget" rows); `CHANGELOG.md` (this entry).
+
+## S12-05 — the per-tenant parallel-run quota
+
+The quota half of the per-tenant limits Sprint 12 requires (plan `S12-05`; the usage half —
+tokens / cost — is the S12-04 budget). `usage` owns it, backed by migration `V3_3_27`
+(forward-only, `ADR-008`): `tenant_run_slots` — one row per **non-terminal** run a tenant holds,
+acquired at run creation and released at the terminal transition, so the slot lifetime is exactly
+the run's non-terminal lifetime. The limit itself is **not** duplicated: it stays the `max_runs`
+column of `tenant_budgets` (`V3_3_26`, S12-04) this quota enforces. A tenant with no
+`tenant_budgets` row is unlimited (never blocked) but its runs are still tracked, so the count
+stays truthful if a limit is configured later. `tenant_id` / `run_id` are plain, tenant-scoped
+values, not cross-module FKs; tenant isolation lives on the composite primary key and in every
+predicate (invariant 1).
+
+**The race acceptance — counted in PostgreSQL, never in Redis (invariant 2).**
+`application.QuotaService#acquireRunSlot` locks the tenant's `tenant_budgets` row
+(`SELECT ... FOR UPDATE`, the same serialization `BudgetService#reserve` uses), then counts the
+tenant's active slots and inserts the new row while still holding the lock. Two concurrent run
+creations therefore cannot both pass the headroom check: the second blocks on the row lock,
+re-reads the count after the first commits, and is refused. Redis is used only for auxiliary rate
+limiting / caching, never as the durable quota state.
+
+**Acquire at create, release at terminal — idempotently (invariant 3).** The composite
+`(tenant_id, run_id)` primary key makes a repeated acquisition an `ON CONFLICT DO NOTHING` no-op
+— the same run re-acquiring (a duplicate delivery / an idempotent replay) is allowed, never
+counted twice — and a repeated release is a `DELETE` of an already-absent row. Exactly-once is
+never promised. The release lives in `workflowexecution.application.RunStateMachineService` (both
+`transitionRun` overloads, after the transition and its event, in the same transaction), because
+every terminal write funnels through the single transition service (invariant 4) — one seam
+covers `SUCCEEDED` / `FAILED` / `CANCELLED` from the worker, the cancel path and the
+limit-exceeded path alike. A run that never becomes terminal (e.g. its pinned graph is missing)
+keeps its slot: stale-slot recovery is S12-06's reconciliation concern, recorded there.
+
+**The execution-SPI gate — the S12-04 shape.** `workflowexecution` owns the `RunQuotaGuard`
+**port** (acquire before the run row is written / release at the terminal state); `usage` supplies
+the `@ConditionalOnBean(DataSource.class)` adapter `UsageRunQuotaGuard`. It is the same sanctioned
+`usage → workflowexecution` module pair as the S12-04 `BudgetGuard` / `UsageBudgetGuard` (edge 9)
+— no new module edge, no ADR. `RunService#createAndPin` acquires after the budget check and before
+`workflow_runs` + outbox insert, in the caller's transaction: an over-quota tenant is refused with
+`409 CONFLICT` and no run row, no event, no slot. The `@Autowired(required = false)` seam keeps
+the app bootable without a database (S01-02).
+
+The value vocabulary: `domain.QuotaCheckResult` (`allowed`, `reason`) — the acquisition outcome,
+mirroring `BudgetCheckResult`.
+
+**Verification.** Unit: `QuotaServiceTest` (8 DB-free tests — allow/track without a budget, allow
+up to the limit then reject, a zero limit permits no run, duplicate acquisition is idempotent,
+release frees the slot, release without a slot is a no-op, tenant isolation, no-database fails
+loudly). Integration on real `pgvector/pgvector:0.8.6-pg18` (`QuotaServiceIT`, 4 tests) — the
+**race acceptance**: 8 contenders, each owning its own connection and transaction, released at the
+same instant against a limit of 3 — exactly 3 acquire and 5 are refused, and the table holds
+exactly 3 rows; plus acquire/release round-trip, duplicate-acquisition idempotency and
+unlimited-tenant tracking / isolation. `MigrationsTest` (now at `v3.3.27`, `tests="24"`
+`failures="0"` `errors="0"` `skipped="0"`, JUnit-XML-verified) pins the new version and the owning
+table. The touched `workflowexecution` suites re-run green (`RunServiceTest` 16,
+`RunStateMachineServiceTest` 14, `TransitionTableServiceTest` 51; `RunServiceAtomicIT` 5,
+`WorkflowCancelEndToEndIT` 3, `WorkflowTransitionIntegrationTest` 10,
+`WorkflowTransitionConcurrencyIT` 2, `WorkflowWorkerEndToEndIT` 1,
+`WorkflowWorkerCrashRecoveryIT` 1, `WorkflowWorkerLimitsIT` 2 — all `failures="0"`
+`errors="0"`, fresh reports this session), proving the widened constructors and the null-guard
+skip leave every existing path unchanged.
+
+**Docs.** [`docs/architecture/module-api.md`](../architecture/module-api.md) (the `usage`
+public-application-services row — `QuotaService`; the permitted-types row — `QuotaCheckResult`;
+the `persistence.RunSlotRepository` internal package; the `workflowexecution` services row — the
+`BudgetGuard` / `RunQuotaGuard` ports); the `usage` module [`AGENTS.md`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/AGENTS.md)
+(data ownership — `tenant_run_slots`); `CHANGELOG.md` (this entry).
