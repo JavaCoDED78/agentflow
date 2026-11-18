@@ -6,6 +6,7 @@ import com.example.agentflow.usage.domain.BudgetMetric;
 import com.example.agentflow.usage.domain.BudgetReservation;
 import com.example.agentflow.usage.persistence.BudgetRepository;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -113,6 +114,61 @@ public class BudgetService {
       BudgetMetric metric,
       BigDecimal estimatedAmount,
       UUID reservationId) {
+    return reserve(tenantId, runId, metric, estimatedAmount, reservationId, null);
+  }
+
+  /**
+   * Reserve the estimated amount of an operation before it starts, keyed on the operation attempt
+   * for idempotency (S12-06). The {@code reservation_id} is derived deterministically from the
+   * (tenant, run, attempt, metric) tuple, so a duplicate attempt of the same operation reuses the
+   * same idempotency key and is a no-op on the {@code ON CONFLICT (reservation_id)} primary key -
+   * never a second charge (invariant 3, "use attempt ID for idempotency"); callers that already
+   * have an explicit id use {@link #reserve(UUID, UUID, BudgetMetric, BigDecimal, UUID)}.
+   *
+   * @param tenantId the owning tenant
+   * @param runId the run the reservation is charged to (may be {@code null} for a run-agnostic
+   *     budget)
+   * @param metric the dimension to reserve against ({@link BudgetMetric#COST} or {@link
+   *     BudgetMetric#TOKEN})
+   * @param estimatedAmount the estimated amount (never negative)
+   * @param attempt the operation attempt the idempotency key is derived from
+   * @return the reservation, settled later with {@link #settle}
+   * @throws BudgetExhaustedException when the reservation would exceed the remaining budget, so the
+   *     operation is blocked before it starts
+   */
+  public BudgetReservation reserve(
+      UUID tenantId, UUID runId, BudgetMetric metric, BigDecimal estimatedAmount, Long attempt) {
+    UUID reservationId =
+        BudgetReservation.reservationIdForAttempt(tenantId, runId, attempt, metric);
+    return reserve(tenantId, runId, metric, estimatedAmount, reservationId, attempt);
+  }
+
+  /**
+   * Reserve the estimated amount of an operation before it starts, blocking when the reservation
+   * would exceed the tenant's remaining budget. The reservation is checked against the limit under
+   * a row lock on the tenant's budget row, so concurrent reservations are serialized per tenant.
+   *
+   * @param tenantId the owning tenant
+   * @param runId the run the reservation is charged to (may be {@code null} for a run-agnostic
+   *     budget)
+   * @param metric the dimension to reserve against ({@link BudgetMetric#COST} or {@link
+   *     BudgetMetric#TOKEN})
+   * @param estimatedAmount the estimated amount (never negative)
+   * @param reservationId the idempotency key (a repeat with the same id is a no-op)
+   * @param attempt the operation attempt the reservation is keyed on, or {@code null} for a
+   *     reservation keyed only by the explicit {@code reservationId}
+   * @return the reservation, settled later with {@link #settle}
+   * @throws BudgetExhaustedException when the reservation would exceed the remaining budget, so the
+   *     operation is blocked before it starts
+   */
+  @Transactional
+  private BudgetReservation reserve(
+      UUID tenantId,
+      UUID runId,
+      BudgetMetric metric,
+      BigDecimal estimatedAmount,
+      UUID reservationId,
+      Long attempt) {
     requireDatabase("reserve");
     budgetRepository.lockBudgetRow(tenantId);
     // Idempotency (invariant 3): a duplicate reservation with the same id is returned as-is - never
@@ -126,7 +182,8 @@ public class BudgetService {
     if (budget.isEmpty()) {
       // No budget configured: nothing to reserve against. Return a no-backup reservation the
       // caller can ignore; settle(null) on it is a no-op.
-      return new BudgetReservation(reservationId, tenantId, runId, metric, estimatedAmount);
+      return new BudgetReservation(
+          reservationId, tenantId, runId, metric, estimatedAmount, null, attempt);
     }
     BudgetDto limits = budget.get();
     BigDecimal limit = limits.maxFor(metric);
@@ -147,13 +204,41 @@ public class BudgetService {
               + limit);
     }
     int inserted =
-        budgetRepository.insertReservation(reservationId, tenantId, runId, metric, estimatedAmount);
+        budgetRepository.insertReservation(
+            reservationId, tenantId, runId, metric, estimatedAmount, attempt);
     if (inserted == 0) {
       // A duplicate reservation with the same id already exists (idempotent repeat) - return the
       // existing row, so the tenant is charged exactly once.
       return budgetRepository.findReservation(reservationId).orElseThrow();
     }
-    return new BudgetReservation(reservationId, tenantId, runId, metric, estimatedAmount);
+    return new BudgetReservation(
+        reservationId, tenantId, runId, metric, estimatedAmount, null, attempt);
+  }
+
+  /**
+   * Reconcile the unsettled reservations a crash stranded (S12-06): every reservation of the tenant
+   * whose {@code settled_at} is still {@code null} and that was created before {@code before} is
+   * settled at its best-known amount (the reserved estimate, when no actual cost is known) and
+   * marked {@code reconciled} in the same statement, so a second reconcile of the same row is a
+   * no-op (invariant 3). This is the recovery of a reservation left floating when the worker died
+   * mid-operation or a provider call was ambiguous (S12-14) before it could settle.
+   *
+   * <p>The reconciliation writes the reservation's actual usage (the settled amount counts toward
+   * {@link #consumed} exactly once) and frees the stranded reservation from its unsettled state -
+   * "write actual/estimated usage and release the unused reservation". The scan is bounded to
+   * {@code created_at < before} (a reservation only becomes stranded once some time has passed), so
+   * a still-in-flight reservation is never mistaken for a stale one.
+   *
+   * @param tenantId the owning tenant
+   * @param before only reconcile reservations created before this instant (invariant 10: pass the
+   *     injected {@link java.time.Clock} time so time-dependent tests are deterministic)
+   * @return the number of reservations reconciled ({@code 0} when none were stranded)
+   */
+  @Transactional
+  public int reconcileUnsettled(UUID tenantId, OffsetDateTime before) {
+    requireDatabase("reconcileUnsettled");
+    Objects.requireNonNull(tenantId, "tenantId must not be null");
+    return budgetRepository.reconcileUnsettled(tenantId, before);
   }
 
   /**

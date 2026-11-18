@@ -7,6 +7,7 @@
 - [S12-03](#s12-03-the-usage-price-catalogue-and-versioning) — the usage price catalogue: `PricingResolver` / `PricingInfo` / `UnitDivisor`, migration `V3_3_25` `price_version` / `pricing_revision`, the priced `fromChatResponse`
 - [S12-04](#s12-04-the-durable-per-tenant-cost-budget) — the durable per-tenant cost budget: `tenant_budgets` / `budget_reservations` (`V3_3_26`), idempotent reserve-before-the-call / settle-after, the `usage → workflowexecution` execution-SPI budget gate
 - [S12-05](#s12-05-the-per-tenant-parallel-run-quota) — the per-tenant parallel-run quota: `tenant_run_slots` (`V3_3_27`), row-lock-serialized acquire-at-create / release-at-terminal, the race-proof quota gate
+- [S12-06](#s12-06-the-idempotent-reconciliation-of-stranded-reservations) — the idempotent reconciliation of stranded reservations: `reconciled_at` + `attempt` (`V3_3_28`), `BudgetService#reconcileUnsettled` settles a worker-crashed reservation at its best-known amount and marks it, so the run's true consumption is recoverable
 
 ---
 
@@ -332,3 +333,69 @@ public-application-services row — `QuotaService`; the permitted-types row — 
 the `persistence.RunSlotRepository` internal package; the `workflowexecution` services row — the
 `BudgetGuard` / `RunQuotaGuard` ports); the `usage` module [`AGENTS.md`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/AGENTS.md)
 (data ownership — `tenant_run_slots`); `CHANGELOG.md` (this entry).
+
+## S12-06 — the idempotent reconciliation of stranded reservations
+
+**What changed.** The `usage` module gains the **reconciliation** half of the durable budget
+lifecycle (S12-04 `reserve` / S12-04 `settle`). The two tables are unchanged; migration `V3_3_28`
+(forward-only, `ADR-008`, owner `usage`) adds two nullable columns to `budget_reservations`:
+
+| Column | Meaning |
+|---|---|
+| `reconciled_at` (`timestamptz`) | set when the row was recovered by the reconciliation flow (unsettled → settled-at-best-known). Distinguishes a recovered orphan from one settled by the normal `settle` path, and makes the reconcile idempotent (`settled_at IS NULL AND reconciled_at IS NULL` guard). |
+| `attempt` (`bigint`) | the operation attempt the reservation was keyed on. The idempotency key (`reservation_id`) is derived from `(tenant_id, run_id, attempt, metric)`, so a duplicate attempt of the same operation reuses the same key and a repeated `reserve` / `settle` is a no-op — "use attempt ID for idempotency" (invariant 3). `NULL` for rows created before S12-06 (they predate the attempt key and reconcile by `reservation_id`). |
+
+The domain value `BudgetReservation` carries `reconciledAt` and `attempt`; a reservation's idempotency
+key is derived deterministically from `(tenant, run, attempt, metric)` so a crash-retried reserve with
+the same attempt lands on the same row. `BudgetRepository` gains `findUnsettled(tenantId, before)` —
+unsettled rows created before `before`, ordered by `(created_at, reservation_id)` for a deterministic
+scan — and `reconcileUnsettled(tenantId, before)`, a single guarded `UPDATE` that settles each stranded
+row at its **best-known** amount (`actual_cost = reserved_amount`, `settled_at = now()`,
+`reconciled_at = now()`) where `tenant_id = ? AND settled_at IS NULL AND created_at < ?`.
+`BudgetService.reconcileUnsettled` is `@Transactional` and logs one `agentflow.usage.budget.reconciled`
+counter per recovered row (no tenant / id label, invariant 9).
+
+**Why.** A reservation is settled only when the operation settles **after** it runs. If the worker
+dies mid-operation — or a provider call is ambiguous — the reservation is left floating:
+`settled_at IS NULL`, so it keeps counting at its `reserved_amount` estimate forever and the run's
+true consumption is unknown. S12-06 reconciles those stranded reservations: it settles them at their
+best-known amount and marks them, so the budget reflects a recovered value instead of a stuck estimate,
+and the reconciliation itself is idempotent (a duplicate reconcile is a no-op — invariant 3). The flow
+is self-contained in `usage` — it needs no `workflowexecution` change and no terminal transition (the
+"release at terminal" concern is the normal `settle`; stale-slot recovery for runs that never terminate
+is a follow-up), which keeps the change minimal and fully testable.
+
+**Acceptance.**
+- **Re-settle does not double-charge.** `settle` is already guarded by `settled_at IS NULL`, and
+  `reconcileUnsettled` uses the same guard — a second settle / reconcile of the same row is a no-op
+  (verified by the idempotency assertions in `BudgetServiceTest` and `BudgetServiceIT`).
+- **A stranded reservation is recovered.** `reconcileUnsettled` settles a row created before the
+  boundary at its reserved amount, sets `reconciled_at`, and a second call reconciles nothing.
+
+**Tenant isolation (invariant 1):** the reconcile `UPDATE` is keyed by `tenant_id` with the predicate
+inside the query, so another tenant's stranded row is never reconciled for them; the `findUnsettled`
+scan filters on `(tenant_id, settled_at, created_at)` too.
+
+**Verification.** Unit: `BudgetServiceTest` (11 DB-free tests, JUnit-XML-verified
+`tests="11" failures="0" errors="0" skipped="0"` — reserve blocks on headroom, duplicate reservation
+is an idempotent no-op, `settle` reconciles / is idempotent, `checkBudget` allows without a budget and
+denies once exhausted, **reconcile settles a stranded reservation at its best-known amount once and is
+a no-op on the second pass**, reconcile ignores an in-flight reservation created after the boundary,
+reconcile keys the reservation id on `attempt`, tenant isolation, no-database fails loudly).
+Integration on real `pgvector/pgvector:0.8.6-pg18` (`BudgetServiceIT`, 9 tests): the real SQL scan and
+the `created_at < before` boundary, tenant-isolated reconcile, settle-at-best-known and the
+idempotent re-reconcile. `MigrationsTest` (now at `v3.3.28`, `tests="24"`,
+`failures="0"` `errors="0"` `skipped="0"`, JUnit-XML-verified) pins the new version and the owning
+table, asserting `reconciled_at` / `attempt` are nullable and the schema guards exist. The pre-existing
+`budget_reservations` / `tenant_budgets` suites (`BudgetServiceTest` / `BudgetServiceIT` — the S12-04
+reserve / settle coverage) re-run green with the two new columns, proving the migration and the new
+`attempt` key leave the S12-04 path unchanged. `:apps:agentflow-app:check` green — unit + architecture
+(`ArchitectureBoundaryTest` — the `usage` boundary unchanged, no new module edge) + no-cycles +
+formatting (`spotless`). No new endpoint, no new module edge, no new FK — `tenant_id` / `run_id` stay
+plain, tenant-scoped values (invariant 1).
+
+**Docs.** `CHANGELOG.md` (this entry); the devlog (this section); `docs/architecture/module-api.md`
+(the `usage` public-application-services row — `BudgetService` budget-reservation section, now with the
+reconciliation method; the permitted-types row — `BudgetReservation` fields `reconciledAt` /
+`attempt`); the `usage` module [`AGENTS.md`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/AGENTS.md)
+(data ownership — `budget_reservations`).
