@@ -74,7 +74,7 @@ class MigrationsTest {
               "3.3.0", "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.5", "3.3.6", "3.3.7", "3.3.8",
               "3.3.9", "3.3.10", "3.3.11", "3.3.12", "3.3.13", "3.3.14", "3.3.15", "3.3.16",
               "3.3.17", "3.3.18", "3.3.19", "3.3.20", "3.3.21", "3.3.22", "3.3.23", "3.3.24",
-              "3.3.25", "3.3.26", "3.3.27", "3.3.28");
+              "3.3.25", "3.3.26", "3.3.27", "3.3.28", "3.3.29");
     }
   }
 
@@ -1300,6 +1300,126 @@ class MigrationsTest {
                             + "', 'step-1', 'MODEL', 'ESTIMATED', 'fake')"))
         .isInstanceOf(SQLException.class)
         .hasMessageContaining("not-null");
+  }
+
+  /**
+   * The append-only guard that S12-08 installs at the storage layer (the trigger, column and table
+   * COMMENTS in {@code V3_3_29}). The {@code audit_events} table exists (created by {@code
+   * V3_3_5}), the trigger {@code audit_events_append_only_trg} is registered on it, and both the
+   * trigger FUNCTION and the trigger carry their S12-08 attribution. A {@code NOT NULL} actor keeps
+   * the history meaningful.
+   */
+  @Test
+  void audit_events_append_only_guard_is_declared() throws SQLException {
+    // The table exists and records its S04-12 ownership in its table COMMENT.
+    assertThat(tableComment("audit_events")).contains("S04-12").contains("audit");
+    // The append-only trigger (S12-08) is registered on the table and carries its attribution.
+    assertThat(triggerNames("audit_events")).contains("audit_events_append_only_trg");
+    assertThat(triggerComment("audit_events_append_only_trg")).contains("S12-08");
+    // The guard FUNCTION carries its S12-08 attribution.
+    assertThat(functionComment("audit_events_prevent_rewrite")).contains("S12-08");
+    // The actor the history is attributed to is required (NOT NULL), not nullable.
+    assertThat(nullableColumn("audit_events", "actor_subject")).isFalse();
+    assertThat(nullableColumn("audit_events", "outcome")).isFalse();
+  }
+
+  /**
+   * The S12-08 append-only guarantee, proven against data rather than declared: a valid audit row
+   * lands (an INSERT the trigger allows), but an UPDATE and a DELETE of that row are rejected by
+   * the {@code audit_events_append_only_trg} trigger — with the message the trigger raises
+   * (`append-only` ), not by a permission check — so a role that owns the table or carries
+   * UPDATE/DELETE still cannot rewrite history. Every probe rolls back so nothing leaks.
+   */
+  @Test
+  void audit_events_cannot_be_rewritten_or_deleted() throws SQLException {
+    try (Connection connection = connection()) {
+      connection.setAutoCommit(false);
+      try {
+        // A tenant — the row is tenant-scoped (FK tenants).
+        insert("INSERT INTO tenants (id, slug, status) VALUES (?, ?, 'ACTIVE')", uuid(), "t-audit");
+        UUID tenant = tenantId("t-audit");
+        assertThat(tenant).isNotNull();
+
+        // A valid audit row lands — the trigger allows INSERT.
+        insert(
+            "INSERT INTO audit_events (id, tenant_id, actor_subject, action, resource_type, "
+                + "outcome) VALUES (?, ?, 'alice', 'CREATE', 'WORKFLOW_DEFINITION', 'SUCCEEDED')",
+            uuid(),
+            tenant);
+
+        // An UPDATE is rejected by the append-only trigger (not a permission denied).
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute(
+                            "UPDATE audit_events SET actor_subject = 'mallory' WHERE tenant_id = '"
+                                + tenant
+                                + "'"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("append-only");
+
+        // A DELETE is rejected by the append-only trigger.
+        assertThatThrownBy(
+                () ->
+                    statement()
+                        .execute("DELETE FROM audit_events WHERE tenant_id = '" + tenant + "'"))
+            .isInstanceOf(SQLException.class)
+            .hasMessageContaining("append-only");
+
+        connection.rollback();
+      } catch (SQLException e) {
+        connection.rollback();
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * The names of every user (non-internal) trigger registered on {@code table}. Used to assert the
+   * {@code audit_events_append_only_trg} trigger that S12-08 installs (declared in {@code
+   * V3_3_29}).
+   */
+  private static Set<String> triggerNames(String table) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT t.tgname AS trigger_name FROM pg_trigger t "
+                    + "JOIN pg_class cl ON cl.oid = t.tgrelid "
+                    + "JOIN pg_namespace n ON n.oid = cl.relnamespace "
+                    + "WHERE n.nspname = 'public' AND cl.relname = '"
+                    + table
+                    + "' AND t.tgisinternal = false")) {
+      Set<String> names = new LinkedHashSet<>();
+      while (rs.next()) {
+        names.add(rs.getString("trigger_name"));
+      }
+      return names;
+    }
+  }
+
+  /** The human-readable COMMENT on the named trigger, if any (null when absent). */
+  private static String triggerComment(String trigger) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT d.description AS comment FROM pg_trigger t "
+                    + "JOIN pg_class cl ON cl.oid = t.tgrelid "
+                    + "LEFT JOIN pg_description d ON d.objoid = t.oid "
+                    + "WHERE t.tgname = '"
+                    + trigger
+                    + "'")) {
+      return rs.next() ? rs.getString("comment") : null;
+    }
+  }
+
+  /** The human-readable COMMENT on the named function, if any (null when absent). */
+  private static String functionComment(String func) throws SQLException {
+    try (Statement statement = statement();
+        ResultSet rs =
+            statement.executeQuery(
+                "SELECT obj_description('" + func + "'::regproc, 'pg_proc') AS comment")) {
+      return rs.next() ? rs.getString("comment") : null;
+    }
   }
 
   /**
