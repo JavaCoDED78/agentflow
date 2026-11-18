@@ -17,7 +17,7 @@ Documentation as code: current, verifiable, one owner per topic. General rules a
 | `runbooks/` | operator actions for alerts and failures |
 | `load-tests/` | k6 scenarios, reports and environment description |
 | `devlog/` | per-sprint engineering logs (`sprint-XX-*.md`) — what changed, why, and how it was verified |
-| `usage-and-costs.md` | tokens, prices, budgets, audit event catalogue |
+| `usage-and-costs.md` | tokens, prices, budgets (the audit action catalogue → `docs/security/audit-contract.md`, `S12-07`) |
 
 ## Rules
 

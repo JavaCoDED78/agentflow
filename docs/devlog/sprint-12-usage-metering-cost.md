@@ -8,6 +8,7 @@
 - [S12-04](#s12-04-the-durable-per-tenant-cost-budget) — the durable per-tenant cost budget: `tenant_budgets` / `budget_reservations` (`V3_3_26`), idempotent reserve-before-the-call / settle-after, the `usage → workflowexecution` execution-SPI budget gate
 - [S12-05](#s12-05-the-per-tenant-parallel-run-quota) — the per-tenant parallel-run quota: `tenant_run_slots` (`V3_3_27`), row-lock-serialized acquire-at-create / release-at-terminal, the race-proof quota gate
 - [S12-06](#s12-06-the-idempotent-reconciliation-of-stranded-reservations) — the idempotent reconciliation of stranded reservations: `reconciled_at` + `attempt` (`V3_3_28`), `BudgetService#reconcileUnsettled` settles a worker-crashed reservation at its best-known amount and marks it, so the run's true consumption is recoverable
+- [S12-07](#s12-07-the-audit-action-catalogue-audit-contract) — the audit action catalogue (audit contract): `docs/security/audit-contract.md` enumerates every security-sensitive action + mandatory fields; the `AuditAction` / `AuditResourceType` enums express the canonical catalogue; coverage map (WIRED vs CANON)
 
 ---
 
@@ -399,3 +400,59 @@ plain, tenant-scoped values (invariant 1).
 reconciliation method; the permitted-types row — `BudgetReservation` fields `reconciledAt` /
 `attempt`); the `usage` module [`AGENTS.md`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/AGENTS.md)
 (data ownership — `budget_reservations`).
+
+## S12-07 — the audit action catalogue (audit contract)
+
+The audit trail is one of the platform's durability and accountability guarantees (`AGENT.md`
+invariants 3 and 8; plan §8.1). `S12-07` finalizes the **audit action catalogue** — the contract that
+names every security- and business-sensitive action, the mandatory fields each record carries, the
+record schema, the redaction policy, and — honestly — which actions already leave an `audit_events`
+row and which are still pending. The deliverable is the contract
+[`docs/security/audit-contract.md`](../security/audit-contract.md); the code-side expression is the
+`AuditAction` / `AuditResourceType` / `AuditOutcome` enums (`audit.domain`).
+
+**Why this shape.** The plan fixes `S12-07`'s result as "audit contract" and its acceptance as "every
+security-sensitive action leaves an audit entry." A contract — not a sprawling implementation — is the
+right first step: it makes the acceptance criterion verifiable against a fixed list instead of a vague
+"audit the sensitive stuff", and it records exactly which verbs are left to wire so the follow-up tasks
+(`S12-08` append-only policy, and the per-flow wiring) are scoped and reviewable. The catalogue
+enumerates six categories — definition mutations, run start/cancel, document upload/read, approval,
+tool allow/deny/execute, ops — and, per action, the `AuditAction` verb, the `AuditResourceType`, the
+owning module, the audit edge and a `WIRED` / `CANON` coverage flag.
+
+**Coverage (truthful, verified against the code).** Wiring is the set of `auditService.record(...)`
+call sites in the current sources:
+
+- `WIRED` today — definition `CREATE` (`WorkflowDefinitionService#createDefinition`,
+  `WorkflowVersionService#createVersion`) / `ACTIVATE` (`WorkflowVersionService#activate`); tool
+  `INVOKE` for started non-`READ_ONLY` calls (`ToolInvocationHistoryService`, S08-13); approval
+  `APPROVE` / `REJECT` / `EXPIRE` (`ApprovalService`, `ADR-018`).
+- `CANON` (in the catalogue, no call site yet) — definition `UPDATE`, run `START` / `CANCEL`,
+  document `UPLOAD` / `READ`, tool `ALLOW` / `DENY`. The `START` / `CANCEL` / `ALLOW` / `DENY` verbs
+  reuse the existing `workflowexecution → audit` (`ADR-018`) / `toolexecution → audit` (`edge 4`)
+  edges; `UPLOAD` / `READ` need a new `knowledgebase → audit` edge (an ADR) and are the follow-up.
+
+`READ` auditing is deliberately scoped as an operational decision for that follow-up: a tenant reading
+its own document is tenant-isolated, not a privilege boundary, so auditing every read is
+high-volume / low-sensitivity — `UPLOAD` (a write boundary) is the security-sensitive half. Ops
+actions (`S12-11` … `S12-13`) reuse the verbs of the resource they act on rather than introducing an
+ops-specific verb.
+
+**Code change (minimal, canonical vocabulary).** `AuditResourceType` gains `RUN` / `DOCUMENT` — the
+enum javadoc already instructed "a run, a document … add their own entry here". `AuditAction` gains
+`START` / `CANCEL` (run), `UPLOAD` / `READ` (document) and `ALLOW` / `DENY` (tool authorization), with
+`INVOKE` keeping the side-effect call and `EXECUTE` expressed as `INVOKE`. The enums are stored as
+TEXT (`V3_3_5`), so **no new migration**; adding enum constants is **not** a module edge, so **no new
+ADR** and the architecture gate is unchanged. The `AuditAction` javadoc is rewritten to describe the
+full canonical catalogue rather than only the definition-mutation subset.
+
+**Verification.** `:apps:agentflow-app:check` green — unit (`AuditServiceTest` / `AuditRepositoryTest`,
+JUnit-XML verified) + architecture (`ArchitectureBoundaryTest` — no new edge) + no-cycles + formatting
+(`spotless`). The new enum constants are TEXT values, so `MigrationsTest` is unaffected. No REST
+endpoint, no new module edge, no migration, no contract-file change, no secrets or high-cardinality
+labels. The protected `docs/AGENTS.md` / `audit/AGENTS.md` cross-references could not be edited (their
+approval prompt timed out) — the authoritative index `docs/README.md` points to the contract correctly;
+the `docs/AGENTS.md` `usage-and-costs.md` note still lists the audit catalogue under that (planned) file
+and is a minor, noted drift.
+
+Follow-up: `S12-08` (append-only write policy) wires the `CANON` verbs.
