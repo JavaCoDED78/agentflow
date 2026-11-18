@@ -123,15 +123,15 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `identity` | tenant context, claims → permissions mapping, the trusted source of tenant | Keycloak (OIDC/JWT), Spring Security |
 | `agentcatalog` | agent profiles, model policy, tool allowlist, tool risk classes | `identity`, PostgreSQL |
 | `workflowdefinition` | versioned workflow graph, DSL/graph validation, activation | `agentcatalog` |
-| `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, approvals, `StepHandler` port | `workflowdefinition`, messaging (outbox/inbox), `audit` (approval decisions, arrow 20) |
+| `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, approvals, `StepHandler` port | `common` (error taxonomy, fingerprint, redaction), `workflowdefinition`, messaging (outbox/inbox), `audit` (approval decisions, arrow 20) |
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
 | `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), object storage |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19) |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |
-| `audit` | security/business audit events, immutable append-only history | `identity` |
-| `messaging` | outbox, inbox, event envelope/versioning, publisher/consumer, DLQ | PostgreSQL, Kafka |
-| `observability` | domain meters, trace attributes, correlation, structured JSON logging + secret masking | Micrometer, OpenTelemetry |
+| `audit` | security/business audit events, immutable append-only history | `common` (redaction), `identity` |
+| `messaging` | outbox, inbox, event envelope/versioning, publisher/consumer, DLQ | `common` (redaction), PostgreSQL, Kafka |
+| `observability` | domain meters, trace attributes, correlation, structured JSON logging + secret masking | `common` (redaction), Micrometer, OpenTelemetry |
 
 ---
 

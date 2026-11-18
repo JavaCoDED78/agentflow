@@ -68,7 +68,7 @@ class ArchitectureBoundaryTest {
           Map.entry("workflowdefinition", Set.of("workflowdefinition", "agentcatalog", "audit")),
           Map.entry(
               "workflowexecution",
-              Set.of("workflowexecution", "workflowdefinition", "messaging", "audit")),
+              Set.of("workflowexecution", "workflowdefinition", "messaging", "audit", "common")),
           Map.entry(
               "toolexecution",
               Set.of("toolexecution", "agentcatalog", "audit", "workflowexecution")),
@@ -77,9 +77,9 @@ class ArchitectureBoundaryTest {
           Map.entry("ingestion", Set.of("ingestion", "knowledgebase", "messaging", "ai")),
           Map.entry("ai", Set.of("ai", "toolexecution", "workflowexecution")),
           Map.entry("usage", Set.of("usage", "ai", "workflowexecution")),
-          Map.entry("audit", Set.of("audit", "identity")),
-          Map.entry("messaging", Set.of("messaging")),
-          Map.entry("observability", Set.of("observability")),
+          Map.entry("audit", Set.of("audit", "identity", "common")),
+          Map.entry("messaging", Set.of("messaging", "common")),
+          Map.entry("observability", Set.of("observability", "common")),
           Map.entry("common", Set.of("common")));
 
   private static List<ArchRule> buildBoundaryRules() {

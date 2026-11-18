@@ -62,4 +62,30 @@ class AuditServiceTest {
                     null))
         .isInstanceOf(IllegalStateException.class);
   }
+
+  @Test
+  void record_redacts_a_secret_in_the_audit_metadata_before_it_is_stored() {
+    // The free-text metadata is written directly to the audit_events table; a secret the caller
+    // did not scrub must not reach the durable row (S12-09; ADR-020).
+    AuditService service = new AuditService(repository);
+    UUID tenant = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    UUID resource = UUID.randomUUID();
+    String secretMetadata = "token=abcdef123456";
+
+    service.record(
+        tenant,
+        "alice",
+        AuditAction.CREATE,
+        AuditResourceType.WORKFLOW_DEFINITION,
+        resource,
+        secretMetadata);
+
+    ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
+    verify(repository).insert(captor.capture());
+
+    assertThat(captor.getValue().metadataRedacted())
+        .as("the audit metadata must not carry the secret")
+        .doesNotContain("abcdef123456")
+        .isEqualTo("token=***");
+  }
 }

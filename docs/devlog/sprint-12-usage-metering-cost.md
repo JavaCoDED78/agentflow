@@ -10,6 +10,7 @@
 - [S12-06](#s12-06-the-idempotent-reconciliation-of-stranded-reservations) — the idempotent reconciliation of stranded reservations: `reconciled_at` + `attempt` (`V3_3_28`), `BudgetService#reconcileUnsettled` settles a worker-crashed reservation at its best-known amount and marks it, so the run's true consumption is recoverable
 - [S12-08](#s12-08-the-append-only-audit-trail-enforced-at-the-storage-layer) — the append-only audit trail, enforced at the storage layer: `V3_3_29__audit_events_append_only.sql` (owner `audit`, forward-only, `ADR-008`) a `BEFORE UPDATE OR DELETE` trigger blocks rewrite for every role incl. the table owner; `REVOKE ... FROM PUBLIC` least-privilege hardening; recovery re-appends, never rewrites
 - [S12-07](#s12-07-the-audit-action-catalogue-audit-contract) — the audit action catalogue (audit contract): `docs/security/audit-contract.md` enumerates every security-sensitive action + mandatory fields; the `AuditAction` / `AuditResourceType` enums express the canonical catalogue; coverage map (WIRED vs CANON)
+- [S12-09](#s12-09-centralised-secret-redaction) — centralised secret redaction: `common.SecretRedactor` is the one source of truth (bearer / JWT, `AKIA…`, `key=<secret>`, full prompt); `SecretRedactingValueMasker`, `AuditService` and `DlqService` all delegate to it, so logs / audit metadata / DLQ description redact identically; `ADR-020` + a widened architecture ALLOW map
 
 ---
 
@@ -508,3 +509,64 @@ the `docs/AGENTS.md` `usage-and-costs.md` note still lists the audit catalogue u
 and is a minor, noted drift.
 
 Follow-up: `S12-08` (append-only write policy) wires the `CANON` verbs.
+
+## S12-09 — centralised secret redaction
+
+`AGENT.md` invariant 8 says secrets never reach logs, audit metadata or the DLQ. Until `S12-09` the
+redaction *rules* lived in **one** place only — the logback `ValueMasker`
+([`SecretRedactingValueMasker`](../../apps/agentflow-app/src/main/java/com/example/agentflow/observability/SecretRedactingValueMasker.java))
+that `logback-spring.xml` registers. The audit path (`AuditService`, the `metadata_redacted` column,
+written straight to PostgreSQL) and the DLQ path (`DlqService`, the `last_error` column) trusted the
+caller to pass already-redacted text: a secret embedded in an error string, or a full prompt the
+caller cannot scrub, could reach a durable row or an operator view. `S12-09` moves the rules to one
+shared primitive so all three surfaces redact identically and none can drift.
+
+**The deliverable is `common.SecretRedactor` — a shared primitive, not a new module.** A `final`,
+DB-free, static `redact(String)` utility (the `Fingerprint` idiom, not a Spring bean). It strips
+bearer tokens / JWTs (`Bearer <jwt>` → `Bearer ***`, keyword kept), AWS access keys (`AKIA…` →
+`AKIA***`), `key=<secret>` / `key: <secret>` pairs (`api_key`, `api...d`, `bearer`, `secret`,
+`password`, `token`, … → `***`), and full prompt / document fields (`document=<text>` →
+`document=***`, untrusted content, invariant 7 / S09-13). `null` passes through untouched. Because it
+is domain-neutral it belongs in `common` — the same home and precedent as the error taxonomy
+(`ADR-016` / `ADR-017`).
+
+**All three surfaces call it:**
+
+- **Logs** — `SecretRedactingValueMasker` stops owning the patterns and delegates to
+  `SecretRedactor.redact`; it only adapts the shared utility to the logback `ValueMasker` contract.
+- **Audit metadata** — `AuditService` calls `SecretRedactor.redact(metadataRedacted)` in front of the
+  `AuditRepository.insert(...)` so a caller-supplied value still carrying a secret is masked before it
+  is written to `audit_events`.
+- **DLQ description** — `DlqService` calls `SecretRedactor.redact(lastError)` in front of the
+  `DlqMessageRepository.record(...)` so the description an operator may read never carries a secret.
+
+**The architecture gate is active — and I widened the map only for the modules that consume the
+primitive.** Redaction in `common` pulls `common` into the dependency graph, so `observability`,
+`audit`, `messaging` (and the already-importing `workflowexecution`) need `common` in their allowed
+set; the architecture gate forbids the edge without an ADR (root `AGENTS.md`). The gate is **not**
+inert: widening `ArchitectureBoundaryTest` made `moduleBoundaries` **fail** (`tests="1"
+failures="1"`), and the map was widened only for those four modules — the map, the gate and
+`docs/architecture/module-map.md` (the four rows' "Outgoing deps" now list `common`) were updated in
+this change so they never disagree. The reach stays narrow: the consumers use only
+`common.SecretRedactor` (and, for `workflowexecution`, `common.ErrorClass` / `common.Fingerprint`),
+never `common`'s infrastructure. Recorded in [`ADR-020`](../adr/ADR-020-shared-redaction-in-common.md).
+
+**Verification.** DB-free suites, JUnit-XML-verified (`failures="0" errors="0" skipped="0"`, fresh
+reports this session): `SecretRedactorTest` (9 — null pass-through; plain text unchanged;
+`Bearer <jwt>` masked while keeping the keyword, embedded in a larger message; `api_key=` / `apiKey=`
+/ `password=` values masked; `AKIA…` → `AKIA***`; full `document=<text>` → `document=***`; multiple
+secrets in one value all masked) and the two new boundary assertions `AuditServiceTest` (+1: a secret
+`metadataRedacted` reaches the repository already masked to `token=***`) and `DlqServiceTest`
+(+1: a secret `lastError` reaches the repository already masked to `Bearer ***`). The regression guard
+`CanaryLeakScanTest` (4) and `SecretRedactingValueMaskerTest` (9) are unchanged and still green.
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (the widened ALLOW
+map, `moduleBoundaries` now passes) + no-cycles + formatting (`spotlessApply` was needed for import
+ordering / javadoc wrapping; `git diff --check` clean).
+
+**Docs.** [`ADR-020`](../adr/ADR-020-shared-redaction-in-common.md) + the ADR register;
+`docs/architecture/module-map.md` (four rows' "Outgoing deps" add `common`);
+`apps/agentflow-app/src/main/java/com/example/agentflow/observability/AGENTS.md` (the masking section
+now notes the delegation); `common/AGENTS.md` already lists "secret redaction" among `common`'s owned
+primitives — this change is on-ownership, no edit needed; `CHANGELOG.md` (this entry).
+
+**Scope.** The value-bearing patterns (bearer / AWS key) and the `key=value` / `key: <secret>` form — including the JSON-object form with a quoted key — match exactly what the S01-19 masker applied and what the canary test exercises, so the same utility the log path redacts is the one the audit-metadata and DLQ writes use.

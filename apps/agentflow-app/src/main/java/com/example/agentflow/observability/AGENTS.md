@@ -11,6 +11,14 @@ Structured JSON logging + secret masking, domain meters, trace/correlation attri
 metric catalogue and the "no high-cardinality labels" rule. Cross-cutting: it offers helpers
 consumed by every module, not a domain module.
 
+## Secret masking (S12-09)
+
+Masking is centralized in `common.SecretRedactor` (S12-09; ADR-020): `observability.SecretRedactingValueMasker`
+adapts that single shared utility to the logback `ValueMasker` contract it is given in
+`logback-spring.xml`, so the log path and the `audit` / `messaging` storage paths redact identically
+and can never drift apart. `observability` does not own the redaction rules — it only wires the
+shared utility into the encoder.
+
 ## Rules
 
 - No business logic; only cross-cutting telemetry helpers.

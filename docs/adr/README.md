@@ -35,6 +35,7 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-017`](ADR-017-tool-risk-classification.md) | Tool risk classification is a closed, deny-by-default vocabulary owned by the catalogue | 2026-11-14 | S11-01 | Accepted |
 | [`ADR-018`](ADR-018-workflowexecution-audit-edge.md) | The approval decision is audited through a new `workflowexecution -> audit` compile edge | 2026-11-14 | S11-04 | Accepted |
 | [`ADR-019`](ADR-019-mcp-streamable-http-transport.md) | MCP transport and client/server compatibility: Streamable-HTTP on the stable Spring AI 2.0.x line | 2026-11-15 | S11-07 | Accepted |
+| [`ADR-020`](ADR-020-shared-redaction-in-common.md) | Centralised secret redaction is a shared primitive in `common`, consumed by `observability`, `audit` and `messaging` | 2026-11-18 | S12-09 | Accepted |
 
 ## Statuses
 
