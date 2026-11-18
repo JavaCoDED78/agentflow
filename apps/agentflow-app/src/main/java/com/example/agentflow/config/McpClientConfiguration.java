@@ -85,7 +85,7 @@ public class McpClientConfiguration {
   @Bean
   McpClientCustomizer<McpClient.SyncSpec> mcpPolicyCustomizer(McpAllowlist allowlist) {
     return (connectionName, spec) -> {
-      spec.clientInfo(new Implementation(connectionName, "1.0"));
+      spec.clientInfo(Implementation.builder(connectionName, "1.0").build());
       allowlist
           .policyFor(connectionName)
           .ifPresent(policy -> spec.requestTimeout(policy.timeout()));
