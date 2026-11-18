@@ -10,6 +10,18 @@
 
 append-only security/business audit events with immutable history.
 
+## Audit action catalogue (S12-07)
+
+The complete, canonical verb/resource vocabulary the trail can express is fixed by
+[`docs/security/audit-contract.md`](../../../docs/security/audit-contract.md) and expressed in code
+by the `AuditAction` / `AuditResourceType` / `AuditOutcome` enums (`domain`). Each security- and
+business-sensitive action is one row; the mandatory fields (actor / tenant / resource / outcome,
+plus `correlationId` / `metadataRedacted`) are fixed by that contract. The audit catalogue records
+which actions already leave an entry (`WIRED`: definition create/activate, tool side-effect
+`INVOKE`, approval approve/reject/expiry) and which are pending (`START` / `CANCEL` / `UPLOAD` /
+`READ` / `ALLOW` / `DENY` / `UPDATE`); the pending wiring reuses the existing audit edges or adds a
+new one (`knowledgebase → audit`, an ADR).
+
 ## Data ownership
 
 `audit` owns exactly one table and no other module may change its migration or schema: `audit_events`.

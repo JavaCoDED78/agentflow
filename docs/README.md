@@ -30,7 +30,7 @@ docs/
 ├── AGENTS.md                          ← documentation rules & conventions
 ├── product-scope.md                   ← MVP boundaries, v1 persona, in/out of scope
 ├── domain-glossary.md                 ← shared terms, one concept one name
-├── usage-and-costs.md                 ⚠ planned — tokens, prices, budgets, audit catalogue
+├── usage-and-costs.md                 ⚠ planned — tokens, prices, budgets (audit catalogue → security/audit-contract.md, S12-07)
 ├── adr/                               ← architecture decision records
 │   ├── README.md                      ← ADR register
 │   ├── ADR-001-modular-monolith.md    ← modular monolith first (S02-05)
@@ -71,7 +71,7 @@ docs/
 │   ├── events/README.md               ← event catalogue & delivery guarantees (S06-16)
 │   ├── database-migrations.md         ← migration rules: forward-only, expand/contract, forward-fix (S03-02)
 │   └── database-conventions.md        ← tables, columns, indexes, versioning conventions (S03-06)
-├── security/                          permissions/permissions.md ← S04-04 catalogue; tenant-claim.md ← S04-05 tenant claim contract; response-policy.md ← S04-09 403/404 masking policy; authentication-authorization.md ← S04-15 authn/authz; secrets.md ← S09-03 secrets policy; agent-actions.md ← S11-15 agent execution security guide
+├── security/                          permissions/permissions.md ← S04-04 catalogue; tenant-claim.md ← S04-05 tenant claim contract; response-policy.md ← S04-09 403/404 masking policy; authentication-authorization.md ← S04-15 authn/authz; secrets.md ← S09-03 secrets policy; audit-contract.md ← S12-07 audit action catalogue; agent-actions.md ← S11-15 agent execution security guide
 ├── threat-model/
 │   ├── README.md                      ← scaffold (S01-03); index to the model below
 │   └── agent-execution.md             ← the full threat model: assets, trust boundaries, six high-risk threats with control + test + recorded residual risk (S11-14)
@@ -120,7 +120,8 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/evaluation/README.md` (S09-14 Planner baseline eval cases), `docs/ai/README.md` (S09-15 AI integration guide), `docs/ai/provider-configuration.md` (S09-15 provider configuration), `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test), `docs/rag/README.md` (RAG grounding — S10-11 follow-up), `docs/rag/pipeline.md` (full pipeline upload→…→ground — S10-11…S10-20) |
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
-| Usage, costs, budgets, audit | `docs/usage-and-costs.md` | ⚠ planned |
+| Usage, costs, budgets | `docs/usage-and-costs.md` | ⚠ planned |
+| Audit action catalogue (audit contract) | `docs/security/audit-contract.md` | S12-07 |
 | HTTP API (`/api/v1`) | `contracts/openapi/` | `../contracts/openapi/README.md` |
 | Event envelope & payloads | `contracts/events/json-schema/` | `../contracts/events/README.md` |
 | Kafka topics & roles | [`architecture/kafka-topics.md`](architecture/kafka-topics.md) (S06-02) · machine roles in `contracts/asyncapi/` (`⚠ planned`, P1) |
