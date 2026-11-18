@@ -9,6 +9,7 @@ import com.example.agentflow.usage.domain.BudgetPeriod;
 import com.example.agentflow.usage.domain.BudgetReservation;
 import com.example.agentflow.usage.persistence.BudgetRepository;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -185,6 +186,67 @@ class BudgetServiceIT {
     assertThat(reserved.reservedAmount()).isEqualByComparingTo(new BigDecimal("40"));
   }
 
+  @Test
+  @DisplayName("reconcileUnsettled settles a stranded reservation at its reserved amount, once")
+  void reconcile_unsettled_settles_stranded_and_counts_at_reserved() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+    UUID id = uuid();
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("70"), id));
+
+    // Model a stranded reservation: the worker crashed after reserving but before settling, so the
+    // row's created_at is in the past (before the reconcile boundary) and it is still unsettled.
+    OffsetDateTime boundary = OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(30);
+    jdbc.update(
+        "UPDATE budget_reservations SET created_at = ? WHERE reservation_id = ?",
+        boundary.minusMinutes(1),
+        id);
+
+    int reconciled = inTxRunReturn(() -> service.reconcileUnsettled(TENANT_A, boundary));
+    assertThat(reconciled).isEqualTo(1);
+
+    // The stranded reservation now counts at its best-known (reserved) amount.
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+    assertThat(reservationReconciledAt(TENANT_A, id)).isNotNull();
+
+    // A second reconcile is an idempotent no-op (invariant 3).
+    assertThat(inTxRunReturn(() -> service.reconcileUnsettled(TENANT_A, boundary))).isEqualTo(0);
+  }
+
+  @Test
+  @DisplayName(
+      "reconcileUnsettled ignores a reservation created after the boundary (still in-flight)")
+  void reconcile_unsettled_ignores_in_flight() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+    UUID id = uuid();
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("40"), id));
+
+    // created_at is now; the reconciliation boundary is a minute in the past, so this row - created
+    // after the boundary - is in-flight, not stranded. The real findUnsettled(created_at < before)
+    // must not touch it.
+    OffsetDateTime boundary = OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(1);
+    assertThat(inTxRunReturn(() -> service.reconcileUnsettled(TENANT_A, boundary))).isEqualTo(0);
+    assertThat(reservationReconciledAt(TENANT_A, id)).isNull();
+  }
+
+  @Test
+  @DisplayName(
+      "reconcileUnsettled is tenant-isolated - one tenant's reservation is not settled for another")
+  void reconcile_unsettled_is_tenant_isolated() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+    UUID id = uuid();
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("70"), id));
+    OffsetDateTime boundary = OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(30);
+    jdbc.update(
+        "UPDATE budget_reservations SET created_at = ? WHERE reservation_id = ?",
+        boundary.minusMinutes(1),
+        id);
+
+    // Reconciling TENANT_B finds nothing stranded; TENANT_A's stranded row is untouched.
+    assertThat(inTxRunReturn(() -> service.reconcileUnsettled(TENANT_B, boundary))).isEqualTo(0);
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+    assertThat(reservationReconciledAt(TENANT_A, id)).isNull();
+  }
+
   private static UUID uuid() {
     return UUID.randomUUID();
   }
@@ -205,6 +267,17 @@ class BudgetServiceIT {
         status -> {
           op.run();
           return null;
+        });
+  }
+
+  private static int inTxRunReturn(java.util.function.IntSupplier op) {
+    return tx.execute(
+        status -> {
+          try {
+            return op.getAsInt();
+          } catch (RuntimeException e) {
+            throw e;
+          }
         });
   }
 
@@ -232,5 +305,14 @@ class BudgetServiceIT {
   private static long countReservations(UUID tenant) {
     return jdbc.queryForObject(
         "SELECT COUNT(*) FROM budget_reservations WHERE tenant_id = ?", Long.class, tenant);
+  }
+
+  private static OffsetDateTime reservationReconciledAt(UUID tenant, UUID reservationId) {
+    return jdbc.queryForObject(
+        "SELECT reconciled_at FROM budget_reservations "
+            + "WHERE tenant_id = ? AND reservation_id = ?",
+        OffsetDateTime.class,
+        tenant,
+        reservationId);
   }
 }

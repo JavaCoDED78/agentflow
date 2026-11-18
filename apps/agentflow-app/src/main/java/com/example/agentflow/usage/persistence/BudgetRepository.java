@@ -6,6 +6,8 @@ import com.example.agentflow.usage.domain.BudgetReservation;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -109,7 +111,8 @@ public class BudgetRepository {
   public Optional<BudgetReservation> findReservation(UUID reservationId) {
     return jdbc
         .query(
-            "SELECT reservation_id, tenant_id, run_id, metric, reserved_amount FROM "
+            "SELECT reservation_id, tenant_id, run_id, metric, reserved_amount, reconciled_at, "
+                + "attempt FROM "
                 + RESERVATIONS_TABLE
                 + " WHERE reservation_id = ?",
             BudgetRepository::toReservation,
@@ -121,7 +124,8 @@ public class BudgetRepository {
   /**
    * Insert a reservation. The {@code ON CONFLICT (reservation_id) DO NOTHING} makes a repeated id a
    * no-op, so a duplicate delivery or a crash-retry of the same reservation never double-charges
-   * (invariant 3).
+   * (invariant 3). The {@code attempt} is stored for traceability of the idempotency key; a
+   * reservation keyed only by an explicit id carries {@code null}.
    *
    * @return the number of rows inserted ({@code 0} when the reservation already existed)
    */
@@ -130,18 +134,20 @@ public class BudgetRepository {
       UUID tenantId,
       UUID runId,
       BudgetMetric metric,
-      BigDecimal reservedAmount) {
+      BigDecimal reservedAmount,
+      Long attempt) {
     return jdbc.update(
         "INSERT INTO "
             + RESERVATIONS_TABLE
-            + " (reservation_id, tenant_id, run_id, metric, reserved_amount) "
-            + " VALUES (?, ?, ?, ?, ?) ON CONFLICT (reservation_id) DO NOTHING",
+            + " (reservation_id, tenant_id, run_id, metric, reserved_amount, attempt) "
+            + " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (reservation_id) DO NOTHING",
         ps -> {
           ps.setObject(1, reservationId);
           ps.setObject(2, tenantId);
           ps.setObject(3, runId);
           ps.setString(4, metric.name());
           ps.setObject(5, reservedAmount);
+          ps.setObject(6, attempt);
         });
   }
 
@@ -162,12 +168,62 @@ public class BudgetRepository {
         });
   }
 
+  /**
+   * Find unsettled reservations stranded before {@code before}: rows created before the boundary
+   * whose worker never settled them. Ordered by {@code created_at, reservation_id} so a
+   * reconciliation is deterministic when several are stranded at once.
+   *
+   * @param tenantId the owning tenant
+   * @param before the reconciliation instant; a reservation created before it and not yet settled
+   *     is stranded, one created after it is still in-flight and is ignored
+   * @return the stranded reservations (empty when none are stranded)
+   */
+  public List<BudgetReservation> findUnsettled(UUID tenantId, OffsetDateTime before) {
+    return jdbc
+        .query(
+            "SELECT reservation_id, tenant_id, run_id, metric, reserved_amount, reconciled_at, "
+                + "attempt FROM "
+                + RESERVATIONS_TABLE
+                + " WHERE tenant_id = ? AND settled_at IS NULL AND created_at < ? "
+                + "ORDER BY created_at ASC, reservation_id ASC",
+            BudgetRepository::toReservation,
+            tenantId,
+            before)
+        .stream()
+        .toList();
+  }
+
+  /**
+   * Reconcile the tenant's stranded unsettled reservations (created before {@code before}) to their
+   * best-known amount: settle them at {@code reserved_amount} and mark both {@code settled_at} and
+   * {@code reconciled_at} in the same UPDATE. The {@code settled_at IS NULL} guard makes a repeated
+   * reconcile a no-op (idempotent reconciliation - invariant 3); the {@code tenant_id} predicate is
+   * the isolation boundary (invariant 1).
+   *
+   * @param tenantId the owning tenant
+   * @param before the reconciliation instant
+   * @return the number of reservations reconciled ({@code 0} when none were stranded)
+   */
+  public int reconcileUnsettled(UUID tenantId, OffsetDateTime before) {
+    return jdbc.update(
+        "UPDATE "
+            + RESERVATIONS_TABLE
+            + " SET actual_cost = reserved_amount, settled_at = now(), reconciled_at = now() "
+            + "WHERE tenant_id = ? AND settled_at IS NULL AND created_at < ?",
+        ps -> {
+          ps.setObject(1, tenantId);
+          ps.setObject(2, before);
+        });
+  }
+
   private static BudgetReservation toReservation(ResultSet rs, int rowNum) throws SQLException {
     return new BudgetReservation(
         rs.getObject("reservation_id", UUID.class),
         rs.getObject("tenant_id", UUID.class),
         rs.getObject("run_id", UUID.class),
         BudgetMetric.valueOf(rs.getString("metric")),
-        new BigDecimal(rs.getString("reserved_amount")));
+        new BigDecimal(rs.getString("reserved_amount")),
+        rs.getObject("reconciled_at", OffsetDateTime.class),
+        rs.getObject("attempt", Long.class));
   }
 }
