@@ -5,6 +5,7 @@ import com.example.agentflow.audit.domain.AuditEvent;
 import com.example.agentflow.audit.domain.AuditOutcome;
 import com.example.agentflow.audit.domain.AuditResourceType;
 import com.example.agentflow.audit.persistence.AuditRepository;
+import com.example.agentflow.common.SecretRedactor;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -73,8 +74,10 @@ public class AuditService {
    * @param action the audited verb ({@link AuditAction})
    * @param resourceType the entity the action refers to ({@link AuditResourceType})
    * @param resourceId the affected resource id (null when the action has no single resource)
-   * @param metadataRedacted redacted free-text metadata (never raw arguments, payload or secrets);
-   *     {@code null} when the action carries none
+   * @param metadataRedacted free-text metadata the action carries (never raw arguments, payload or
+   *     secrets); the raw text is redacted through {@link SecretRedactor} here so a secret or a
+   *     full prompt the caller passes cannot reach the durable audit row (S12-09); {@code null}
+   *     when the action carries none
    * @throws IllegalStateException if no database is configured (the caller reports {@code 503}
    *     first)
    */
@@ -91,6 +94,11 @@ public class AuditService {
     }
     repository.insert(
         AuditEvent.created(
-            tenantId, actorSubject, action, resourceType, resourceId, metadataRedacted));
+            tenantId,
+            actorSubject,
+            action,
+            resourceType,
+            resourceId,
+            SecretRedactor.redact(metadataRedacted)));
   }
 }

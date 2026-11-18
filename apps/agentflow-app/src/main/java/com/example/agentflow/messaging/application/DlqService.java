@@ -1,5 +1,6 @@
 package com.example.agentflow.messaging.application;
 
+import com.example.agentflow.common.SecretRedactor;
 import com.example.agentflow.messaging.domain.DlqMessage;
 import com.example.agentflow.messaging.persistence.DlqMessageRepository;
 import java.util.UUID;
@@ -54,7 +55,9 @@ public class DlqService {
    * @param status the consumer error policy disposition ({@link DlqMessage.Status#RETRY} / {@link
    *     DlqMessage.Status#DEAD_LETTER})
    * @param attempts the attempt count after the failed attempts (already the exhausted total)
-   * @param lastError the safe, redacted last error (never a secret, full prompt or document)
+   * @param lastError the last error message; redacted through {@link SecretRedactor} here so a
+   *     secret or a full prompt / document the caller cannot scrub never reaches the durable DLQ
+   *     description (S12-09)
    * @return {@code true} if a new DLQ record was inserted, {@code false} when the pair already
    *     existed, or {@code false} when no database is configured (no-op)
    */
@@ -76,7 +79,8 @@ public class DlqService {
     }
     boolean inserted =
         repository.record(
-            DlqMessage.deadLetter(eventId, topic, consumerName, status, attempts, lastError));
+            DlqMessage.deadLetter(
+                eventId, topic, consumerName, status, attempts, SecretRedactor.redact(lastError)));
     log.debug(
         "recorded {} dead-letter of event {} for consumer {} (attempts {})",
         inserted ? "new" : "duplicate",

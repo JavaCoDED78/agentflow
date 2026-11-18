@@ -69,4 +69,24 @@ class DlqServiceTest {
     assertThat(inserted).isFalse();
     verify(repository, never()).record(any(DlqMessage.class));
   }
+
+  @Test
+  void record_redacts_a_secret_in_the_last_error_before_it_is_stored() {
+    // The last_error text is written to the DLQ description an operator may read; a secret the
+    // caller did not scrub must not reach it (S12-09; ADR-020).
+    when(repository.record(any(DlqMessage.class))).thenReturn(true);
+
+    String secretError = "Bearer abcdef123456";
+    boolean inserted =
+        service.record(TOPIC, EVENT_ID, CONSUMER, DlqMessage.Status.DEAD_LETTER, 1, secretError);
+
+    assertThat(inserted).isTrue();
+    ArgumentCaptor<DlqMessage> captured = ArgumentCaptor.forClass(DlqMessage.class);
+    verify(repository).record(captured.capture());
+
+    assertThat(captured.getValue().lastError())
+        .as("the DLQ description must not carry the secret")
+        .doesNotContain("abcdef123456")
+        .isEqualTo("Bearer ***");
+  }
 }
