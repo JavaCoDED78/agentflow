@@ -8,6 +8,7 @@
 - [S12-04](#s12-04-the-durable-per-tenant-cost-budget) — the durable per-tenant cost budget: `tenant_budgets` / `budget_reservations` (`V3_3_26`), idempotent reserve-before-the-call / settle-after, the `usage → workflowexecution` execution-SPI budget gate
 - [S12-05](#s12-05-the-per-tenant-parallel-run-quota) — the per-tenant parallel-run quota: `tenant_run_slots` (`V3_3_27`), row-lock-serialized acquire-at-create / release-at-terminal, the race-proof quota gate
 - [S12-06](#s12-06-the-idempotent-reconciliation-of-stranded-reservations) — the idempotent reconciliation of stranded reservations: `reconciled_at` + `attempt` (`V3_3_28`), `BudgetService#reconcileUnsettled` settles a worker-crashed reservation at its best-known amount and marks it, so the run's true consumption is recoverable
+- [S12-08](#s12-08-the-append-only-audit-trail-enforced-at-the-storage-layer) — the append-only audit trail, enforced at the storage layer: `V3_3_29__audit_events_append_only.sql` (owner `audit`, forward-only, `ADR-008`) a `BEFORE UPDATE OR DELETE` trigger blocks rewrite for every role incl. the table owner; `REVOKE ... FROM PUBLIC` least-privilege hardening; recovery re-appends, never rewrites
 - [S12-07](#s12-07-the-audit-action-catalogue-audit-contract) — the audit action catalogue (audit contract): `docs/security/audit-contract.md` enumerates every security-sensitive action + mandatory fields; the `AuditAction` / `AuditResourceType` enums express the canonical catalogue; coverage map (WIRED vs CANON)
 
 ---
@@ -400,6 +401,57 @@ plain, tenant-scoped values (invariant 1).
 reconciliation method; the permitted-types row — `BudgetReservation` fields `reconciledAt` /
 `attempt`); the `usage` module [`AGENTS.md`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/AGENTS.md)
 (data ownership — `budget_reservations`).
+
+## S12-08 — the append-only audit trail, enforced at the storage layer
+
+`AGENT.md` invariant 3 says an audit record cannot be rewritten. Until `S12-08` that guarantee was
+code discipline only: [`AuditService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/audit/application/AuditService.java)
+only ever `INSERT`s and exposes no `update` / `delete` path, but the database still let any role
+with `UPDATE` / `DELETE` on `audit_events` rewrite a row. `S12-08` moves the guarantee down to the
+data layer, so an ordinary application role — even one carrying `UPDATE` / `DELETE`, or even the
+table **owner** — cannot rewrite or delete an old `audit_events` row, regardless of privileges.
+
+**The deliverable is a migration, not code.** `V3_3_29__audit_events_append_only.sql` (owner
+`audit`, forward-only, `ADR-008`) does two things:
+
+1. **A trigger blocks rewrite.** `audit_events_prevent_rewrite()` is a `BEFORE UPDATE OR DELETE`
+   per-row trigger that raises `audit_events is append-only: % operations are not allowed` with the
+   offending `TG_OP`. It fires for *every* `UPDATE` / `DELETE` — including rows written by the table
+   **owner** — because a `BEFORE` trigger cannot be bypassed by privileges. A trigger *function*
+   (not a `GRANT`) is what makes this possible: an owner holds `UPDATE` / `DELETE` by ownership and
+   `GRANT` / `REVOKE` cannot remove them from an owner, so only a trigger overrides that.
+2. **Least-privilege hardening.** `REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM PUBLIC` makes
+   the intent explicit and guards against a future mis-grant; in `application-kubernetes.yml` the
+   application connects as a dedicated least-privilege role holding only `INSERT` / `SELECT` on
+   `audit_events`, the credential from the Kubernetes Secret, never from configuration.
+
+**Recovery is append, never rewrite.** A reconciliation after a crash or an ambiguous external
+outcome appends a corrected `FAILED` row (an INSERT the trigger allows) — a past row is never
+`UPDATEd`, so append-only holds after recovery too (invariant 3). `S12-08` adds no retention / purge
+path; that is the compliance / ops follow-up `S12-11` … `S12-13`, and the trail simply grows until
+then (an old row can still only be *reached*, never changed).
+
+**Verification.** The guard is proven against data, not declared. `MigrationsTest` gained two tests
+— `audit_events_append_only_guard_is_declared` (the `audit_events_append_only_trg` trigger is
+registered on `audit_events` and its / the trigger-function comments carry `S12-08`, the mandatory
+fields `actor_subject` / `outcome` are non-nullable) and `audit_events_cannot_be_rewritten_or_deleted`
+(an `UPDATE` and a `DELETE` are rejected with a message containing `append-only`, not a permission
+error) — run under Testcontainers on the real PostgreSQL image, JUnit-XML verified (`tests="26"`
+`failures="0"` `errors="0"` `skipped="0"`, all green this run). On a fresh PostgreSQL 18 schema
+`V3_3_29` applies cleanly through Flyway (`./gradlew :apps:agentflow-app:flywayMigrate --rerun-tasks`
+→ "now at version v3.3.29", `BUILD SUCCESSFUL`), and on that live database an INSERT succeeds while an
+`UPDATE` / `DELETE` by both a least-privilege role and a role carrying **all** privileges are rejected
+by the trigger. `./gradlew :apps:agentflow-app:check` is green (unit + architecture — no new module
+edge — + formatting + OpenAPI); the migration adds no enum, so `MigrationsTest`'s version list is
+intact apart from the appended `v3.3.29`.
+
+**Docs.** [`docs/security/audit-contract.md`](../security/audit-contract.md) §8
+(Storage-level append-only enforcement) updated to describe the trigger and `REVOKE`; `V3_3_29`
+added to the contract references.
+
+Follow-up: the `CANON` audit verbs (`START` / `CANCEL` / `UPLOAD` / `READ` / `ALLOW` / `DENY`) are
+still only enumerated in the catalogue (`S12-07`) with no `auditService.record(...)` call site —
+wiring them is a separate task, outside the append-only guarantee this task delivers.
 
 ## S12-07 — the audit action catalogue (audit contract)
 

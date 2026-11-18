@@ -42,7 +42,8 @@ An audit record is only meaningful if it obeys the same invariants as the rest o
    together — audit can never diverge from the state.
 3. **Append-only (invariant 3).** A re-check after a failure appends a corrected row; it never
    rewrites one. `outcome` is `SUCCEEDED` at the moment of the action; a later reconciliation may
-   append a `FAILED` correction.
+   append a `FAILED` correction. The guarantee is a hard property of the table, not just a convention:
+   the storage layer (invariant 3) enforces it — see §8.
 4. **No secrets, no full prompts (invariant 8).** `metadata_redacted` holds redacted free text
    (`tool=<name>:<version>`, `actor=<subject>`, …) — never a token, credential, API key, raw
    document, or full prompt. `metadata_redacted` is audit metadata, not a data store.
@@ -176,9 +177,55 @@ audit edges, and `UPLOAD` / `READ` need a new `knowledgebase → audit` edge (an
 - Glossary §10 "Audit event" — [`docs/domain-glossary.md`](../domain-glossary.md).
 - Migration (owner `audit`, forward-only): [`V3_3_5__create_audit_events.sql`](
   ../apps/agentflow-app/src/main/resources/migrations/V3_3_5__create_audit_events.sql).
+- Append-only enforcement migration (owner `audit`, forward-only, `ADR-008`): [`V3_3_29__audit_events_append_only.sql`](
+  ../apps/agentflow-app/src/main/resources/migrations/V3_3_29__audit_events_append_only.sql) — the
+  storage-layer trigger and least-privilege `REVOKE` described in §8.
 - ADR-010 (definition → audit edge), ADR-018 (approval → audit edge).
 - Module API — [`docs/architecture/module-api.md`](architecture/module-api.md) (`audit` section);
   module map — [`docs/architecture/module-map.md`](architecture/module-map.md).
 - Agent-execution security guide (who audits what, and why): [`docs/security/agent-actions.md`](agent-actions.md).
 - Code: `AuditAction` / `AuditResourceType` / `AuditOutcome` (`audit.domain`), `AuditEvent`,
   `AuditService` (`audit.application`).
+
+## 8. Storage-level append-only enforcement
+
+The "append-only" guarantee in §3.3 is a *policy*; §8 is the *storage-layer enforcement* that makes
+it a hard property of `audit_events`, independent of the application role or its privileges
+(`S12-08`).
+
+The enforcement is the `V3_3_29__audit_events_append_only.sql` migration (owner `audit`,
+forward-only, `ADR-008`), which does two things:
+
+1. **A trigger blocks rewrite.** `audit_events_prevent_rewrite()` is a `BEFORE UPDATE OR DELETE`
+   per-row trigger that raises `audit_events is append-only: % operations are not allowed` with the
+   offending `TG_OP`. It fires for **every** UPDATE / DELETE — including rows written by the table
+   **owner** — because a `BEFORE` trigger cannot be bypassed by privileges. A trigger *function*
+   (not a `GRANT`) is what makes this possible: an owner holds UPDATE / DELETE by ownership and
+   `GRANT` / `REVOKE` cannot remove them from an owner, so only a trigger overrides that.
+2. **Least-privilege hardening.** `REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM PUBLIC` makes
+   the intent explicit and guards against a future mis-grant. In a production-like deployment
+   (`application-kubernetes.yml`) the application connects as a dedicated least-privilege role that
+   holds only `INSERT` and `SELECT` on `audit_events`; the credential comes from the Kubernetes
+   Secret, never from configuration, so the least-privilege shape is enforced at the connection
+   layer rather than the owner layer.
+
+**Retention.** Audit events are an accountability log, so the application never deletes them:
+retention is a compliance decision and the purge of records older than the window is an ops-only,
+audited action performed by a privileged operator role (S12-11 … S12-13). Until that purge exists
+the trail grows; an old row can still only be reached, never changed, by the application role. No
+`retention_period_days` column is added by S12-08 — the purge surface is a follow-up task.
+
+**Redaction.** `metadata_redacted` carries only the structural identity of what ran (tool, step,
+actor) — never a token, API key, provider header, raw document text, full prompt, or unredacted
+argument map (invariant 8). Redaction is applied by the caller before `record(...)` (§6).
+
+**Recovery is append, never rewrite.** A reconciliation after a crash or an ambiguous external
+outcome appends a corrected row (`outcome FAILED`) — an INSERT, which the trigger allows. A past row
+is never UPDATEd, so append-only holds after recovery too (invariant 3).
+
+**Acceptance — verified on the live database.** With `V3_3_29` applied to PostgreSQL 18 (the append
+trigger, `REVOKE`, and comments all apply cleanly through Flyway): a least-privilege role
+(`INSERT`/`SELECT` only) can insert but its UPDATE / DELETE are rejected; a role carrying **all**
+privileges on the table still receives
+`audit_events is append-only: UPDATE/DELETE operations are not allowed` from the trigger — not a
+permission error — proving the guarantee holds regardless of role privileges.
