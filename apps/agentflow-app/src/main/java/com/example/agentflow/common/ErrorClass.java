@@ -56,7 +56,16 @@ public enum ErrorClass {
   /**
    * A per-run hard execution limit was exceeded (S11-13): the run is stopped in a controlled state.
    */
-  LIMIT_EXCEEDED("limit_exceeded", HttpStatus.BAD_REQUEST, "limit_exceeded", false);
+  LIMIT_EXCEEDED("limit_exceeded", HttpStatus.BAD_REQUEST, "limit_exceeded", false),
+
+  /**
+   * The API throttled this {@code (tenant, principal)} for a {@code RateLimitGroup} ({@code
+   * S04-16}): a protective edge rate limit rendered as {@code 429} with a {@code Retry-After}
+   * header (RFC 8594). It is a throttle &mdash; never an authorization signal and never a
+   * substitute for the request-size limit or the timeout (plan §9). A well-behaved client retries
+   * after the {@code Retry-After} window.
+   */
+  API_RATE_LIMIT("api_rate_limited", HttpStatus.TOO_MANY_REQUESTS, "rate_limit_limited", true);
 
   private static final Map<HttpStatus, ErrorClass> BY_STATUS =
       Map.of(

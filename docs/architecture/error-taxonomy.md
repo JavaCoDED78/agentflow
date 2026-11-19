@@ -48,6 +48,7 @@ for code (`enum ErrorClass` in `common`).
 | `conflict` | Conflict | `409` · `code: conflict` | **No** (permanent for this request; re-fetch and re-issue with fresh state). | Optimistic `version` stale on a conditional update; duplicate run under a reused `Idempotency-Key` with a different payload. |
 | `transient_infra` | Transient infrastructure | `503` · `code: service_unavailable` | **Yes** — transient. Retry with bounded exponential backoff + jitter. | PostgreSQL connection pool exhausted, Kafka briefly unreachable, Redis down. |
 | `provider_rate_limit` | Provider rate limit | `429` · `code: rate_limit_exceeded` | **Yes** — transient. Retry with backoff; respects the provider `Retry-After`. | Model provider returns HTTP 429. |
+| `api_rate_limited` | API edge rate limit | `429` · `code: rate_limit_limited` | **Yes** — transient (edge throttle). Retry after the `Retry-After` seconds (RFC 8594); distinct from `provider_rate_limit`. | The API edge rejects a `(tenant, principal)` group that exceeded its per-minute budget for a `RateLimitGroup` — `create-run` / `upload` / `search/debug` / `ops` (S04-16). |
 | `provider_timeout` | Provider timeout | `504` · `code: provider_timeout` | **Yes** — transient. Retry with backoff; the attempt is persisted and the outcome marked (never exactly-once). | Model call exceeds its timeout; the response is lost. |
 | `tool_policy_denial` | Tool policy denial | `403` · `code: tool_denied` | **No** — permanent. Unknown tool, disallowed risk class, or missing approval. | `shell` is not in the allowlist, or a `WRITE` tool runs without `HUMAN_APPROVAL`. |
 | `cancellation` | Cancellation | `202` · `code: cancellation_requested` | **n/a** — not an error; the opposite of retry. | A `CANCEL_REQUESTED` event is processed on a safe boundary → `CANCELLED`. |
@@ -67,7 +68,7 @@ for code (`enum ErrorClass` in `common`).
 Retry exists only for **transient** classes. This is rule 12 and the plan's
 `§6.4` retry policy:
 
-- **Transient only.** `transient_infra`, `provider_rate_limit`, `provider_timeout`.
+- **Transient only.** `transient_infra`, `provider_rate_limit`, `provider_timeout`, `api_rate_limited`.
   Every other class is permanent for the request.
 - **Backoff.** Exponential with full jitter and a ceiling (per the retry policy
   value object, `S07-10`); values are configurable.

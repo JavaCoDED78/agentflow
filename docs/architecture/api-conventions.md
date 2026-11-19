@@ -114,8 +114,43 @@ applies to these endpoints:
 |---|---|---|
 | `400` | `validation` | blank/invalid field, non-UUID path value, malformed JSON |
 | `404` | `not_found` | missing id, foreign-tenant id, or a route that matched nothing |
-| `409` | `conflict` | stale optimistic-lock version or a duplicate `(tenant_id, name)` |
-| `500` | `internal` | catch-all; the raw cause goes to the structured log, not the client |
+|| `409` | `conflict` | stale optimistic-lock version or a duplicate `(tenant_id, name)` |
+|| `429` | `api_rate_limited` | a `(tenant, principal)` group budget is exceeded — S04-16, with a `Retry-After` header |
+|| `500` | `internal` | catch-all; the raw cause goes to the structured log, not the client |
+
+### Rate limiting (`S04-16`)
+
+The `RateLimiter` port and the per-group budgets are the S04-16 contract; the actual per-key
+counting lives in a storage-agnostic adapter — the in-memory adapter (S04-17), later the Redis
+adapter (S12-19) — which the `RateLimiter` interface abstracts. The budgets are typed, validated
+configuration (`agentflow.ratelimit.*`, bound to `AgentFlowProperties.RateLimit`); a value below
+the per-group minimum is a startup failure, never a silent no-op, so a misconfiguration is loud.
+The Redis adapter is switched by configuration alone, and a Redis outage degrades to the
+in-memory limiter rather than dropping a run (invariant 2 — correctness never depends on the
+cache; `ADR-021`).
+
+When a group's budget is exceeded the request is rejected with `429 Too Many
+Requests` using the same RFC 9457 envelope, classified as `api_rate_limited`
+(retryable) and carrying a `Retry-After` header (`RFC 8594`):
+
+```json
+{
+  "type": "about:blank",
+  "title": "Too Many Requests",
+  "status": 429,
+  "error_class": "api_rate_limited",
+  "detail": "rate limit exceeded for group create-run",
+  "instance": "/api/v1/runs",
+  "correlation_id": "3fa85f64-5717-4562-b3fc-2c663009d669",
+  "retryable": true
+}
+```
+
+The status comes from the thrown exception, not the request body, so a client
+cannot forge it. A `429` is a protective throttle at the API edge — it is **not**
+an authentication or authorization decision (invariant 1): it never accepts or
+rejects a principal, and it never substitutes for the request size limit and the
+timeout from §9, which bound resource use independently.
 
 ### Optimistic locking (`S03-10`)
 
