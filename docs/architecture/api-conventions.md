@@ -129,7 +129,22 @@ The Redis adapter is switched by configuration alone, and a Redis outage degrade
 in-memory limiter rather than dropping a run (invariant 2 — correctness never depends on the
 cache; `ADR-021`).
 
-When a group's budget is exceeded the request is rejected with `429 Too Many
+#### In-memory adapter (`S04-17`)
+
+The shipped adapter is a fixed-window, in-memory store (`InMemoryRateLimiter`). It is storage
+agnostic — no database or Redis dependency — so the app boots and throttles even in the
+skeleton state. Each key is counted against a one-minute window derived from an injected `Clock`
+(frozen in the time-dependent tests), and the number of live keys is bounded by an access-ordered
+eviction (least-recently-used keys are dropped past a fixed cap), so memory stays bounded as
+traffic fans out across tenants and actors. The port stays a pure read of limiter state and never
+throws the rejection: the interceptor owns the reject decision because it also knows the policy.
+
+The adapter is wired as a Spring MVC `HandlerInterceptor`, registered after authentication, for
+`/api/v1/**`. The interceptor resolves the `(tenant, principal)` from the trusted security
+context — never from the request body or headers (invariant 1) — and builds the key from the
+tenant, the verified `Jwt` subject (never the token), and the endpoint group. Health,
+liveness and readiness endpoints are excluded, as are every `GET`, documentation and unknown
+path. When the group's budget is exceeded the request is rejected with `429 Too Many
 Requests` using the same RFC 9457 envelope, classified as `api_rate_limited`
 (retryable) and carrying a `Retry-After` header (`RFC 8594`):
 
@@ -151,6 +166,13 @@ cannot forge it. A `429` is a protective throttle at the API edge — it is **no
 an authentication or authorization decision (invariant 1): it never accepts or
 rejects a principal, and it never substitutes for the request size limit and the
 timeout from §9, which bound resource use independently.
+
+With several replicas running, each keeps its own in-memory counters, so the per-minute budget
+applies **per replica**: the effective fleet-wide allowance for a group is roughly `N ×` the
+configured budget, where `N` is the number of live replicas. This is an inherent property of a
+per-instance in-memory limiter — the counters are not shared between processes. When the Redis
+adapter is added (S12-19) the counters are stored in Redis and the budget applies across the
+fleet instead, at the cost of depending on the cache for throttle state.
 
 ### Optimistic locking (`S03-10`)
 
