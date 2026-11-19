@@ -26,6 +26,7 @@ sprint gate for the selected task.
 - [ ] **Tenant scope** — every read, write and search is `(tenant_id, resource_id)` scoped; another tenant's resource is indistinguishable from a missing one; the tenant is derived from verified context, not the request body.
 - [ ] **Retries & reliability** — transient vs. permanent errors are classified separately; retries are bounded with exponential backoff/jitter; external calls are persisted before the call and treated as at-least-once, never exactly-once.
 - [ ] **Side effects** — external-facing calls are idempotent or fenced by lease/epoch; cancellation stops on a safe boundary; outbox/inbox and dedup are respected.
+- [ ] **Redis role** — if Redis is used, it holds only cache, rate-limit state or short-lived coordination; never workflow state, lease/fencing, idempotency, inbox, permissions or usage/cost counters, and its failure behaviour is documented (`ADR-021`).
 - [ ] **Audit** — actors, actions and outcomes for state-changing events are recorded as append-only without secrets.
 - [ ] **Telemetry** — metrics and logs carry no secrets, full prompts or documents, and no high-cardinality labels (`tenantId`, `runId`, `userId`, `documentId`).
 - [ ] **Integrity** — no disabled tests, no fake stubs or empty TODOs, no secret in code/config/examples, no auth/tenant bypass.
