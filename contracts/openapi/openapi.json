@@ -208,6 +208,16 @@
               }
             }
           },
+          "429" : {
+            "description" : "the (tenant, principal) exceeded the per-group API rate limit",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
           "503" : {
             "description" : "no database connection is configured",
             "content" : {
@@ -597,6 +607,36 @@
           },
           "message" : {
             "type" : "string"
+          }
+        }
+      },
+      "ProblemDetails" : {
+        "type" : "object",
+        "properties" : {
+          "type" : {
+            "type" : "string"
+          },
+          "title" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "error_class" : {
+            "type" : "string"
+          },
+          "detail" : {
+            "type" : "string"
+          },
+          "instance" : {
+            "type" : "string"
+          },
+          "correlation_id" : {
+            "type" : "string"
+          },
+          "retryable" : {
+            "type" : "boolean"
           }
         }
       },

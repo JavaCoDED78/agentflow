@@ -1,5 +1,6 @@
 package com.example.agentflow.config;
 
+import com.example.agentflow.common.RateLimitGroup;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -52,6 +53,15 @@ public class AgentFlowProperties {
   private final Chunking chunking = new Chunking();
   @Valid private final Retrieval retrieval = new Retrieval();
   @Valid private final Mcp mcp = new Mcp();
+  @Valid private final RateLimit rateLimit = new RateLimit();
+
+  /**
+   * @return the API rate-limit policy (S04-16): the per-group per-minute budgets and the
+   *     kill-switch
+   */
+  public RateLimit getRateLimit() {
+    return rateLimit;
+  }
 
   /**
    * @return the logical application name, used in logs and identity
@@ -1791,6 +1801,204 @@ public class AgentFlowProperties {
    *       never duration-checked.
    * </ul>
    */
+  /**
+   * API rate-limit policy (S04-16). Storage-agnostic: it defines only the per-group per-minute
+   * budgets; the adapter that enforces them is the {@link com.example.agentflow.common.RateLimiter}
+   * port in {@code common}, produced later in the sprint ({@code S04-17} in-memory, {@code S12-19}
+   * Redis). It does not depend on Redis: the app boots and throttles with the in-memory adapter
+   * until the Redis adapter is added.
+   *
+   * <p>Every limit is validated at startup so a nonsensical value fails boot rather than silently
+   * accepting everything (S01-17). {@code enabled} is a single kill-switch; the fail-open decision
+   * on a Redis outage is handled by the adapter, not here (invariant 2). The budgets match {@code
+   * docs/architecture/api-conventions.md}.
+   */
+  public static class RateLimit {
+
+    /**
+     * Kill-switch. When {@code false} the {@code (tenant, principal)} throttle is disabled and the
+     * limiter port fails open. Default {@code true}.
+     */
+    private boolean enabled = true;
+
+    /**
+     * Per-group per-minute budgets, keyed by {@link com.example.agentflow.common.RateLimitGroup}. A
+     * group absent from the map is unthrottled; a budget of {@code 0} disables the group. The
+     * nested {@link Limits} is {@link Valid}-validated so {@code @Min} fires on a nonsensical value
+     * at startup.
+     */
+    @Valid private Limits limits = new Limits();
+
+    /**
+     * @return whether the {@code (tenant, principal)} throttle is enabled (default {@code true})
+     */
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    /**
+     * @param enabled the kill-switch (default {@code true})
+     */
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    /**
+     * @return the per-group per-minute budgets (default {@code Limits})
+     */
+    public Limits getLimits() {
+      return limits;
+    }
+
+    /**
+     * @param limits the per-group per-minute budgets
+     */
+    public void setLimits(Limits limits) {
+      this.limits = limits;
+    }
+
+    /**
+     * The per-group per-minute budgets (S04-16). The app keys them by {@link
+     * com.example.agentflow.common.RateLimitGroup}; {@code @Min(1)} rejects a nonsensical budget at
+     * startup. Defaults match {@code docs/architecture/api-conventions.md}.
+     */
+    public static class Limits {
+
+      /**
+       * {@code create-run} budget. Bounded from {@code
+       * agentflow.ratelimit.limits.create-run.max-per-minute} (default {@code 60}).
+       */
+      @Valid private CreateRun createRun = new CreateRun();
+
+      /**
+       * {@code upload} budget. Bounded from {@code
+       * agentflow.ratelimit.limits.upload.max-per-minute} (default {@code 30}).
+       */
+      @Valid private Upload upload = new Upload();
+
+      /**
+       * {@code search/debug} budget. Bounded from {@code
+       * agentflow.ratelimit.limits.search-debug.max-per-minute} (default {@code 120}).
+       */
+      @Valid private SearchDebug searchDebug = new SearchDebug();
+
+      /**
+       * {@code ops} budget. Bounded from {@code agentflow.ratelimit.limits.ops.max-per-minute}
+       * (default {@code 300}).
+       */
+      @Valid private Ops ops = new Ops();
+
+      public CreateRun getCreateRun() {
+        return createRun;
+      }
+
+      public void setCreateRun(CreateRun createRun) {
+        this.createRun = createRun;
+      }
+
+      public Upload getUpload() {
+        return upload;
+      }
+
+      public void setUpload(Upload upload) {
+        this.upload = upload;
+      }
+
+      public SearchDebug getSearchDebug() {
+        return searchDebug;
+      }
+
+      public void setSearchDebug(SearchDebug searchDebug) {
+        this.searchDebug = searchDebug;
+      }
+
+      public Ops getOps() {
+        return ops;
+      }
+
+      public void setOps(Ops ops) {
+        this.ops = ops;
+      }
+
+      /**
+       * @param group the group
+       * @return the per-minute budget for the group
+       */
+      public int maxPerMinute(RateLimitGroup group) {
+        return switch (group) {
+          case CREATE_RUN -> createRun.getMaxPerMinute();
+          case UPLOAD -> upload.getMaxPerMinute();
+          case SEARCH_DEBUG -> searchDebug.getMaxPerMinute();
+          case OPS -> ops.getMaxPerMinute();
+        };
+      }
+
+      /** Per-minute budget for {@code create-run}. Default {@code 60}. */
+      public static class CreateRun {
+        @Min(
+            value = 1,
+            message = "agentflow.ratelimit.limits.create-run.max-per-minute must be at least 1")
+        private int maxPerMinute = 60;
+
+        public int getMaxPerMinute() {
+          return maxPerMinute;
+        }
+
+        public void setMaxPerMinute(int maxPerMinute) {
+          this.maxPerMinute = maxPerMinute;
+        }
+      }
+
+      /** Per-minute budget for {@code upload}. Default {@code 30}. */
+      public static class Upload {
+        @Min(
+            value = 1,
+            message = "agentflow.ratelimit.limits.upload.max-per-minute must be at least 1")
+        private int maxPerMinute = 30;
+
+        public int getMaxPerMinute() {
+          return maxPerMinute;
+        }
+
+        public void setMaxPerMinute(int maxPerMinute) {
+          this.maxPerMinute = maxPerMinute;
+        }
+      }
+
+      /** Per-minute budget for {@code search/debug}. Default {@code 120}. */
+      public static class SearchDebug {
+        @Min(
+            value = 1,
+            message = "agentflow.ratelimit.limits.search-debug.max-per-minute must be at least 1")
+        private int maxPerMinute = 120;
+
+        public int getMaxPerMinute() {
+          return maxPerMinute;
+        }
+
+        public void setMaxPerMinute(int maxPerMinute) {
+          this.maxPerMinute = maxPerMinute;
+        }
+      }
+
+      /** Per-minute budget for {@code ops}. Default {@code 300}. */
+      public static class Ops {
+        @Min(
+            value = 1,
+            message = "agentflow.ratelimit.limits.ops.max-per-minute must be at least 1")
+        private int maxPerMinute = 300;
+
+        public int getMaxPerMinute() {
+          return maxPerMinute;
+        }
+
+        public void setMaxPerMinute(int maxPerMinute) {
+          this.maxPerMinute = maxPerMinute;
+        }
+      }
+    }
+  }
+
   public static class Upload {
 
     /** Maximum upload payload size in bytes. Default 10 MiB; at least 1, a value below 1 fails. */

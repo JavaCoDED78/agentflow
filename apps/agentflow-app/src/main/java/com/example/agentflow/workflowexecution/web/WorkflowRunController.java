@@ -1,12 +1,15 @@
 package com.example.agentflow.workflowexecution.web;
 
 import com.example.agentflow.common.Fingerprint;
+import com.example.agentflow.common.ProblemDetails;
 import com.example.agentflow.workflowexecution.application.AttemptRecord;
 import com.example.agentflow.workflowexecution.application.CreateRunRequest;
 import com.example.agentflow.workflowexecution.application.RunDto;
 import com.example.agentflow.workflowexecution.application.RunService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -78,6 +81,8 @@ public class WorkflowRunController {
    *   <li>{@code 404 not_found} when the workflow has no active version owned by the tenant;
    *   <li>{@code 409 conflict} when a reused {@code Idempotency-Key} carries a different request
    *       payload;
+   *   <li>{@code 429 rate_limited} when the {@code (tenant, principal)} exceeds the per-group API
+   *       rate limit (S04-16);
    *   <li>{@code 503 unavailable} when no database is configured.
    * </ul>
    *
@@ -105,6 +110,10 @@ public class WorkflowRunController {
   @ApiResponse(
       responseCode = "409",
       description = "a reused Idempotency-Key carries a different request payload")
+  @ApiResponse(
+      responseCode = "429",
+      description = "the (tenant, principal) exceeded the per-group API rate limit",
+      content = @Content(schema = @Schema(implementation = ProblemDetails.class)))
   @ApiResponse(responseCode = "503", description = "no database connection is configured")
   @PostMapping
   ResponseEntity<RunDto> create(

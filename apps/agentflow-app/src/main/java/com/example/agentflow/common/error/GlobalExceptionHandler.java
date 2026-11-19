@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -120,6 +121,25 @@ public class GlobalExceptionHandler {
   }
 
   /**
+   * Renders a {@link RateLimitExceededException} as {@code 429 Too Many Requests}: the {@link
+   * ErrorClass#API_RATE_LIMIT} (error_class {@code api_rate_limited}, retryable), with a {@code
+   * Retry-After} header (RFC 8594) equal to the exception's {@code retryAfterSeconds}. The status
+   * comes from the thrown exception, not the error class, so a hand-crafted exception cannot
+   * masquerade as a {@code 400 Bad Request}.
+   */
+  @ExceptionHandler(RateLimitExceededException.class)
+  ResponseEntity<ProblemDetails> handleRateLimit(
+      RateLimitExceededException ex, HttpServletRequest request) {
+    return render(
+        ex.errorClass(),
+        ex.errorClass().httpStatus().value(),
+        request,
+        ex.getMessage(),
+        true,
+        ex.retryAfterSeconds());
+  }
+
+  /**
    * Catch-all for anything unclassified. The complete stack trace is logged (with the correlation
    * id in the MDC) so an operator can trace it, but the client only ever sees a static message and
    * never an internal detail (S03-11: exclude stack traces and internals).
@@ -155,7 +175,30 @@ public class GlobalExceptionHandler {
    */
   private ResponseEntity<ProblemDetails> render(
       ErrorClass errorClass, int httpStatus, HttpServletRequest request, String detail) {
-    return ResponseEntity.status(httpStatus)
+    return render(errorClass, httpStatus, request, detail, errorClass.isRetryable(), null);
+  }
+
+  /**
+   * Renders an error as {@code Problem Details} ({@code application/problem+json}) with an explicit
+   * status, {@code error_class}/{@code retryable} and {@code Retry-After}. The {@link ErrorClass}
+   * still supplies the {@code error_class}/{@code type}/{@code status}; {@code retryable} controls
+   * the {@code retryable} field and a non-null {@code retryAfterSeconds} sets the {@code
+   * Retry-After} header (RFC 8594). The {@code error_class} is derived server-side from {@link
+   * ErrorClass}, so a caller cannot forge it from a request body.
+   */
+  private ResponseEntity<ProblemDetails> render(
+      ErrorClass errorClass,
+      int httpStatus,
+      HttpServletRequest request,
+      String detail,
+      boolean retryable,
+      Integer retryAfterSeconds) {
+    ResponseEntity.BodyBuilder builder = ResponseEntity.status(httpStatus);
+    if (retryAfterSeconds != null) {
+      builder.header("Retry-After", Integer.toString(retryAfterSeconds));
+    }
+    return builder
+        .contentType(MediaType.APPLICATION_PROBLEM_JSON)
         .body(
             new ProblemDetails(
                 "about:blank",
@@ -165,7 +208,7 @@ public class GlobalExceptionHandler {
                 safeDefault(detail),
                 instance(request),
                 correlationId(),
-                errorClass.isRetryable()));
+                retryable));
   }
 
   private String validationDetail(Exception ex) {

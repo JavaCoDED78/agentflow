@@ -1,5 +1,6 @@
 package com.example.agentflow.common.error;
 
+import com.example.agentflow.common.RateLimitGroup;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.HttpStatus;
@@ -33,6 +34,11 @@ class StubErrorController {
   @GetMapping("/internal")
   void internal() {
     throw new RuntimeException("postgres connection failed");
+  }
+
+  @GetMapping("/limit")
+  void rateLimited() {
+    throw new RateLimitExceededException(RateLimitGroup.CREATE_RUN, 42);
   }
 
   @PostMapping("/valid")
