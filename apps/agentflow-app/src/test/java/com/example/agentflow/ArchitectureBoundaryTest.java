@@ -78,7 +78,9 @@ class ArchitectureBoundaryTest {
           Map.entry("ai", Set.of("ai", "toolexecution", "workflowexecution")),
           Map.entry("usage", Set.of("usage", "ai", "workflowexecution")),
           Map.entry("audit", Set.of("audit", "identity", "common")),
-          Map.entry("messaging", Set.of("messaging", "common")),
+          // S12-11: the DLQ inspection audit writes through `audit.application.AuditService`, so
+          // `messaging` compiles-depend on `audit` (arrow 21, ADR-022).
+          Map.entry("messaging", Set.of("messaging", "common", "audit")),
           Map.entry("observability", Set.of("observability", "common")),
           Map.entry("common", Set.of("common")));
 

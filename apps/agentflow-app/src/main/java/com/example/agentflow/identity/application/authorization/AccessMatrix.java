@@ -61,8 +61,8 @@ public final class AccessMatrix {
 
   /**
    * Builds the current access matrix. User operations are listed explicitly; the {@code ops:dlq}
-   * operator rule is reserved (added as a new {@link EndpointRule} when the operator DLQ endpoint
-   * is implemented in a later sprint — it stays out of the matrix until then).
+   * operator rule (S12-11) is added as new {@link EndpointRule}s for the DLQ inspection endpoints,
+   * kept after the user operations and documented as operator-only.
    */
   public AccessMatrix() {
     this.rules =
@@ -74,7 +74,12 @@ public final class AccessMatrix {
                 "POST",
                 API_V1 + "/workflows/{workflowId}/versions/{versionId}/activate",
                 Permission.WORKFLOW_ACTIVATE),
-            new EndpointRule("POST", API_V1 + "/runs/*/approvals/*", Permission.RUN_APPROVE));
+            new EndpointRule("POST", API_V1 + "/runs/*/approvals/*", Permission.RUN_APPROVE),
+            // S12-11: the operator DLQ inspection endpoints (read-only, paginated + audited
+            // detail),
+            // gated by the ops:dlq permission.
+            new EndpointRule("GET", API_V1 + "/ops/dlq", Permission.OPS_DLQ),
+            new EndpointRule("GET", API_V1 + "/ops/dlq/*", Permission.OPS_DLQ));
   }
 
   /**

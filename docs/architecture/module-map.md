@@ -80,6 +80,7 @@ flowchart LR
     wfexc -->|12| wfdef
     wfexc -->|13| messaging
     wfexc -->|20| audit
+    messaging -->|21| audit
     feedback["execution SPI<br/>StepHandler port (defined in wfexc)"]
 
     %% --- Feedback via the execution SPI: implementers depend on the port owner ---
@@ -130,7 +131,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |
 | `audit` | security/business audit events, immutable append-only history | `common` (redaction), `identity` |
-| `messaging` | outbox, inbox, event envelope/versioning, publisher/consumer, DLQ | `common` (redaction), PostgreSQL, Kafka |
+| `messaging` | outbox, inbox, event envelope/versioning, publisher/consumer, DLQ | `common` (redaction), PostgreSQL, Kafka, `audit` (DLQ inspection audit, arrow 21) |
 | `observability` | domain meters, trace attributes, correlation, structured JSON logging + secret masking | `common` (redaction), Micrometer, OpenTelemetry |
 
 ---
@@ -231,6 +232,7 @@ model provider) and is **not** a module edge.
 | 18 | `knowledgebase -> messaging` | the upload enqueues `ingestion-requested` through the transactional outbox port (S10-06; ADR-015) |
 | 19 | `ingestion -> ai` | the pipeline embeds chunk sets through the neutral embedding port (`EmbeddingGenerationService`; S10-12; ADR-016) |
 | 20 | `workflowexecution -> audit` | the human-approval decision is written to the append-only audit trail in the same transaction as the decision (S11-04; ADR-018) |
+| 21 | `messaging -> audit` | the DLQ inspection audit is written through the public `AuditService` port — a `READ` on the operator `DLQ` resource (S12-11; ADR-022) |
 | 14–16 | `toolexecution -> workflowexecution`, `ai -> workflowexecution`, `knowledgebase -> workflowexecution` | **the execution SPI**: these packages implement the `StepHandler` port that `workflowexecution` owns (open decision §4) |
 | 17 | `workflowexecution -> toolexecution/ai/knowledgebase` | **runtime only**, via the SPI (never a compile edge) |
 

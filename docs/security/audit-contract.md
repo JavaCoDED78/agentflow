@@ -145,6 +145,15 @@ resource they act on** (e.g. redriving a `workflow_events` record is a `START`/`
 inspecting a document is a `READ` on `DOCUMENT`) with an operator actor subject and the inspected
 `resource_id`. The ops audit vocabulary is therefore a subset of the verbs above, not a new entry.
 
+**Operator resource family — `DLQ` (S12-11).** The DLQ inspection surface is its own distinct
+operator resource, so the closed resource-type catalogue adds one dedicated constant
+`AuditResourceType#DLQ` (owned by `messaging`). Inspecting a message's full detail is a `READ` on
+`DLQ`, written through the public `audit.application.AuditService` port via the new `messaging →
+audit` edge (`ADR-022`); the `READ` verb is reused, so no new verb is added. The DLQ stores only a
+pointer to the failed event (never the envelope inline) and the surfaced `lastError` is redacted at
+write time, so this audit entry carries no secret or prompt (invariant 8). Redrive (S12-12) will
+reuse the same `DLQ` family.
+
 ## 5. Coverage summary
 
 | Category | Wired actions | Pending |
@@ -154,7 +163,7 @@ inspecting a document is a `READ` on `DOCUMENT`) with an operator actor subject 
 | Document lifecycle | — | `UPLOAD`, `READ` |
 | Tool authorization | `INVOKE` | `ALLOW`, `DENY` |
 | Approval decisions | `APPROVE`, `REJECT`, `EXPIRE` | — |
-| Ops actions | (reuse) | wiring in S12-11 … S12-13 |
+| Ops actions | `READ`/`DLQ` (inspection detail, S12-11) | redrive verb (S12-12) |
 
 The acceptance criterion — *every security-sensitive action leaves an `audit_events` row* — is fully
 met for **definition mutations, tool side-effect invocation and approval decisions** today. The
