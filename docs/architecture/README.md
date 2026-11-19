@@ -97,6 +97,9 @@ where possible (`S02-08` rejects any edge outside the module-map table;
   boundaries are checked automatically (`ADR-001`).
 - **PostgreSQL is the source of truth** for workflow state; Kafka delivers, Redis
   caches, and losing Redis must not lose a run (`ADR-002`).
+- **Redis is a helper, never a store of truth** — cache, rebuildable cache and
+  rate-limit state only; never workflow state, lease/fencing, idempotency, inbox,
+  permissions or usage/cost counters; failure mode documented per use (`ADR-021`).
 - **At-least-once + idempotency** — never promise exactly-once between PostgreSQL
   and Kafka; state and the outbox record write in one transaction (`ADR-003`).
 - **Transactional outbox** between PostgreSQL and Kafka, polling publisher,

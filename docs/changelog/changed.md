@@ -6,6 +6,32 @@
 
 
 
+## S02-17 — Redis role: a helper component, correctness never depends on it (`ADR-021`).
+
+
+- **Redis role (`S02-17`).** `docs/adr/ADR-021-redis-role.md` is the new `ADR-021`,
+  written per the ADR template: **Redis is a helper / caddy component** — cache,
+  rebuildable cache and rate-limit state only, never a store of truth. Permitted
+  uses are limited to rate-limit state, a rebuildable cache and short-lived
+  coordination whose loss does not change a result; it never holds workflow state,
+  the run lease/fencing, idempotency keys, the inbox, permissions/allowlists or
+  usage/cost counters (those stay in PostgreSQL/Kafka: `ADR-002`/`ADR-003`/
+  `ADR-004`/`ADR-011`). Keys go through one builder (`agentflow:{env}:{purpose}:
+  {tenantId}:…`, closed `purpose` set, mandatory TTL, never secrets/PII/prompts or
+  document text, tenant-scoped); every permitted use declares its failure mode up
+  front — rate limiting **fails open** to a bounded in-memory limiter, a cache
+  **fails open** by falling through to PostgreSQL, and short-lived coordination
+  **fails closed** unless a safe in-memory fallback exists. Redis runs in the
+  `core` Compose profile (and `full`); the API role connects locally, the worker
+  reads durable state from PostgreSQL, and the app boots and passes readiness
+  without Redis. The record is added to the ADR register (`docs/adr/README.md`),
+  cited as a standing constraint in the architecture index (`docs/architecture/
+  README.md`), and the PR template (`S02-14`) gains a **Redis role** self-check —
+  "is Redis used for state, authorization or financial counters". Documentation-only
+  change — verified by integrity (`git diff --check`, link resolution against the repo)
+  — no build gate for a documentation-only task.
+
+
 ## S04-08 — OpenAPI description reachable on the secured chain.
 
 

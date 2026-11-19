@@ -3,7 +3,7 @@
 **Версия документа:** 1.2  
 **Актуальность стека:** 15 октября 2026 года  
 **Горизонт:** 16 недель (2–4 месяца)  
-**Формат:** pet-проект backend/system design, один основной разработчик с AI-ассистентом; backlog из 277 атомарных задач с acceptance criteria  
+**Формат:** pet-проект backend/system design, один основной разработчик с AI-ассистентом; backlog из 289 атомарных задач с acceptance criteria  
 
 ## 1. Цель проекта
 
@@ -62,7 +62,7 @@ AgentFlow — платформа для создания и надёжного �
 | Основная БД | **PostgreSQL 18.6** | Source of truth для workflow state, транзакций, аудита и метаданных; поддерживает SQL, JSONB и подходит для pgvector. |
 | Vector search | pgvector + PostgreSQL full-text search | На старте меньше инфраструктуры, единые tenant-фильтры и транзакционная модель. Отдельный Qdrant — опциональное сравнение в конце. |
 | Очередь / events | Apache Kafka 4.3.x; Spring Kafka без ручного override версии клиента | Durable event log, consumer groups, replay и отдельное масштабирование API/worker. Проверить broker/client compatibility при создании проекта. |
-| Cache / ephemeral coordination | **Redis Open Source 8.10.x** | Кэш, rate-limit state, короткоживущие distributed coordination данные. PostgreSQL остаётся источником истины для workflow. |
+| Cache / ephemeral coordination | **Redis Open Source 8.10.x** | Кэш, rate-limit state, короткоживущие distributed coordination данные. PostgreSQL остаётся источником истины для workflow. Границы применения — ADR-021. |
 | Файлы | Garage с S3 API | Документы и артефакты хранятся вне PostgreSQL; в БД — метаданные и object key. |
 | Identity | Keycloak 26.x + Spring Security OAuth2 Resource Server | OIDC, роли, локальные тестовые пользователи и отделение identity от бизнес-домена. Выбрать конкретный стабильный patch при старте. |
 | AI model provider | Один облачный provider + Ollama как локальная опция | Изолировать провайдера интерфейсом и не привязывать доменную логику к одному SDK. Локальная модель не должна быть обязательна для CI. |
@@ -117,6 +117,10 @@ Kafka доставляет уведомления и команды, но не �
 
 Все доменные записи содержат `tenant_id`, где это применимо. Tenant определяется из проверенного security context, а не из произвольного JSON тела. Все запросы к документам, chunks, workflow, результатам и audit events обязаны применять tenant filter. В интеграционных тестах проверяется невозможность чтения данных другого tenant.
 
+### ADR-021. Redis — вспомогательный компонент, корректность от него не зависит
+
+Redis используется только для rate-limit state, кэша, который можно пересобрать из PostgreSQL, и короткоживущих данных, потеря которых не нарушает корректность. Workflow state, lease/fencing, idempotency keys, inbox, права доступа и счётчики usage/стоимости в Redis не хранятся. Все ключи строятся единым builder (`agentflow:{env}:{purpose}:{tenantId}:…`), имеют обязательный TTL и не содержат секретов, персональных данных, prompts и текстов документов. Для каждого применения заранее определено поведение при недоступности Redis (fail-open с fallback на in-memory либо fail-closed); приложение стартует и проходит readiness без Redis. Redis доступен только из внутренней сети.
+
 ---
 
 ## 4. Архитектура компонентов
@@ -134,6 +138,7 @@ flowchart TB
     K --> DW[Document Ingestion Worker]
     W --> PG
     W --> REDIS[(Redis 8)]
+    API -.-> REDIS
     W --> AI[Spring AI / Model Provider]
     W --> TOOLS[Allowlisted tools / MCP clients]
     DW --> OBJ
@@ -390,7 +395,7 @@ flowchart LR
 - Pagination для коллекций; max page size ограничен.
 - `Idempotency-Key` нужен для create-run, upload-finalize и human approval.
 - Не принимать `tenantId` как источник авторизации из тела запроса.
-- Применять request size limit, rate limit и timeout.
+- Применять request size limit, rate limit и timeout. Реализация rate limit: S04-16 и S04-17 (in-memory), S12-19 (Redis, P1).
 - Для запуска workflow возвращать `202`, а не удерживать HTTP-соединение до завершения LLM.
 
 ---
@@ -647,9 +652,9 @@ agentflow/
 | Спринт | Документация, которую создаём или обновляем | Проверка готовности |
 |---|---|---|
 | 1 | README skeleton и quickstart, `docs/README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, шаблоны PR/issue | Новый разработчик запускает проект по README с чистого checkout |
-| 2 | Domain glossary, context/module map, архитектурные диаграммы, ADR index и шаблон | Диаграммы и ADR согласованы с реальными границами модулей |
+| 2 | Domain glossary, context/module map, архитектурные диаграммы, ADR index и шаблон, ADR-021 (роль Redis) | Диаграммы и ADR согласованы с реальными границами модулей |
 | 3 | Database/migration guide, API conventions, OpenAPI и примеры ошибок | Миграции и API-контракты проверяются автоматизированно |
-| 4 | Authentication/authorization guide, tenant claims, local login runbook | Инструкция проверяется OIDC и cross-tenant тестами |
+| 4 | Authentication/authorization guide, tenant claims, local login runbook, политика rate limit API | Инструкция проверяется OIDC и cross-tenant тестами |
 | 5 | Workflow DSL reference, schema examples, state-machine diagram | Все примеры графов проходят validator |
 | 6 | Kafka topic/event catalog, event envelope, delivery/idempotency guarantees | Имена, schemas и описания совпадают с тестами и конфигурацией |
 | 7 | Durable execution design, lease/fencing explanation, recovery runbook | Runbook проверяется тестом kill/restart worker |
@@ -657,10 +662,10 @@ agentflow/
 | 9 | Provider configuration, prompt versioning, budgets и Planner evaluation | Fake-provider tests и eval command воспроизводимы без реального API key |
 | 10 | RAG pipeline, ingestion lifecycle, retrieval filters, citations и eval corpus | Описанный сценарий upload → index → retrieve повторяется локально |
 | 11 | Agent security/threat model, MCP setup, human approval lifecycle | Документированы threat boundaries, allowlist и проверка approval |
-| 12 | Usage/cost model, quotas, audit events, DLQ/redrive runbooks | Операции бюджета и DLQ имеют проверяемые инструкции и ограничения доступа |
-| 13 | Observability handbook, metric catalogue, dashboards/alerts-as-code и runbooks | Полный telemetry stack восстанавливается из Git |
+| 12 | Usage/cost model, quotas, audit events, DLQ/redrive runbooks, `docs/architecture/redis-usage.md` и `docs/runbooks/redis-outage.md` | Операции бюджета и DLQ имеют проверяемые инструкции и ограничения доступа |
+| 13 | Observability handbook, metric catalogue, dashboards/alerts-as-code и runbooks, метрики Redis и rate limiter | Полный telemetry stack восстанавливается из Git |
 | 14 | Test strategy, failure matrix, benchmark methodology и отчёт измерений | Все утверждения о надёжности/производительности имеют evidence |
-| 15 | Deployment guide, configuration reference, secrets/rollback/upgrade runbooks | Развёртывание выполняется по документации на чистом локальном кластере |
+| 15 | Deployment guide, configuration reference, secrets/rollback/upgrade runbooks, параметры Redis | Развёртывание выполняется по документации на чистом локальном кластере |
 | 16 | README/release notes/CHANGELOG finalization, broken-link и docs build checks, release readiness | Quickstart и критические инструкции проверены на clean-room окружении |
 
 **Ритм обновления:** по ходу спринта автор меняет профильный документ и `CHANGELOG.md` вместе с кодом; в конце спринта ответственный за задачу проверяет README, ссылки и примеры, а review подтверждает совпадение документа с реализацией. Финальная документационная работа в Sprint 16 — это верификация и выпуск, а не написание документации с нуля.
@@ -869,6 +874,11 @@ agentflow/
 Результат: навигационный ADR register.
 Приёмка: каждое принятое существенное архитектурное решение имеет ID и статус; superseded ADR не удаляется и ссылается на замену.
 
+### S02-17 — оформить ADR-021 «Роль Redis» (P0)
+Действия: создать ADR по шаблону из S02-12; перечислить допустимые применения (rate-limit state, пересобираемый кэш, короткоживущая координация без влияния на корректность) и запрещённые (workflow state, lease/fencing, idempotency keys, inbox, права доступа, счётчики usage/стоимости); для каждого допустимого применения определить поведение при недоступности Redis (fail-open с in-memory fallback либо fail-closed); зафиксировать формат ключей `agentflow:{env}:{purpose}:{tenantId}:…`, обязательный TTL и запрет секретов, PII, prompts и текстов документов в ключах и значениях; решить, в каком Compose profile запускается Redis и какие роли (API, worker) к нему подключаются; добавить запись в `docs/adr/README.md` и в архитектурный индекс, а в PR architecture checklist (S02-14) — вопрос «не используется ли Redis для состояния, авторизации или финансовых счётчиков».
+Результат: `docs/adr/ADR-021-redis-role.md`.
+Приёмка: каждое применение Redis в бэклоге (S04-17, S12-16…S12-21, S13-22, S14-08, S14-18, S15-20) соответствует ADR; запрещённые применения перечислены явно; для каждого допустимого применения указан fail-open или fail-closed с обоснованием.
+
 **Gate Sprint 2:** модули имеют владельцев, границы защищены тестами, первые ADR отражают фактическую архитектуру.
 
 ---
@@ -1044,6 +1054,16 @@ agentflow/
 Действия: создать `docs/security/authentication-authorization.md`; описать OIDC user flow, machine-to-machine flow, разрешённые claims, permission catalogue, tenant resolution, 401/403/404 policy и ограничения Actuator; связать документ с `docs/runbooks/local-auth.md`.
 Результат: security/authentication guide.
 Приёмка: примеры конфигурации не содержат секретов; роли/claims совпадают с кодом и тестами; локальный login/runbook проверен на свежем realm.
+
+### S04-16 — определить порт RateLimiter и политику лимитов API (P1)
+Действия: определить application port `RateLimiter` (ключ = tenant + principal + группа endpoints, результат = allowed либо retry-after) без зависимости от конкретного хранилища; вынести лимиты по группам (create-run, upload, search/debug, ops) в typed configuration с validation; описать ответ `429` в формате Problem Details с `Retry-After` и добавить его в OpenAPI; зафиксировать, что rate limit не участвует в authentication/authorization и не заменяет request size limit и timeout из раздела 9.
+Результат: контракт лимитера и конфигурация политик.
+Приёмка: порт и политики не зависят от Redis; невалидные лимиты дают понятный startup failure; `429` описан в OpenAPI и проходит проверку контракта.
+
+### S04-17 — реализовать in-memory rate limiter и подключить к API (P1)
+Действия: реализовать in-memory адаптер порта (token bucket или fixed window) с инжектируемым `Clock` и ограниченным числом ключей (eviction), чтобы память не росла без границ; подключить его как filter/interceptor после аутентификации и определения tenant; исключить health/liveness/readiness endpoints; не включать токены и секреты в ключи и логи; в `docs/architecture/api-conventions.md` описать, что при нескольких репликах лимит действует на каждую реплику отдельно.
+Результат: работающий rate limit одного инстанса.
+Приёмка: превышение лимита даёт `429` с `Retry-After`; лимиты разных tenant независимы; тесты с фиксированным `Clock` воспроизводимы; число ключей ограничено; health endpoints не лимитируются; ограничение «per-replica» задокументировано.
 
 **Gate Sprint 4:** все API защищены OIDC, tenant берётся из доверенного контекста, cross-tenant regression suite проходит. Это блокирующее условие следующих спринтов.
 
@@ -1764,6 +1784,36 @@ agentflow/
 Результат: справочник usage/cost и безопасная инструкция DLQ.
 Приёмка: описаны причины возможного расхождения предварительной и финальной стоимости; redrive требует authorization и audit; секреты/личные данные не раскрываются в диагностике.
 
+### S12-16 — подключить Redis client и typed configuration (P1)
+Действия: добавить Redis-клиент из зависимостей, управляемых Spring Boot BOM, через version catalog без ручного override версий; завести `@ConfigurationProperties` с validation: `enabled`, host/port, флаг TLS, обязательные ограниченные connect и command timeouts, credentials только из env/secret references; создавать подключение только при `enabled=true` и только в ролях, которым Redis нужен по ADR-021; при `enabled=false` использовать in-memory реализации и не создавать Redis connection beans.
+Результат: Redis-конфигурация, полностью выключаемая флагом.
+Приёмка: приложение стартует и проходит readiness с `enabled=false` и без запущенного Redis; отсутствие обязательных параметров при `enabled=true` даёт понятный startup failure; пароль не попадает в логи, Actuator и `toString` (canary-тест).
+
+### S12-17 — добавить Redis health indicator и Testcontainers-фикстуру (P1)
+Действия: добавить health indicator Redis в отдельную non-critical health group, не входящую в readiness и liveness (сценарий 8 раздела 13: недоступность Redis не должна выводить приложение из ротации); создать общую Testcontainers-фикстуру Redis на том же pinned image, что в Compose (S01-13); добавить smoke integration test: set/get, истечение TTL, проверка аутентификации.
+Результат: наблюдаемая зависимость и тестовая фикстура.
+Приёмка: остановка Redis переводит индикатор в DOWN, но readiness остаётся UP; тест использует тот же major version image, что Compose; `./gradlew integrationTest` не требует внешнего Redis.
+
+### S12-18 — реализовать key builder и политику TTL (P1)
+Действия: создать единый builder ключей `agentflow:{env}:{purpose}:{tenantId}:…` с закрытым перечнем `purpose` (`ratelimit`, `cache`); запретить запись без TTL; запретить секреты, PII, prompts и тексты документов в ключах и значениях; версионировать формат значений и ограничить их размер; для tenant-scoped purpose без tenantId возвращать ошибку.
+Результат: единый контракт ключей и TTL.
+Приёмка: unit tests: ключи разных tenant не пересекаются; запись без TTL невозможна; неизвестный `purpose` и значение выше лимита отклоняются; canary-тест подтверждает, что токены не попадают в ключи.
+
+### S12-19 — реализовать Redis-адаптер RateLimiter (P1)
+Действия: реализовать адаптер порта из S04-16 с атомарной операцией на стороне Redis (скрипт или атомарные команды, без гонок read-modify-write); применить политику отказа из ADR-021: при недоступности или превышении command timeout переключаться на in-memory лимитер с записью метрики и лога, а не отклонять все запросы; выбор реализации — конфигурацией; command timeout ограничивает задержку, добавляемую запросу; результат лимитера не используется в решениях authentication/authorization.
+Результат: распределённый rate limiter.
+Приёмка: integration test с двумя экземплярами лимитера на одном Redis соблюдает общий лимит; остановка Redis не вызывает 5xx и не ослабляет authentication/authorization; все созданные ключи имеют TTL.
+
+### S12-20 — подключить лимитер к quotas и ops endpoints (P1)
+Действия: использовать порт в S12-05 как вспомогательный ограничитель частоты запуска runs по tenant и в S12-13 для ops endpoints; limits параллельных runs, usage, reservations и стоимость остаются в PostgreSQL; полная очистка Redis не должна менять usage state.
+Результат: quota service и ops surface используют общий лимитер.
+Приёмка: race test из S12-05 проходит и с Redis, и без него; очистка Redis не меняет usage/budget state и не позволяет обойти tenant quota; ops endpoint возвращает `429` с correlation ID при превышении.
+
+### S12-21 — документировать эксплуатацию Redis (P1)
+Действия: создать `docs/architecture/redis-usage.md` (применения по ADR-021, формат ключей и TTL, политика отказа, конфигурация, метрики) и `docs/runbooks/redis-outage.md` (симптомы, диагностика, безопасные действия, критерий восстановления); сверить диаграмму компонентов, стековую таблицу и справочник конфигурации с реальными подключениями (API → Redis для лимитера); добавить запись в `CHANGELOG.md`.
+Результат: справочник и runbook по Redis.
+Приёмка: примеры конфигурации без секретов; список функций, зависящих от Redis, совпадает с кодом и используется в S14-08; runbook проверен остановкой Redis.
+
 **Gate Sprint 12:** бюджеты работают, audit append-only, DLQ защищён и повторная обработка контролируема.
 
 ---
@@ -1877,6 +1927,11 @@ agentflow/
 Результат: единая инструкция эксплуатации observability stack.
 Приёмка: dashboard/alert identifiers и файлы provisioning соответствуют Git; у каждого P0 alert есть владелец/действие/runbook; запрещённые high-cardinality labels и чувствительные поля документированы.
 
+### S13-22 — инструментировать Redis и rate limiter (P1)
+Действия: добавить метрики latency и ошибок команд Redis (требование раздела 12), решений лимитера (allowed/limited/fallback) и счётчик перехода на in-memory fallback; использовать только ограниченные labels (`operation`, `result`, `route_group`) без tenantId, userId и ключей; добавить панель в dashboard API/JVM/DB (S13-14) и предупреждающий alert «Redis недоступен» с runbook `docs/runbooks/redis-outage.md`; дополнить каталог метрик в observability handbook.
+Результат: Redis и rate limit наблюдаемы.
+Приёмка: cardinality test S13-19 покрывает новые метрики; при остановке Redis растёт метрика ошибок и срабатывает alert в тестовом окружении; dashboard и alert provisioned из Git; в telemetry нет ключей, значений и токенов.
+
 **Gate Sprint 13:** end-to-end trace виден; metrics pipeline, dashboards, alerts и datasources versioned; telemetry stack восстанавливается из Git.
 
 ---
@@ -1921,9 +1976,9 @@ agentflow/
 Приёмка: не появляется принятого run без durable state/outbox и не появляется дубликат при retry.
 
 ### S14-08 — проверить Redis outage (P1)
-Действия: остановить Redis; проверить cache bypass и поведение функций, которым Redis обязателен; убедиться, что durable workflow state остаётся в PostgreSQL.
+Действия: остановить Redis, а также имитировать недоступность по сети и медленные ответы; пройти по списку функций из `docs/architecture/redis-usage.md` (rate limiter по политике ADR-021, cache bypass, quota/ops rate limit) и проверить фактическое поведение каждой; убедиться, что durable workflow state остаётся в PostgreSQL, readiness остаётся UP, а health indicator, метрика и alert отражают сбой; проверить восстановление после запуска Redis без ручных действий; внести таблицу «функция → поведение при outage → evidence» в `docs/testing/failure-matrix.md`.
 Результат: Redis outage test/note.
-Приёмка: сбой Redis не приводит к потере workflow или ослаблению tenant authorization.
+Приёмка: сбой Redis не приводит к потере workflow или ослаблению tenant authorization; нет функции, при которой отсутствие Redis даёт 5xx без документированной причины; задержка запроса при недоступном Redis ограничена настроенным command timeout.
 
 ### S14-09 — проверить provider error matrix (P0)
 Действия: fake provider возвращает timeout, 429, 5xx, invalid structured output и refusal; сверить retry count, status, usage reservation и metrics.
@@ -1969,6 +2024,11 @@ agentflow/
 Действия: создать `docs/testing/README.md`; описать уровни unit/module/contract/Testcontainers/E2E/failure/security/load tests, быстрые и полные Gradle-команды, правила фикстур и fake provider; в `docs/performance/benchmarking.md` описать профиль k6, окружение, warm-up, duration, метрики и способ сравнения результатов.
 Результат: test strategy и воспроизводимая benchmark methodology.
 Приёмка: каждый обязательный gate связан с тестом/командой; отчёт содержит точную конфигурацию окружения и raw output/ссылку на артефакты; целевые значения не выдаются за достигнутые без измерений.
+
+### S14-18 — решить по кэшу GET /runs/{id} по результатам baseline (P2)
+Действия: сравнить p95/p99 `GET /runs/{id}` с кэшем и без него по методике S14-13 и S14-14; вводить кэш (в том числе на Redis) только если без него цель раздела 12.3 не достигается; при внедрении использовать tenant-scoped ключи по ADR-021, короткий TTL, инвалидацию при переходе состояния и bypass при недоступности Redis; если кэш не нужен — убрать оговорку «при тёплом cache» из раздела 12.3 либо обосновать её измерением.
+Результат: решение «кэш не нужен / нужен» с измерениями.
+Приёмка: решение подтверждено raw output; при внедрении кэша terminal-статус не отдаётся устаревшим дольше TTL, cross-tenant тест проходит, S14-08 повторён с включённым кэшем.
 
 **Gate Sprint 14:** отказоустойчивость покрыта automated tests, baseline воспроизводим, critical/high security findings устранены или задокументированы.
 
@@ -2072,6 +2132,11 @@ agentflow/
 Действия: создать `docs/deployment/README.md` и `docs/deployment/configuration.md`; описать Compose profiles, Helm values, API/worker roles, обязательные env/config keys, secret references, migrations Job, probes, resource requests/limits, rollout/rollback, upgrade order и локальные URLs; связать с deployment runbook.
 Результат: инструкция развёртывания и таблица конфигурации.
 Приёмка: значения обязательных параметров, defaults и секретные поля отмечены точно; чистый deployment проходит по документации; production credentials не документируются и не коммитятся.
+
+### S15-20 — подключить Redis к Kubernetes-окружению и проверить rate limit на нескольких репликах (P1)
+Действия: добавить Redis в Helm values/зависимости demo-кластера: pinned image, requests/limits, только internal service, credentials из Secret references (S15-09), доступ только от API/worker pods (S15-13, если выполнена); передать `agentflow.redis.*` через values; запустить минимум две реплики API и проверить общий rate limit; остановить Redis pod и проверить fallback и readiness; отразить параметры в `docs/deployment/configuration.md`.
+Результат: Redis в Kubernetes-профиле и evidence для распределённого rate limit.
+Приёмка: суммарный лимит соблюдается на нескольких репликах; остановка Redis не выводит поды из readiness и не вызывает 5xx из-за лимитера; Redis недоступен снаружи кластера; секреты не попадают в values и Git.
 
 **Gate Sprint 15:** clean Kubernetes deploy проходит, секреты скрыты, API/worker roles отделены, rollback и scale-out протестированы.
 
@@ -2247,12 +2312,14 @@ agentflow/
 - DLQ admin/redrive, AsyncAPI и schema compatibility gate.
 - Kubernetes GitOps через Argo CD.
 - k6 load test и отчёт по p95/p99.
+- Redis-реализация (rate limiter, health, метрики): S12-16…S12-21, S13-22, S15-20; при нехватке времени остаётся in-memory rate limiter (S04-16, S04-17).
 
 ### P2 — только после завершения MVP
 
 - Debezium CDC вместо polling outbox.
 - Отдельный Qdrant benchmark против pgvector.
 - Reranker и расширенный eval framework.
+- Кэш `GET /runs/{id}` — решение по результатам baseline (S14-18).
 - Multi-model routing, semantic cache, multi-agent negotiation.
 - Полноценная UI-панель, multi-region и autoscaling based on queue lag.
 
