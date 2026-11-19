@@ -509,6 +509,132 @@
           }
         }
       }
+    },
+    "/api/v1/ops/dlq" : {
+      "get" : {
+        "tags" : [ "dlq-inspection-controller" ],
+        "description" : "Operator-only, read-only, paginated DLQ overview (metadata only, no raw payload). Requires the {@code ops:dlq} permission; an ordinary tenant principal is denied (403).",
+        "operationId" : "list",
+        "parameters" : [ {
+          "name" : "page",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : 0
+          }
+        }, {
+          "name" : "size",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : 20
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "the DLQ page plus pagination metadata",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessagePageDto"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "invalid pagination (page < 0 or size < 1)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessagePageDto"
+                }
+              }
+            }
+          },
+          "403" : {
+            "description" : "caller lacks the ops:dlq permission",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessagePageDto"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessagePageDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ops/dlq/{dlqId}" : {
+      "get" : {
+        "tags" : [ "dlq-inspection-controller" ],
+        "description" : "Operator-only, read-only, audited DLQ detail view (opens one message, records a READ on the DLQ in the audit trail). Requires {@code ops:dlq}; an ordinary tenant principal is denied (403).",
+        "operationId" : "inspect",
+        "parameters" : [ {
+          "name" : "dlqId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "the full inspection view (metadata plus the redacted failure detail)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessageDetailDto"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "no DLQ message with that id",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessageDetailDto"
+                }
+              }
+            }
+          },
+          "403" : {
+            "description" : "caller lacks the ops:dlq permission",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessageDetailDto"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqMessageDetailDto"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components" : {
@@ -771,6 +897,112 @@
           },
           "errorSummary" : {
             "type" : "string"
+          }
+        }
+      },
+      "DlqMessageDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "eventId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "topic" : {
+            "type" : "string"
+          },
+          "consumerName" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "RETRY", "DEAD_LETTER" ]
+          },
+          "errorClass" : {
+            "type" : "string",
+            "enum" : [ "PERMANENT", "TRANSIENT" ]
+          },
+          "attempts" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "recordedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
+      },
+      "DlqMessagePageDto" : {
+        "type" : "object",
+        "properties" : {
+          "items" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/DlqMessageDto"
+            }
+          },
+          "page" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "size" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "totalElements" : {
+            "type" : "integer",
+            "format" : "int64"
+          },
+          "totalPages" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "hasNext" : {
+            "type" : "boolean"
+          },
+          "hasPrevious" : {
+            "type" : "boolean"
+          }
+        }
+      },
+      "DlqMessageDetailDto" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "eventId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "topic" : {
+            "type" : "string"
+          },
+          "consumerName" : {
+            "type" : "string"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "RETRY", "DEAD_LETTER" ]
+          },
+          "errorClass" : {
+            "type" : "string",
+            "enum" : [ "PERMANENT", "TRANSIENT" ]
+          },
+          "attempts" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "lastError" : {
+            "type" : "string"
+          },
+          "recordedAt" : {
+            "type" : "string",
+            "format" : "date-time"
           }
         }
       }

@@ -28,5 +28,14 @@ public enum AuditResourceType {
   APPROVAL,
 
   /** A registered tool (`toolexecution` / `agentcatalog`). */
-  TOOL
+  TOOL,
+
+  /**
+   * A dead-letter queue message (S12-11) — the operator resource family owned by `messaging`. The
+   * DLQ inspection surface (S12-11 … S12-13) audits its operator actions against this type:
+   * inspecting a message's full detail is a `READ` on `DLQ` (the audit-contract §4.6 ops vocabulary
+   * reuses the `READ` verb rather than a new one). It is a dedicated constant because the DLQ is
+   * its own distinct operator resource, not a run / document / approval / tool.
+   */
+  DLQ
 }

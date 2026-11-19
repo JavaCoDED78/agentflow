@@ -16,11 +16,10 @@ The complete, canonical verb/resource vocabulary the trail can express is fixed 
 [`docs/security/audit-contract.md`](../../../docs/security/audit-contract.md) and expressed in code
 by the `AuditAction` / `AuditResourceType` / `AuditOutcome` enums (`domain`). Each security- and
 business-sensitive action is one row; the mandatory fields (actor / tenant / resource / outcome,
-plus `correlationId` / `metadataRedacted`) are fixed by that contract. The audit catalogue records
-which actions already leave an entry (`WIRED`: definition create/activate, tool side-effect
-`INVOKE`, approval approve/reject/expiry) and which are pending (`START` / `CANCEL` / `UPLOAD` /
-`READ` / `ALLOW` / `DENY` / `UPDATE`); the pending wiring reuses the existing audit edges or adds a
-new one (`knowledgebase → audit`, an ADR).
+plus `correlationId` / `metadataRedacted`) are fixed by that contract. The audit catalogue records which actions already leave an entry (`WIRED`: definition create/activate, tool side-effect
+`INVOKE`, approval approve/reject/expiry, the DLQ inspection `READ` on the operator `DLQ` resource, S12-11) and which are pending (`START` / `CANCEL` / `UPLOAD` /
+`ALLOW` / `DENY` / `UPDATE`); the pending wiring reuses the existing audit edges or adds a new one (`knowledgebase → audit`, an ADR). The operator `DLQ` resource type
+is owned by `messaging`; `messaging` now reaches `audit` only through the public `AuditService` port for the DLQ inspection audit (`ADR-022`).
 
 ## Data ownership
 

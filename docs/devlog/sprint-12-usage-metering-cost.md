@@ -2,6 +2,7 @@
 
 ## Contents
 
+- [S12-11](#s12-11-the-operator-dlq-inspection-api) — the operator DLQ inspection API: read-only, `ops:dlq`-gated, paginated list + audited detail view, `READ` on `AuditResourceType#DLQ` (S12-11)
 - [S12-10](#s12-10-the-dead-letter-store-records-why-a-message-failed) — the dead-letter store records *why* a message failed (`error_class`) alongside *what to do* with it (`status`) (S12-10)
 - [S12-09](#s12-09-centralised-secret-redaction) — centralised secret redaction: `common.SecretRedactor` as the one source of truth (bearer / JWT / `AKIA…` / `key=<secret>` / full prompt) (S12-09)
 - [S12-08](#s12-08-the-append-only-audit-trail-enforced-at-the-storage-layer) — the append-only audit trail, enforced at the storage layer by a trigger that blocks rewrite even for the table owner (S12-08)
@@ -12,6 +13,96 @@
 - [S12-03](#s12-03-the-usage-price-catalogue-and-versioning) — the usage price catalogue and versioning: every historical estimate explainable through the exact price version (S12-03)
 - [S12-02](#s12-02-the-uniform-usage-recording-path) — the uniform usage recording path; unreported token values recorded as unknown, not invented (S12-02)
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: one row per measurement of one attempt (S12-01)
+
+---
+
+## S12-11 — the operator DLQ inspection API
+
+**Task (P1):** let an operator inspect the dead-letter queue read-only — page the store and open the
+full record of a held message — gated by the `ops:dlq` permission, with the access recorded in the
+audit trail.
+**Deliverable:** a read-only REST controller (`DlqInspectionController`) and its application service
+(`DlqInspectionService`), backed by a `@ConditionalOnBean(DataSource)` repository (`DlqMessageRepository`),
+using the `ops:dlq` permission from the identity module.
+
+The DLQ is a single, tenant-wide store keyed by `(consumer, event)` — it is *not* tenant-scoped, so
+an operator inspection is a read across the whole store, but the *who* must still be answered from
+trusted context (invariant 1) and recorded (invariant 3). The lookup takes no tenant (there is only
+"exists" / "does not exist"; a cross-tenant id is indistinguishable from a missing one), while the
+tenant/actor are threaded only into the audit record from the security context.
+
+### What changed
+
+- **Permission and access matrix.** `Permission.OPS_DLQ` (`ops:dlq`) was added to the catalogue
+  (`Permission.java:60`), and `AccessMatrix` gained two rules — `GET /api/v1/ops/dlq` and
+  `GET /api/v1/ops/dlq/*` — both requiring `ops:dlq` (`AccessMatrix.java:81-82`). `SecurityConfiguration`
+  wires the matrix into the filter chain, so a token holding only `workflow:read` is denied (`403`)
+  on both endpoints, exactly like the approval endpoints.
+- **The inspection service (`DlqInspectionService`).** Two use cases:
+  - `listDlqMessages(page, requestedSize)` pages the whole store, newest first
+    (`recorded_at DESC, id DESC` — invariant 10, so a page is stable across reads), returns the
+    overview metadata only (no failure text), and clamps the page size to `MAX_PAGE_SIZE = 100`
+    (invariant 11). It throws `400` for `page < 0` / `size < 1`.
+  - `inspectDlqMessage(dlqId, tenantId, actor)` resolves the row by id, records an
+    `AuditAction#READ` on `AuditResourceType#DLQ` in the append-only trail (audit-contract §4.6
+    reuses `READ` for operator inspection), and returns the full `DlqMessageDetailDto`. The
+    `lastError` surfaced here is already redacted at write time (S12-09): a secret, a full prompt or
+    a full document never reaches the durable row, so it never reaches this view. It throws `404`
+    when no row has that id.
+  - The `DlqMessageRepository` bean is registered only when a `DataSource` exists
+    (`@ConditionalOnBean(DataSource.class)`), so it is `@Autowired(required = false)` on the service
+    (the same no-DB boot pattern as `WorkflowDefinitionService`). When absent, the service fails loud
+    with `503` rather than returning a silent, misleading empty page.
+- **The DTOs.** `DlqMessagePageDto` (the page + pagination flags), `DlqMessageDto` (one row: no raw
+  payload), `DlqMessageDetailDto` (the full record for the audited detail view).
+- **No new module edge, no ADR required.** `DlqInspectionService` calls `AuditService` (the audit
+  port, already on the `messaging → audit` edge, ADR-018) and `DlqMessageRepository` (its own
+  module). It imports only the identity *catalogue* (`Permission`, `AccessMatrix`) — the same
+  already-established `messaging → identity` edge — so the architecture boundary and the ALLOW map
+  are unchanged and the gate still passes. The `AuditResourceType#DLQ` value is a new catalogue
+  entry, not a new edge.
+
+### Verification
+
+Unit suites, JUnit-XML-verified (`failures="0"` `errors="0"` `skipped="0"`, fresh this session):
+`DlqInspectionServiceTest` (7 — the default page is `page 0 / size 20`; the page clamps to
+`MAX_PAGE_SIZE`; `400` for `page < 0` / `size < 1`; overview never carries `lastError`; the detail
+records `READ` on `DLQ` and returns the full view; `404` when no row has the id; `503` when the
+repository is absent, for both the list and the detail). `DlqInspectionControllerTest` (6 — the
+overview `200` with default pagination and no `lastError`; the detail `200` exposes the full record;
+`400` on bad pagination; `404` on an unknown id; the service is called with only the configured
+tenant and actor; the `503` when no database is configured). `SecurityFilterChainTest` — acceptance
+for `S12-11`: a `workflow:read`-only token is denied (`403`) on both `GET /api/v1/ops/dlq` and
+`GET /api/v1/ops/dlq/{dlqId}`, while a token holding `ops:dlq` reaches the controller (`200`),
+mirroring the approval endpoints.
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (the unchanged ALLOW
+map, `moduleBoundaries` passes) + no-cycles + formatting (`spotlessApply`, javadoc wrapping;
+`git diff --check` clean) + OpenAPI contract (the two new endpoints, generated into the contract via
+the deterministic `generateOpenApiContract` task).
+
+### Documentation
+
+- `docs/security/permissions.md` — two rows in the endpoint table for `GET /api/v1/ops/dlq` and
+  `GET /api/v1/ops/dlq/*` (`ops:dlq`), plus the `ops:dlq` row in the permission table.
+- `docs/architecture/module-api.md` — the `DlqInspectionService` methods, the `DlqInspectionController`
+  routes and DTOs, the `AuditResourceType#DLQ` audit edge, the `ops:dlq` gating, and the compile edge
+  (`DlqInspectionService` → `AuditService`) with `ADR-018` as the rationale.
+- `apps/agentflow-app/src/main/java/com/example/agentflow/messaging/AGENTS.md` — the two inspection
+  endpoints, the `ops:dlq` permission, and the `READ`/`DLQ` inspection audit.
+- `apps/agentflow-app/src/main/java/com/example/agentflow/audit/AGENTS.md` — `DLQ` added to the
+  catalogue, with the inspection `READ`.
+- `docs/adr/ADR-022-messaging-audit-edge.md` + the ADR register (`docs/adr/README.md:40`) — the
+  `messaging → audit` edge for DLQ inspection is documented (the edge already existed; this records
+  the new `DLQ` resource that rides it).
+- `CHANGELOG.md` (this entry).
+
+### Acceptance
+
+An operator who holds `ops:dlq` can page the dead-letter store read-only and open the full record of
+a held message; every such access is recorded `READ` / `DLQ` in the append-only audit trail, so the
+operator's investigation is auditable without ever surfacing redacted content, and the store's
+availability is never mistaken for emptiness (a missing database reports `503`, an unknown id reports
+`404`).
 
 ---
 

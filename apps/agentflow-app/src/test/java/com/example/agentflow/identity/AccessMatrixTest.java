@@ -65,10 +65,17 @@ class AccessMatrixTest {
 
   @Test
   void user_operations_do_not_reference_operator_permissions() {
-    // admin/operator operations (ops:dlq) are separated from user operations in the matrix.
+    // S11-04 / S12-11: user operations (workflow, document, run) are separated from operator
+    // operations (ops:dlq) in the matrix — every non-operator rule requires a user permission, and
+    // every operator rule is exactly ops:dlq.
     AccessMatrix matrix = new AccessMatrix();
 
     for (EndpointRule rule : matrix.rules()) {
+      if (rule.requiredPermission() == Permission.OPS_DLQ) {
+        // operator (operator-only) rules are the DLQ inspection endpoints, verified separately;
+        // every user rule below still requires a user permission.
+        continue;
+      }
       assertThat(rule.requiredPermission())
           .as("every user operation must require a user permission (never an operator one)")
           .isIn(
@@ -79,6 +86,19 @@ class AccessMatrixTest {
               Permission.DOCUMENT_WRITE,
               Permission.RUN_EXECUTE,
               Permission.RUN_APPROVE);
+    }
+  }
+
+  @Test
+  void the_operator_dlq_inspection_endpoints_require_ops_dlq() {
+    // S12-11: the read-only DLQ inspection endpoints are gated by the operator permission.
+    AccessMatrix matrix = new AccessMatrix();
+
+    for (EndpointRule rule : matrix.rules()) {
+      if (rule.requiredPermission() == Permission.OPS_DLQ) {
+        assertThat(rule.method()).isEqualTo("GET");
+        assertThat(rule.pathPattern()).isIn("/api/v1/ops/dlq", "/api/v1/ops/dlq/*");
+      }
     }
   }
 

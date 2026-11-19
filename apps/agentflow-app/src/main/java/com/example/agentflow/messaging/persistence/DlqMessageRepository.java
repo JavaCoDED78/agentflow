@@ -111,6 +111,51 @@ public class DlqMessageRepository {
         status.name());
   }
 
+  /**
+   * Count every DLQ row (the total the paginated inspection pages over; S12-11).
+   *
+   * @return the number of DLQ rows in the store
+   */
+  public long countAll() {
+    return jdbc.queryForObject("SELECT COUNT(*) FROM " + TABLE, Long.class);
+  }
+
+  /**
+   * Page the whole DLQ store, newest first (deterministic ordering by {@code recorded_at} then
+   * {@code id} so a page is stable across repeated reads — S12-11).
+   *
+   * @param offset the row to start at (zero-based, from {@code (page) * (size)})
+   * @param limit the maximum number of rows to return
+   * @return the page of DLQ rows in the window, newest first
+   */
+  public List<DlqMessage> findAllPageable(int offset, int limit) {
+    return jdbc.query(
+        "SELECT id, event_id, topic, consumer_name, status, error_class, attempts, last_error, "
+            + "recorded_at FROM "
+            + TABLE
+            + " ORDER BY recorded_at DESC, id DESC LIMIT ? OFFSET ?",
+        rowMapper,
+        limit,
+        offset);
+  }
+
+  /**
+   * @param dlqId the DLQ row id
+   * @return the full DLQ row (including the redacted {@code last_error}) for the id, or empty when
+   *     none exists (S12-11)
+   */
+  public Optional<DlqMessage> findById(UUID dlqId) {
+    List<DlqMessage> rows =
+        jdbc.query(
+            "SELECT id, event_id, topic, consumer_name, status, error_class, attempts, last_error, "
+                + "recorded_at FROM "
+                + TABLE
+                + " WHERE id = ?",
+            rowMapper,
+            dlqId);
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+  }
+
   // A package-private row mapper (S06-11); unit-tested directly in DlqMessageRowMapperTest.
   private final DlqMessageRowMapper rowMapper = new DlqMessageRowMapper();
 }

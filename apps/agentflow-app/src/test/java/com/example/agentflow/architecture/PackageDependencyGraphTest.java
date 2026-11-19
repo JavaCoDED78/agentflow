@@ -60,6 +60,9 @@ class PackageDependencyGraphTest {
     edges.put("usage", Set.of("ai", "workflowexecution"));
     edges.put("audit", Set.of("identity"));
     edges.put("workflowexecution", Set.of("workflowdefinition", "messaging", "audit"));
+    // S12-11: the DLQ inspection audit writes through `audit` (arrow 21, ADR-022); the graph stays
+    // acyclic (messaging → audit → identity, messaging → common).
+    edges.put("messaging", Set.of("messaging", "common", "audit"));
 
     assertThat(new PackageDependencyGraph(edges).findCycles()).isEmpty();
   }

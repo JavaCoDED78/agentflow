@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.agentflow.config.AgentFlowProperties;
+import com.example.agentflow.messaging.application.DlqInspectionService;
 import com.example.agentflow.workflowdefinition.application.WorkflowDefinitionService;
 import com.example.agentflow.workflowdefinition.domain.WorkflowDefinition;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -92,6 +93,8 @@ class SecurityFilterChainTest {
 
   @Autowired private WorkflowDefinitionService service;
 
+  @Autowired private DlqInspectionService inspectionService;
+
   @Autowired private ObjectMapper objectMapper;
 
   @Value("${agentflow.local.tenant-id:00000000-0000-0000-0000-000000000000}")
@@ -110,6 +113,7 @@ class SecurityFilterChainTest {
     // stale
     // stubs from a previous test.
     Mockito.reset(service);
+    Mockito.reset(inspectionService);
     issuer = properties.getSecurity().getIssuerUri();
     audience = properties.getSecurity().getAudience();
     fixture = WorkflowDefinition.draft(UUID.fromString(configuredTenant), "Report", null, "local");
@@ -332,7 +336,55 @@ class SecurityFilterChainTest {
         .isNotEqualTo(HttpStatus.FORBIDDEN);
   }
 
-  // --- S04-11: restricted actuator endpoints through the HTTP boundary ---
+  // --- S12-11: the operator DLQ inspection surface is gated by ops:dlq through the HTTP boundary
+  // ---
+
+  private ResponseEntity<String> authorizedGetDlq(String token) {
+    HttpHeaders headers = token == null ? new HttpHeaders() : bearer(token);
+    return rest.exchange(
+        baseUrl() + "/api/v1/ops/dlq", HttpMethod.GET, new HttpEntity<>(headers), String.class);
+  }
+
+  private ResponseEntity<String> authorizedGetDlqById(String token, UUID dlqId) {
+    HttpHeaders headers = token == null ? new HttpHeaders() : bearer(token);
+    return rest.exchange(
+        baseUrl() + "/api/v1/ops/dlq/" + dlqId,
+        HttpMethod.GET,
+        new HttpEntity<>(headers),
+        String.class);
+  }
+
+  @Test
+  void a_regular_principal_has_no_access_to_the_ops_api() throws Exception {
+    // Acceptance criterion of S12-11: an ordinary tenant principal (it holds workflow:read but NOT
+    // ops:dlq) is denied (403) on both DLQ endpoints — the operator surface is gated by the matrix,
+    // so a workflow:read token never reaches it (default-deny, S04-08).
+    String token = signWithRoles(testKey, issuer, audience, inFiveMinutes(), "workflow:read");
+
+    assertThat(authorizedGetDlq(token).getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(authorizedGetDlqById(token, UUID.randomUUID()).getStatusCode())
+        .isEqualTo(HttpStatus.FORBIDDEN);
+  }
+
+  @Test
+  void ops_dlq_permission_is_required_for_inspection() throws Exception {
+    // A token holding only workflow:read (never ops:dlq) is denied (403) on the list endpoint.
+    String token = signWithRoles(testKey, issuer, audience, inFiveMinutes(), "workflow:read");
+
+    assertThat(authorizedGetDlq(token).getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+  }
+
+  @Test
+  void ops_dlq_permission_suffices_to_reach_the_controller() throws Exception {
+    // A token with ops:dlq passes the security layer and reaches the controller (a 200 with a
+    // null body from the stubbed inspection service) — never a 401/403 at the secured chain.
+    String token = signWithRoles(testKey, issuer, audience, inFiveMinutes(), "ops:dlq");
+
+    ResponseEntity<String> response = authorizedGetDlq(token);
+    assertThat(response.getStatusCode())
+        .isNotEqualTo(HttpStatus.UNAUTHORIZED)
+        .isNotEqualTo(HttpStatus.FORBIDDEN);
+  }
 
   @Test
   void sensitive_management_endpoints_are_not_reachable_anonymously() {
@@ -477,6 +529,19 @@ class SecurityFilterChainTest {
     @Primary
     WorkflowDefinitionService workflowDefinitionService() {
       return mock(WorkflowDefinitionService.class);
+    }
+
+    /**
+     * Replaces the {@link DlqInspectionService} with a Mockito mock on the {@code secured-test}
+     * profile, so the DLQ inspection controller returns observable results (a 200 with a null body)
+     * without a database. It is {@link Primary} so the mock wins the {@code
+     * DlqInspectionController} and this test's {@code @Autowired} injection; the positive ops:dlq
+     * test only asserts the request reaches the controller (never a 401/403 at the secured chain).
+     */
+    @Bean
+    @Primary
+    DlqInspectionService dlqInspectionService() {
+      return mock(DlqInspectionService.class);
     }
 
     @Bean
