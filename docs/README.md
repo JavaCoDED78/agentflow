@@ -30,7 +30,7 @@ docs/
 ├── AGENTS.md                          ← documentation rules & conventions
 ├── product-scope.md                   ← MVP boundaries, v1 persona, in/out of scope
 ├── domain-glossary.md                 ← shared terms, one concept one name
-├── usage-and-costs.md                 ⚠ planned — tokens, prices, budgets (audit catalogue → security/audit-contract.md, S12-07)
+├── usage-and-costs.md                   — tokens, prices, cost budgets, reservation lifecycle, DLQ inspection/redrive (S12-15)
 ├── adr/                               ← architecture decision records
 │   ├── README.md                      ← ADR register
 │   ├── ADR-001-modular-monolith.md    ← modular monolith first (S02-05)
@@ -120,7 +120,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/evaluation/README.md` (S09-14 Planner baseline eval cases), `docs/ai/README.md` (S09-15 AI integration guide), `docs/ai/provider-configuration.md` (S09-15 provider configuration), `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test), `docs/rag/README.md` (RAG grounding — S10-11 follow-up), `docs/rag/pipeline.md` (full pipeline upload→…→ground — S10-11…S10-20) |
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
-| Usage, costs, budgets | `docs/usage-and-costs.md` | ⚠ planned |
+| Usage, costs, budgets | `docs/usage-and-costs.md` | S12-15 |
 | Audit action catalogue (audit contract) | `docs/security/audit-contract.md` | S12-07 |
 | HTTP API (`/api/v1`) | `contracts/openapi/` | `../contracts/openapi/README.md` |
 | Event envelope & payloads | `contracts/events/json-schema/` | `../contracts/events/README.md` |
