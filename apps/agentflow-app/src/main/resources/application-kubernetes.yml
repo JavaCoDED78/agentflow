@@ -8,6 +8,11 @@
 spring:
   application:
     name: agentflow-app
+  # Redis auth (S12-16). Read by RedisConnectionConfiguration; set from the AGENTFLOW_REDIS_PASSWORD
+  # Secret (Kubernetes). No default on purpose: a missing secret fails boot loudly instead of
+  # silently connecting without auth (invariant 8: no secrets, fail loud).
+  redis:
+    password: ${AGENTFLOW_REDIS_PASSWORD}
 
 agentflow:
   app-name: agentflow-app
@@ -41,6 +46,21 @@ agentflow:
       linger-ms: 5
       buffer-memory: 33554432
       compression-type: none
+
+  # Redis client (S12-16, ADR-021). Enabled in Kubernetes; the connection is created by
+  # RedisConnectionConfiguration from these values. host comes from the redis service DNS
+  # (AGENTFLOW_REDIS_HOST); the timeout bounds keep a blocked Redis from hanging a virtual thread.
+  # The password is read from spring.redis.password (see the spring.redis block), set from the
+  # AGENTFLOW_REDIS_PASSWORD Secret, never hardcoded here. RedisAutoConfiguration stays excluded
+  # (inherited from the base profile), so RedisConnectionConfiguration is the sole connection
+  # creator.
+  redis:
+    enabled: true
+    host: ${AGENTFLOW_REDIS_HOST:redis}
+    port: ${AGENTFLOW_REDIS_PORT:6379}
+    tls: false
+    connect-timeout-seconds: 5
+    command-timeout-seconds: 5
 
 # Swagger UI is a development aid for local API exploration and must not be reachable from the
 # cluster. Only the interactive UI is disabled here; the OpenAPI description can stay enabled.

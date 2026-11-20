@@ -4,7 +4,8 @@ Detailed per-task changelog records for recent work (Sprint 6 messaging, Sprint 
 
 ## Contents
 
-- [Sprint 12 — usage metering, budgets and cost](sprint-12-usage-metering-cost.md) — S12-01 … S12-09
+- [Sprint 12 — usage metering, budgets and cost](sprint-12-usage-metering-cost.md) — S12-01 … S12-15
+- [Sprint 12 — Redis wiring](sprint-12-redis.md) — S12-16 … S12-21
 - [Sprint 11 — Human approval, MCP and security of agent actions](sprint-11-human-approval-mcp-security.md) — S11-01 …
 - [Sprint 10 — Document ingestion, pgvector, hybrid retrieval and citations](sprint-10-document-ingestion.md) — S10-01 …
 - [Sprint 9 — AI layer / Planner](sprint-09-ai-planner.md) — S09-01 …

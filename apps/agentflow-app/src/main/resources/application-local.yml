@@ -13,12 +13,27 @@ spring:
   application:
     name: agentflow-app
   # Re-enable the DataSource auto-configuration that the base profile excludes
-  # (application.yml). The empty list replaces the inherited
-  # [DataSourceAutoConfiguration] exclusion. The DataSource itself is wired from
-  # spring.datasource.* supplied by the environment (git-ignored .env), not from
-  # here: nothing here points at a database.
+  # (application.yml). DataSource auto-config is NOT listed in the exclude, so it is
+  # re-enabled and wires from spring.datasource.* supplied by the environment
+  # (git-ignored .env), not from here: nothing here points at a database.
+  #
+  # A profile's spring.autoconfigure.exclude replaces (not appends to) the base value, so the
+  # four DataRedis exclusions from the base profile must be repeated here to stay excluded;
+  # RedisConnectionConfiguration is the sole connection creator (S12-16, ADR-021) and no
+  # auto-config second bean or health indicator is left pointing at localhost. DataSourceAuto-
+  # configuration is intentionally absent so the base exclusion is cleared and the DataSource
+  # is wired from spring.datasource.* (the environment), not from here.
   autoconfigure:
-    exclude: []
+    exclude:
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisReactiveAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.health.DataRedisReactiveHealthContributorAutoConfiguration
+  # Redis auth (S12-16). Read by RedisConnectionConfiguration from spring.redis.password;
+  # set from the git-ignored local .env (AGENTFLOW_REDIS_PASSWORD). Empty when unset (no
+  # auth on the local Redis). Never committed.
+  redis:
+    password: ${AGENTFLOW_REDIS_PASSWORD:}
 
 agentflow:
   app-name: agentflow-app
@@ -62,6 +77,19 @@ agentflow:
     bucket: ${AGENTFLOW_OBJECT_STORAGE_BUCKET:agentflow}
     region: ${AGENTFLOW_OBJECT_STORAGE_REGION:garage}
     public-access: disabled
+
+  # Redis client (S12-16, ADR-021). Enabled for local runs; the connection is created by
+  # RedisConnectionConfiguration from these values. host/port come from the git-ignored local
+  # .env (AGENTFLOW_REDIS_HOST / AGENTFLOW_REDIS_PORT); the localhost default is local-development
+  # only and is never shipped to a real profile. The password is read from spring.redis.password
+  # (see the spring.redis block), never hardcoded here.
+  redis:
+    enabled: true
+    host: ${AGENTFLOW_REDIS_HOST:localhost}
+    port: ${AGENTFLOW_REDIS_PORT:6379}
+    tls: false
+    connect-timeout-seconds: 5
+    command-timeout-seconds: 5
 
 # Log levels for the local profile (S01-19). The JSON layout lives in
 # logback-spring.xml; this only picks the level per logger. Our code runs at
