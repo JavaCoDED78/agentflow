@@ -247,6 +247,96 @@ class BudgetServiceIT {
     assertThat(reservationReconciledAt(TENANT_A, id)).isNull();
   }
 
+  // ---------------------------------------------------------------------------
+  // S12-14 — ambiguous provider billing on the real store.
+  //
+  // A provider call may actually execute yet return an ambiguous outcome (a timeout after the
+  // request ran). The reservation made before the call is the recorded attempt: it is settled once
+  // the outcome resolves, reconciled at its best-known amount if the worker died before settling,
+  // and never double-charged when the same attempt is retried or redelivered (at-least-once,
+  // invariant 3). These cases pin that the durable budget charges the attempt exactly once across
+  // every recovery path, on real PostgreSQL.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  @DisplayName(
+      "redelivering the same ambiguous attempt (same idempotency key) charges the reservation once")
+  void ambiguous_redelivery_is_not_double_charged() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+
+    // Attempt 1 reserved; the provider executed but the outcome was ambiguous (timeout after
+    // execute). The idempotency key is derived deterministically from (tenant, run, attempt,
+    // metric) - invariant 3, "use attempt ID for idempotency".
+    UUID attempt1 = BudgetReservation.reservationIdForAttempt(TENANT_A, RUN, 1L, BudgetMetric.COST);
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("60"), attempt1));
+
+    // Redelivery / crash-retry of the SAME attempt reuses the same idempotency key: ON CONFLICT DO
+    // NOTHING, so no second row is inserted.
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("60"), attempt1));
+
+    assertThat(countReservations(TENANT_A)).isEqualTo(1);
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("60"));
+  }
+
+  @Test
+  @DisplayName("an ambiguous attempt resolves as success and settles its actual cost, once")
+  void ambiguous_then_settle_records_actual_cost_once() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+    UUID id = uuid();
+
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("60"), id));
+    // The outcome resolves -> settle the attempt at the actual cost.
+    inTxRun(() -> service.settle(TENANT_A, id, new BigDecimal("52")));
+
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("52"));
+    assertThat(countReservations(TENANT_A)).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("after reconciliation a late settle of the ambiguous attempt is a no-op")
+  void ambiguous_reconcile_then_late_settle_is_no_op() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+    UUID id = uuid();
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("70"), id));
+
+    // Stranded: the worker crashed before settling the ambiguous outcome, so the row is created
+    // before the reconcile boundary and never settled.
+    OffsetDateTime boundary = OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(30);
+    jdbc.update(
+        "UPDATE budget_reservations SET created_at = ? WHERE reservation_id = ?",
+        boundary.minusMinutes(1),
+        id);
+
+    int reconciled = inTxRunReturn(() -> service.reconcileUnsettled(TENANT_A, boundary));
+    assertThat(reconciled).isEqualTo(1);
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+
+    // The ambiguous outcome later resolves -> a settle to the actual (lower) cost. But the row is
+    // already settled-by-reconcile (settled_at set), so the settled_at IS NULL guard makes the
+    // settle a no-op: the best-known amount does not drift and the attempt is not re-charged.
+    inTxRun(() -> service.settle(TENANT_A, id, new BigDecimal("55")));
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+    assertThat(countReservations(TENANT_A)).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("settling an ambiguous attempt, then redelivering the same attempt, charges once")
+  void ambiguous_settle_then_redelivery_is_a_no_op() {
+    insertBudget(TENANT_A, BudgetPeriod.MONTHLY, 5, 1_000, LIMIT);
+    UUID id = uuid();
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("60"), id));
+
+    // Outcome resolved -> settle the attempt at the actual cost.
+    inTxRun(() -> service.settle(TENANT_A, id, new BigDecimal("52")));
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("52"));
+
+    // Redelivery of the same reservation id after settlement: the settled row is returned
+    // unchanged (no re-insert), so the attempt is charged exactly once at the actual cost.
+    inTx(() -> service.reserve(TENANT_A, RUN, BudgetMetric.COST, new BigDecimal("60"), id));
+    assertThat(countReservations(TENANT_A)).isEqualTo(1);
+    assertThat(consumed(TENANT_A, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("52"));
+  }
+
   private static UUID uuid() {
     return UUID.randomUUID();
   }
