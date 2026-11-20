@@ -2,6 +2,7 @@
 
 ## Contents
 
+- [S12-14](#s12-14-the-ambiguous-provider-billing-failure-tests) — the ambiguous provider billing failure tests: a provider timeout after the request actually executed records an ambiguous outcome, and the reservation is settled / reconciled so one attempt is never counted twice on retry / redelivery (S12-14)
 - [S12-13](#s12-13-the-rate-limited-gated-operator-ops-surface) — the rate limited, gated operator ops surface: the `ops:dlq` inspection / redrive endpoints throttled under a dedicated budget (default 300/min), a `429` that carries a correlation id, and the surface not published through an external ingress by default (S12-13)
 - [S12-12](#s12-12-the-controlled-operator-redrive-of-a-held-message) — the controlled operator redrive of a held message: re-publish the original envelope under a fresh id, idempotent via `dlq_redrive_attempts`, guarded by the inbox, audited `READ`/`DLQ` (S12-11 … S12-13)
 - [S12-11](#s12-11-the-operator-dlq-inspection-api) — the operator DLQ inspection API: read-only, `ops:dlq`-gated, paginated list + audited detail view, `READ` on `AuditResourceType#DLQ` (S12-11)
@@ -17,6 +18,61 @@
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: one row per measurement of one attempt (S12-01)
 
 ---
+
+## S12-14 — the ambiguous provider billing failure tests
+
+**Task (P0):** prove that an ambiguous provider outcome never double-charges a single attempt.
+**Deliverable:** failure tests for the `usage` accounting — reservation settlement and reconciliation
+under the ambiguous-provider timeout.
+
+The durable budget (`BudgetService`, S12-04 / S12-06) already reserves before the call, settles after,
+reconciles a reservation a crash stranded, and keys every reservation on an idempotency key (`ON
+CONFLICT DO NOTHING` on `reservation_id`; `settled_at IS NULL` on settle; both `settled_at` and
+`reconciled_at` set by reconcile). What was **not** yet covered was the *ambiguous* lifecycle as a
+whole: a provider call that actually executes yet returns an ambiguous outcome (a timeout after the
+request ran) leaves the outcome neither a clean failure nor a confirmed success, so the accounting
+must not guess — it records the attempt and charges it exactly once across every recovery path
+(invariant 6, "an external call is not exactly-once").
+
+### What was tested
+
+- **The outcome resolves as success: settle the attempt's actual cost, once.** The reservation is
+  settled to the actual cost; a duplicate settle is a no-op (`settled_at IS NULL` guard) — charged
+  once at the actual amount, never the estimate and never twice.
+- **Redelivering the same attempt re-reserves as a no-op.** A crash-retry / Kafka redelivery of the
+  same attempt derives the same idempotency key (`BudgetReservation.reservationIdForAttempt`), so the
+  re-reserve is a no-op and no second row is inserted — the attempt is charged once, never twice.
+- **A stranded attempt is reconciled at its best-known amount, once.** The worker died before
+  settling, so the reservation is stranded (`created_at < before`) and reconciliation settles it at
+  the reserved amount and marks it `reconciled_at`; a second reconcile is a no-op.
+- **A late settle after reconciliation is a no-op.** Once reconcile has settled the row (`settled_at`
+  set), a settle that arrives when the outcome later resolves cannot re-charge or drift the recorded
+  best-known amount.
+
+**Tenant isolation (invariant 1):** every reserve / settle / reconcile is keyed by `tenantId` with
+the predicate inside the query, so another tenant's reservation is never settled for them (already
+covered by `BudgetServiceIT#tenant_budgets_are_isolated` and `reconcile_unsettled_is_tenant_isolated`;
+the new ambiguous cases reuse TENANT_A and assert the single-tenant charge).
+
+### Verification
+
+Unit, DB-free (`BudgetServiceTest`, 17 — the six S12-14 ambiguous-billing cases added to the
+existing budget-lifecycle suite: settle-once, redelivery-no-op, stranded-reconcile-once,
+reconcile-then-late-settle no-op, settle-then-redelivery no-op, redelivery-then-reconcile one-charge;
+the pre-existing 11 reserve / settle / checkBudget / reconcile cases still pass), JUnit-XML-verified
+(`tests="17"` `failures="0"` `errors="0"` `skipped="0"`, fresh this run). Integration on real
+`pgvector/pgvector:0.8.6-pg18` (`BudgetServiceIT`, 13 — the four ambiguous cases on the live store:
+redelivery does not insert a second row, settle records the actual cost once, reconcile-then-late-settle
+is a no-op, settle-then-redelivery charges once), JUnit-XML-verified (`tests="13"` `failures="0"`
+`errors="0"` `skipped="0"`, fresh this run). The full `:apps:agentflow-app:check` gate green — unit +
+architecture (`ArchitectureBoundaryTest` 1/1, `NoCyclicModuleDependenciesTest` 1/1) + no-cycles +
+formatting (`spotlessCheck`) + OpenAPI contract (`OpenApiContractCheckTest` 1/1, `OpenApiContractTest`
+4/4). No new endpoint, no new migration, no new module edge, no ADR required — only tests, so the
+architecture gate and the ALLOW map are unchanged.
+
+### Docs
+
+[`CHANGELOG.md`](../../../../CHANGELOG.md) (`Unreleased` → Added, this entry); the devlog.
 
 ## S12-13 — the rate limited, gated operator ops surface
 

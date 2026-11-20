@@ -211,6 +211,133 @@ class BudgetServiceTest {
     assertThat(service.reconcileUnsettled(TENANT, BEFORE)).isEqualTo(0);
   }
 
+  // ---------------------------------------------------------------------------
+  // S12-14 — ambiguous provider billing: one attempt is not counted twice.
+  //
+  // A provider call may return an *ambiguous* outcome: the request was actually executed (the
+  // side effect may have completed) but the response never arrived (a provider timeout). The
+  // outcome is neither a clean failure nor a confirmed success, so the usage accounting must not
+  // guess. The reservation made before the call is the recorded attempt; it is settled at the
+  // actual cost once the outcome resolves, reconciled at its best-known amount if the worker died
+  // before settling, and never double-charged when the same attempt is retried or redelivered
+  // (at-least-once, invariant 3). The eight cases below model the ambiguous lifecycle across every
+  // recovery path and assert the attempt is charged exactly once.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  @DisplayName(
+      "an ambiguous attempt whose outcome resolves as success settles its actual cost, once")
+  void ambiguous_then_settle_records_actual_cost_once() {
+    repo.putBudget(new BudgetDto(TENANT, BudgetPeriod.MONTHLY, 5, 1_000, COST));
+
+    // Attempt reserved; the provider executed, but the response was lost (timeout) -> ambiguous.
+    UUID id =
+        service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L).reservationId();
+
+    // The outcome resolves -> settle the attempt at the actual cost.
+    service.settle(TENANT, id, new BigDecimal("52"));
+
+    // Charged exactly once at the actual (settled) amount - not the estimate, and never twice.
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("52"));
+    assertThat(repo.reservations()).hasSize(1);
+  }
+
+  @Test
+  @DisplayName(
+      "redelivering the same ambiguous attempt re-reserves as a no-op, never a second charge")
+  void ambiguous_retry_same_attempt_is_not_double_charged() {
+    repo.putBudget(new BudgetDto(TENANT, BudgetPeriod.MONTHLY, 5, 1_000, COST));
+
+    // Attempt 1 reserved; the provider executed but the outcome was ambiguous (timeout after
+    // execute).
+    service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L);
+
+    // Redelivery / crash-retry of the SAME attempt derives the same idempotency key, so it is a
+    // no-op on the ON CONFLICT (reservation_id) guard - never a second reservation.
+    service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L);
+
+    assertThat(repo.reservations()).hasSize(1);
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("60"));
+  }
+
+  @Test
+  @DisplayName("a stranded ambiguous attempt is reconciled at its best-known amount, once")
+  void ambiguous_then_stranded_then_reconcile_counts_once() {
+    repo.putBudget(new BudgetDto(TENANT, BudgetPeriod.MONTHLY, 5, 1_000, COST));
+
+    // The worker crashed after reserving but before settling the ambiguous outcome, so the
+    // reservation is stranded (created before the reconcile boundary) and never settled.
+    UUID stranded =
+        repo.seedReservationCreatedBefore(
+            TENANT, BudgetMetric.COST, new BigDecimal("70"), BEFORE.minusHours(1));
+
+    int reconciled = service.reconcileUnsettled(TENANT, BEFORE);
+    assertThat(reconciled).isEqualTo(1);
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+
+    // The stranded outcome is recorded (reconciled), and a second reconcile is an idempotent
+    // no-op (invariant 3).
+    assertThat(repo.reservationById(stranded).isReconciled()).isTrue();
+    assertThat(service.reconcileUnsettled(TENANT, BEFORE)).isEqualTo(0);
+  }
+
+  @Test
+  @DisplayName("after reconciliation a late settle of the ambiguous attempt is a no-op")
+  void ambiguous_reconcile_then_late_settle_is_a_no_op() {
+    repo.putBudget(new BudgetDto(TENANT, BudgetPeriod.MONTHLY, 5, 1_000, COST));
+
+    // A stranded ambiguous attempt, reconciled at its best-known (reserved) amount.
+    UUID stranded =
+        repo.seedReservationCreatedBefore(
+            TENANT, BudgetMetric.COST, new BigDecimal("70"), BEFORE.minusHours(1));
+    service.reconcileUnsettled(TENANT, BEFORE);
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+
+    // The ambiguous outcome later resolves -> a settle to the actual (lower) cost. But the row is
+    // already settled-by-reconcile, so the settle is a no-op: the recorded best-known amount does
+    // not drift and the attempt is not re-charged.
+    service.settle(TENANT, stranded, new BigDecimal("55"));
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("70"));
+  }
+
+  @Test
+  @DisplayName("settling an ambiguous attempt, then redelivering the same attempt, charges once")
+  void ambiguous_settle_then_redelivery_is_a_no_op() {
+    repo.putBudget(new BudgetDto(TENANT, BudgetPeriod.MONTHLY, 5, 1_000, COST));
+
+    UUID id =
+        service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L).reservationId();
+    // Outcome resolved: settle the attempt at its actual cost.
+    service.settle(TENANT, id, new BigDecimal("52"));
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("52"));
+
+    // Redelivery of the same attempt re-checks the idempotency key and returns the settled
+    // reservation unchanged (no re-insert) - still charged exactly once at the actual cost.
+    service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L);
+    assertThat(repo.reservations()).hasSize(1);
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("52"));
+  }
+
+  @Test
+  @DisplayName(
+      "the same ambiguous attempt is charged exactly once across redelivery and reconciliation")
+  void ambiguous_redelivery_then_reconcile_charges_once() {
+    repo.putBudget(new BudgetDto(TENANT, BudgetPeriod.MONTHLY, 5, 1_000, COST));
+
+    // Attempt reserved, then redelivered (a crash-retry of the same attempt): the same idempotency
+    // key makes the re-reserve a no-op, so no second row is created.
+    service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L);
+    service.reserve(TENANT, RUN, BudgetMetric.COST, new BigDecimal("60"), 1L);
+
+    // The never-settled row is stranded and reconciled at its best-known amount, once.
+    int reconciled = service.reconcileUnsettled(TENANT, AFTER);
+    assertThat(reconciled).isEqualTo(1);
+
+    // Exactly one reservation, charged exactly once at its amount - never counted twice.
+    assertThat(repo.reservations()).hasSize(1);
+    assertThat(repo.consumed(TENANT, BudgetMetric.COST)).isEqualByComparingTo(new BigDecimal("60"));
+  }
+
   /** An in-memory {@link BudgetRepository} fake: no JDBC, so the {@code JdbcTemplate} is null. */
   static final class FakeBudgetRepository extends BudgetRepository {
 
