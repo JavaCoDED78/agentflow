@@ -127,4 +127,57 @@ class RateLimitInterceptorTest {
             limiter, policy(1, RateLimitGroup.CREATE_RUN), resolver, UUID.randomUUID(), "local");
     assertThat(otherTenant.preHandle(postRunRequest(), null, null)).isTrue();
   }
+
+  private static HttpServletRequest opsRequest(String path) {
+    HttpServletRequest request = mock(HttpServletRequest.class);
+    String method = path.endsWith("/redrive") ? "POST" : "GET";
+    when(request.getMethod()).thenReturn(method);
+    // HandlerMapping attribute is unset in this unit test, so the resolver falls back to the URI.
+    when(request.getRequestURI()).thenReturn(path);
+    return request;
+  }
+
+  @Test
+  void throttles_the_ops_redrive_route_when_the_ops_budget_is_exceeded() {
+    resolver = new EndpointGroupResolver();
+    limiter =
+        new InMemoryRateLimiter(policy(1, RateLimitGroup.OPS), Clock.fixed(BASE, UTC), 10_000);
+    RateLimitInterceptor interceptor =
+        new RateLimitInterceptor(limiter, policy(1, RateLimitGroup.OPS), resolver, TENANT, "local");
+
+    // The ops list route resolves to the OPS group and its single slot is consumed, so the next
+    // redrive (a POST to the same group) is throttled.
+    assertThat(interceptor.preHandle(opsRequest("/api/v1/ops/dlq"), null, null)).isTrue();
+    assertThatThrownBy(
+            () ->
+                interceptor.preHandle(
+                    opsRequest("/api/v1/ops/dlq/" + sampleUuid() + "/redrive"), null, null))
+        .isInstanceOf(RateLimitExceededException.class)
+        .satisfies(
+            ex ->
+                assertThat(((RateLimitExceededException) ex).group())
+                    .isEqualTo(RateLimitGroup.OPS));
+  }
+
+  @Test
+  void leaves_the_ops_route_when_the_policy_has_no_ops_budget() {
+    // A policy with no OPS entry (the old behaviour) leaves the ops surface unthrottled; the
+    // production RateLimitConfiguration always puts OPS, so this only documents the data-driven
+    // resolver, not a policy the app ships.
+    resolver = new EndpointGroupResolver();
+    limiter =
+        new InMemoryRateLimiter(
+            new RateLimitPolicy(true, Map.of()), Clock.fixed(BASE, UTC), 10_000);
+    RateLimitInterceptor interceptor =
+        new RateLimitInterceptor(
+            limiter, new RateLimitPolicy(true, Map.of()), resolver, TENANT, "local");
+
+    for (int i = 0; i < 10; i++) {
+      assertThat(interceptor.preHandle(opsRequest("/api/v1/ops/dlq"), null, null)).isTrue();
+    }
+  }
+
+  private static String sampleUuid() {
+    return "00000000-0000-0000-0000-000000000000";
+  }
 }

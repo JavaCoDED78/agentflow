@@ -47,6 +47,21 @@ public final class EndpointGroupResolver {
     declared.add(
         new Binding(
             org.springframework.http.HttpMethod.POST, "/api/v1/runs", RateLimitGroup.CREATE_RUN));
+    // S12-13: the operator DLQ inspection / redrive surface (the {@code ops:dlq} endpoints) is
+    // throttled under the separate OPS group, so an operator cannot exhaust the API or the inbox
+    // it feeds by hammering redrive. The budget, the correlation id on the 429 and the ingress
+    // rule complete the secured ops surface.
+    declared.add(
+        new Binding(
+            org.springframework.http.HttpMethod.GET, "/api/v1/ops/dlq", RateLimitGroup.OPS));
+    declared.add(
+        new Binding(
+            org.springframework.http.HttpMethod.GET, "/api/v1/ops/dlq/*", RateLimitGroup.OPS));
+    declared.add(
+        new Binding(
+            org.springframework.http.HttpMethod.POST,
+            "/api/v1/ops/dlq/*/redrive",
+            RateLimitGroup.OPS));
     this.bindings = List.copyOf(declared);
   }
 

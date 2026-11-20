@@ -174,6 +174,10 @@ per-instance in-memory limiter — the counters are not shared between processes
 adapter is added (S12-19) the counters are stored in Redis and the budget applies across the
 fleet instead, at the cost of depending on the cache for throttle state.
 
+The operator DLQ surface (`GET /api/v1/ops/dlq`, `GET /api/v1/ops/dlq/*`, `POST /api/v1/ops/dlq/*/redrive`) shares its own `ops:dlq` budget group (`RateLimitGroup.OPS`, default 300/min,
+`agentflow.ratelimit.limits.ops.max-per-minute`), distinct from the business groups — an operator
+cannot exhaust the run API or the inbox it feeds by hammering redrive (S12-13).
+
 ### Optimistic locking (`S03-10`)
 
 The mutable `workflow_definitions` row carries an application-managed

@@ -2,7 +2,8 @@
 
 ## Contents
 
-- [S12-12](#s12-12-the-controlled-operator-redrive-of-a-held-message) — the controlled operator redrive of a held message: re-publish the original envelope under a fresh id, idempotent via `dlq_redrive_attempts`, guarded by the inbox, audited `READ`/`DLQ` (S12-12)
+- [S12-13](#s12-13-the-rate-limited-gated-operator-ops-surface) — the rate limited, gated operator ops surface: the `ops:dlq` inspection / redrive endpoints throttled under a dedicated budget (default 300/min), a `429` that carries a correlation id, and the surface not published through an external ingress by default (S12-13)
+- [S12-12](#s12-12-the-controlled-operator-redrive-of-a-held-message) — the controlled operator redrive of a held message: re-publish the original envelope under a fresh id, idempotent via `dlq_redrive_attempts`, guarded by the inbox, audited `READ`/`DLQ` (S12-11 … S12-13)
 - [S12-11](#s12-11-the-operator-dlq-inspection-api) — the operator DLQ inspection API: read-only, `ops:dlq`-gated, paginated list + audited detail view, `READ` on `AuditResourceType#DLQ` (S12-11)
 - [S12-10](#s12-10-the-dead-letter-store-records-why-a-message-failed) — the dead-letter store records *why* a message failed (`error_class`) alongside *what to do* with it (`status`) (S12-10)
 - [S12-09](#s12-09-centralised-secret-redaction) — centralised secret redaction: `common.SecretRedactor` as the one source of truth (bearer / JWT / `AKIA…` / `key=<secret>` / full prompt) (S12-09)
@@ -16,6 +17,85 @@
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: one row per measurement of one attempt (S12-01)
 
 ---
+
+## S12-13 — the rate limited, gated operator ops surface
+
+**Task (P0):** harden the operator DLQ surface so an operator cannot abuse it — the inspection /
+redrive endpoints (S12-11 / S12-12) must be reachable only under the `ops:dlq` role, must carry the
+mandatory redrive `reason`, must be rate-limited under their own budget, and the `429` they hit must
+carry a correlation id — and, because they are operator-only, they must not be published through an
+external ingress by default.
+**Deliverable:** the `ops:dlq`-gated, rate-limited, correlation-id'd operator ops surface (secured).
+
+The surface is the two `GET /api/v1/ops/dlq*` inspection routes (S12-11, `ops:dlq`-gated) plus the
+`POST /api/v1/ops/dlq/*/redrive` route (S12-12, `ops:dlq`-gated, mandatory `reason`). Three of the
+four hardening actions already existed — the `ops:dlq` permission and its `AccessMatrix` rule (S12-11,
+a `403` without it), the mandatory redrive `reason` (S12-12) and the `429` correlation id
+(`GlobalExceptionHandler`, asserted on every `ProblemDetails`). The missing piece was the **rate
+limit**: the separate `RateLimitGroup.OPS` group and its budget were configured, but the path
+resolver matched **no** path to it, so the operator endpoints were never throttled — an operator could
+page the store without bound, or hammer the redrive and exhaust the inbox it feeds.
+
+### What changed
+
+- **The resolver wires the ops surface to the dedicated budget.** `EndpointGroupResolver` (S12-13)
+  added three bindings — `GET /api/v1/ops/dlq`, `GET /api/v1/ops/dlq/*` and
+  `POST /api/v1/ops/dlq/*/redrive` — all mapped to the separate `RateLimitGroup.OPS` group, so the
+  operator inspection / redrive surface is throttled independently of the business API (`CREATE_RUN`
+  / `UPLOAD` / `SEARCH_DEBUG` still resolve to their own groups). The OPS budget was already built
+  into the `RateLimitPolicy` by `RateLimitConfiguration` — it reads
+  `agentflow.ratelimit.limits.ops.max-per-minute` (default `300` per minute) — the resolver is the
+  data the `RateLimitInterceptor` consumes, so once the ops paths resolve to `OPS` that budget is
+  enforced end-to-end; before this change the same group existed but was matched by nothing. The
+  mapping stays data (invariant: a request is throttled only when it is explicitly listed here), and
+  the `GET` / `POST` method distinction is honoured by the resolver, so a `POST` to the collection
+  route does not match the `GET` rule.
+- **The `429` carries a correlation id (already wired; now exercised on the OPS throttle path).** The
+  `GlobalExceptionHandler` renders every `ProblemDetails` — including the
+  `RateLimitExceededException` → `429 api_rate_limited` — with the current `traceId` (or a fresh
+  correlation id when tracing is off), so an operator who is throttled can quote the id when raising a
+  support ticket and it threads the structured log and any retry (invariant: the id lives in traces /
+  the response, not in a metric label).
+- **Not published through an external ingress by default.** There is **no** ingress in `infra/`: the
+  Helm chart is a narrative (`infra/helm/README.md`), no service is exposed to the internet today, so
+  the ops surface is not reachable externally. When an ingress is added later (planned) it must not
+  publish the `ops:dlq` routes to the internet — the operator surface stays reachable only on the
+  internal network, behind `ops:dlq`. This is recorded here as a deployment constraint, not code.
+- **No new module edge, no ADR required.** `EndpointGroupResolver` lives in
+  `com.example.agentflow.common.rate_limit` and depends only on `common` / `common.error` and Spring
+  — no module boundary is crossed, so the architecture gate and the ALLOW map are unchanged.
+
+### Verification
+
+Unit suites, JUnit-XML-verified (`failures="0"` `errors="0"` `skipped="0"`, fresh this run):
+- `EndpointGroupResolverTest` (4 — the three ops routes resolve to `RateLimitGroup.OPS`; the `POST`
+  to the collection route does **not** match the `GET` rule; a `POST /api/v1/runs` still resolves to
+  `CREATE_RUN`; health / workflow list resolve to no group — unthrottled).
+- `RateLimitInterceptorTest` (7 — incl. 2 new: the OPS redrive route is throttled once the `OPS`
+  budget is consumed (`429` in the `OPS` group), and an unthrottled policy leaves the ops surface
+  untouched, documenting the data-driven resolver).
+- `RateLimitHandlerTest` (1 — the `429` carries a non-empty `correlation_id`).
+- `SecurityFilterChainTest` (18 — the ops-surface authorization acceptance: a `workflow:read`-only
+  token is denied (`403`) on `GET /api/v1/ops/dlq` and `GET /api/v1/ops/dlq/{dlqId}`, while a token
+  holding `ops:dlq` reaches the controller (never a `401`/`403` at the secured chain).
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (the unchanged ALLOW
+map, `moduleBoundaries` passes) + no-cycles + formatting (`spotlessApply`) + OpenAPI contract.
+
+### Documentation
+
+- `docs/architecture/api-conventions.md` — the rate-limit section notes the operator DLQ surface
+  shares its own dedicated `ops:dlq` budget group (`RateLimitGroup.OPS`, default 300/min).
+- `docs/devlog/sprint-12-usage-metering-cost.md` (this entry).
+- `CHANGELOG.md` (this entry).
+
+### Acceptance
+
+An operator who holds `ops:dlq` reaches the DLQ inspection / redrive surface; a caller holding only
+`workflow:read` is denied (`403`) on every `ops:dlq` route (the authorization integration tests
+pass); the surface is throttled under the dedicated `ops:dlq` budget, so an operator cannot page the
+store without bound or exhaust the inbox it feeds; a `429` carries a correlation id an operator can
+quote; the redrive still requires the mandatory `reason`; and the surface is not published through an
+external ingress by default.
 
 ## S12-12 — the controlled operator redrive of a held message
 

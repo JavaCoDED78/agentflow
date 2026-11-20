@@ -52,6 +52,9 @@ class RateLimitHandlerTest {
         .andExpect(jsonPath("$.status").value(429))
         .andExpect(jsonPath("$.error_class").value("api_rate_limited"))
         .andExpect(jsonPath("$.retryable").value(true))
-        .andExpect(jsonPath("$.type").value("about:blank"));
+        .andExpect(jsonPath("$.type").value("about:blank"))
+        // S12-13: the 429 carries a correlation id so an operator can quote it when raising a
+        // support ticket about the throttle (the same id threads the structured log and any retry).
+        .andExpect(jsonPath("$.correlation_id").isNotEmpty());
   }
 }
