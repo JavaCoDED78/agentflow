@@ -54,6 +54,7 @@ public class AgentFlowProperties {
   @Valid private final Retrieval retrieval = new Retrieval();
   @Valid private final Mcp mcp = new Mcp();
   @Valid private final RateLimit rateLimit = new RateLimit();
+  @Valid private final Redis redis = new Redis();
 
   /**
    * @return the API rate-limit policy (S04-16): the per-group per-minute budgets and the
@@ -61,6 +62,13 @@ public class AgentFlowProperties {
    */
   public RateLimit getRateLimit() {
     return rateLimit;
+  }
+
+  /**
+   * @return the validated Redis client connection settings (S12-16, ADR-021)
+   */
+  public Redis getRedis() {
+    return redis;
   }
 
   /**
@@ -2488,6 +2496,145 @@ public class AgentFlowProperties {
       public void setMaxResponseBytes(int maxResponseBytes) {
         this.maxResponseBytes = maxResponseBytes;
       }
+    }
+  }
+
+  /**
+   * Redis client connection settings (S12-16, ADR-021). Bound from {@code agentflow.redis.*}. The
+   * client is opt-in: {@link #enabled} is {@code false} by default, so the skeleton boots without
+   * Redis and no connection bean is created (the in-memory implementations stand in — the {@code
+   * common} rate limiter, S04-17). When {@code enabled} is {@code true} the {@code
+   * RedisConnectionConfiguration} bean builds the connection from these values, and a missing
+   * {@link #host} — the environment-specific connection target, never a hardcoded localhost
+   * (invariant 1) — fails startup with a clear message.
+   *
+   * <p>Credentials never live here: the Redis password is read from the environment ({@code
+   * spring.redis.password}, set from {@code AGENTFLOW_REDIS_PASSWORD} in the local / kubernetes
+   * profiles) by the connection builder, so the typed object carries no secret and cannot leak it
+   * into the {@code configprops} Actuator or its {@code toString} (S12-16 acceptance).
+   */
+  public static class Redis {
+
+    /**
+     * Whether the Redis client is wired (default {@code false}). When {@code false} no connection
+     * bean exists and the app boots and passes readiness without Redis.
+     */
+    private boolean enabled = false;
+
+    /**
+     * The Redis host. Nullable on purpose: it is required only when {@link #enabled} is {@code
+     * true} (validated in {@code RedisConnectionConfiguration}), so a disabled profile keeps its
+     * safe defaults. A missing host when enabled fails startup with a clear message; it is the
+     * environment-specific connection point and is never a hardcoded default.
+     */
+    private String host = null;
+
+    /**
+     * The Redis port. The Redis default {@code 6379} is used when unset; a profile overrides it.
+     */
+    private Integer port = 6379;
+
+    /** Whether the connection uses TLS. Default {@code false}. */
+    private boolean tls = false;
+
+    /**
+     * Connect timeout, in seconds, before a connection is established. Bounded below so the client
+     * cannot hang a thread indefinitely waiting for the broker; a value below 1 fails startup.
+     * Bound from {@code agentflow.redis.connect-timeout-seconds}.
+     */
+    @Min(value = 1, message = "agentflow.redis.connect-timeout-seconds must be at least 1")
+    private long connectTimeoutSeconds = 5;
+
+    /**
+     * Command timeout, in seconds, for a Redis command. Bounded below so a command cannot hang a
+     * thread indefinitely; a value below 1 fails startup. Bound from {@code
+     * agentflow.redis.command-timeout-seconds}.
+     */
+    @Min(value = 1, message = "agentflow.redis.command-timeout-seconds must be at least 1")
+    private long commandTimeoutSeconds = 5;
+
+    /**
+     * @return whether the Redis client is wired (default {@code false})
+     */
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    /**
+     * @param enabled whether the Redis client is wired (default {@code false})
+     */
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    /**
+     * @return the Redis host (nullable; required when enabled)
+     */
+    public String getHost() {
+      return host;
+    }
+
+    /**
+     * @param host the Redis host (required when enabled)
+     */
+    public void setHost(String host) {
+      this.host = host;
+    }
+
+    /**
+     * @return the Redis port (default {@code 6379})
+     */
+    public Integer getPort() {
+      return port;
+    }
+
+    /**
+     * @param port the Redis port (default {@code 6379})
+     */
+    public void setPort(Integer port) {
+      this.port = port;
+    }
+
+    /**
+     * @return whether the connection uses TLS (default {@code false})
+     */
+    public boolean isTls() {
+      return tls;
+    }
+
+    /**
+     * @param tls whether the connection uses TLS (default {@code false})
+     */
+    public void setTls(boolean tls) {
+      this.tls = tls;
+    }
+
+    /**
+     * @return the connect timeout in seconds (default {@code 5}, at least 1)
+     */
+    public long getConnectTimeoutSeconds() {
+      return connectTimeoutSeconds;
+    }
+
+    /**
+     * @param connectTimeoutSeconds the connect timeout in seconds (at least 1)
+     */
+    public void setConnectTimeoutSeconds(long connectTimeoutSeconds) {
+      this.connectTimeoutSeconds = connectTimeoutSeconds;
+    }
+
+    /**
+     * @return the command timeout in seconds (default {@code 5}, at least 1)
+     */
+    public long getCommandTimeoutSeconds() {
+      return commandTimeoutSeconds;
+    }
+
+    /**
+     * @param commandTimeoutSeconds the command timeout in seconds (at least 1)
+     */
+    public void setCommandTimeoutSeconds(long commandTimeoutSeconds) {
+      this.commandTimeoutSeconds = commandTimeoutSeconds;
     }
   }
 }

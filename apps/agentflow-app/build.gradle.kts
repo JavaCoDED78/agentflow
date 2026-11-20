@@ -98,6 +98,13 @@ dependencies {
     // catalog; nothing pinned inline (S01-06).
     implementation(libs.tika.core)
     implementation(libs.tika.parser.pdf)
+    // Redis client (S12-16): the BOM-managed starter bundles the Spring Data Redis driver
+    // (lettuce-core) and Spring Boot's Redis auto-configuration. It is opt-in: the connection
+    // factory bean is created only when agentflow.redis.enabled=true (RedisConnectionConfiguration,
+    // ADR-021), and RedisAutoConfiguration is excluded in the base profile (application.yml) so the
+    // skeleton boots and passes readiness without Redis. Nothing is pinned inline — the version
+    // comes from the Spring Boot BOM via the catalog.
+    implementation(libs.spring.boot.starter.data.redis)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Nimbus JOSE (com.nimbusds) is already on the test classpath transitively via the

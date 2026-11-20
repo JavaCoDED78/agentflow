@@ -30,6 +30,19 @@ spring:
   autoconfigure:
     exclude:
       - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      # Redis auto-configuration (S12-16, ADR-021). The starter bundles several auto-configs and
+      # all of them are excluded so the skeleton boots and passes readiness with no Redis running
+      # and no Redis bean exists: DataRedisAutoConfiguration (the blocking LettuceConnectionFactory),
+      # DataRedisReactiveAutoConfiguration (a default RedisClient pointed at localhost:6379, plus the
+      # reactive repositories), DataRedisRepositoriesAutoConfiguration (the repository infrastructure
+      # that would otherwise demand a redisTemplate), and the two health contributors (the indicators
+      # that probe localhost:6379 and would fail the readiness probe). When a profile enables the
+      # client (agentflow.redis.enabled=true), RedisConnectionConfiguration is the sole creator of the
+      # RedisConnectionFactory bean — never Spring Boot's auto-configuration.
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisReactiveAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.health.DataRedisReactiveHealthContributorAutoConfiguration
 
 # AgentFlow typed configuration (S01-17). Validated at startup through
 # @ConfigurationProperties + @Validated; a missing required value (agentflow.app-name)
@@ -84,6 +97,26 @@ agentflow:
     bucket: agentflow
     region: garage
     public-access: disabled
+  # Redis client (S12-16, ADR-021). Opt-in: disabled by default so the skeleton boots and passes
+  # readiness with no Redis running and no connection bean exists. A profile (local / kubernetes)
+  # sets agentflow.redis.enabled=true; the agentflow.redis.* host/port/tls/timeouts below are bound
+  # by AgentFlowProperties.Redis and consumed by RedisConnectionConfiguration, which is the sole
+  # connection creator (RedisAutoConfiguration is excluded above). Credentials are read from the
+  # environment (spring.redis.password), never from here — the typed config carries no password
+  # field, so it can never reach the configprops Actuator, the logs or the connection factory
+  # toString (S12-16 acceptance).
+  redis:
+    # Disabled by default (matches the typed config default). Set to true in a profile to wire the
+    # connection factory from the agentflow.redis.* values below.
+    enabled: false
+    # host is intentionally unset by default (the typed config default is null): it is required
+    # only when enabled=true, supplied per profile, and is never a hardcoded localhost
+    # (invariant: no localhost).
+    host: null
+    port: 6379
+    tls: false
+    connect-timeout-seconds: 5
+    command-timeout-seconds: 5
   # Document-upload limits (S10-03). Bound from agentflow.upload.* and consumed by the
   # DocumentUploadValidator the upload API drives. These bounds (payload size, sanitised filename
   # length, and for media the decoded duration) are checked before any byte is written to object
