@@ -96,6 +96,7 @@ Each rule (`AccessMatrix.EndpointRule`) is an HTTP `method`, an Ant-style
 | `POST`  | `/api/v1/runs/*/approvals/*` | `run:approve` |
 | `GET`   | `/api/v1/ops/dlq`            | `ops:dlq`       |
 | `GET`   | `/api/v1/ops/dlq/*`          | `ops:dlq`       |
+| `POST`  | `/api/v1/ops/dlq/*/redrive`  | `ops:dlq`       |
 
 The chain applies the matrix by iterating its rules and gating each action on its
 own permission (`authorize.requestMatchers(method, pattern).hasAuthority(requiredPermission.id())`),

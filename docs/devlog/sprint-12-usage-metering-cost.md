@@ -2,6 +2,7 @@
 
 ## Contents
 
+- [S12-12](#s12-12-the-controlled-operator-redrive-of-a-held-message) — the controlled operator redrive of a held message: re-publish the original envelope under a fresh id, idempotent via `dlq_redrive_attempts`, guarded by the inbox, audited `READ`/`DLQ` (S12-12)
 - [S12-11](#s12-11-the-operator-dlq-inspection-api) — the operator DLQ inspection API: read-only, `ops:dlq`-gated, paginated list + audited detail view, `READ` on `AuditResourceType#DLQ` (S12-11)
 - [S12-10](#s12-10-the-dead-letter-store-records-why-a-message-failed) — the dead-letter store records *why* a message failed (`error_class`) alongside *what to do* with it (`status`) (S12-10)
 - [S12-09](#s12-09-centralised-secret-redaction) — centralised secret redaction: `common.SecretRedactor` as the one source of truth (bearer / JWT / `AKIA…` / `key=<secret>` / full prompt) (S12-09)
@@ -15,6 +16,102 @@
 - [S12-01](#s12-01-the-usage-record-schema) — the usage record schema: one row per measurement of one attempt (S12-01)
 
 ---
+
+## S12-12 — the controlled operator redrive of a held message
+
+**Task (P1):** let an operator who can already inspect the DLQ (S12-11) also *re-run* the business
+change behind a held message — idempotently, guarded by the inbox, and audited — instead of only
+viewing it.
+**Deliverable:** `DlqRedriveService` (application service) invoked by a new `POST
+/api/v1/ops/dlq/{dlqId}/redrive` route on `DlqInspectionController`, backed by the `messaging`
+repositories and a new `dlq_redrive_attempts` table, gated by the `ops:dlq` permission from S12-11.
+
+The DLQ is a single, tenant-wide store keyed by `(consumer, event)` and is only a **pointer** to a
+failed `outbox_events` row (S12-10 / `audit-contract` §4.6). The redrive therefore re-publishes the
+**original** envelope — its payload and correlation headers live only in that row — under a **fresh**
+envelope id. The inbox dedup is keyed by `(consumer, event_id)`: the original `event_id` was already
+claimed and failed, so reusing it would re-run *nothing*; a fresh `event_id` makes the inbox re-run
+the business change once, never a same-event re-run (invariant 3). The re-published envelope carries
+the original tenant / aggregate / topic / payload, so the consumer re-checks the same tenant context
+(invariant 1).
+
+### What changed
+
+- **The redrive service (`DlqRedriveService`).** `redrive(dlqId, tenantId, actor, request)` runs the
+  whole unit in a single `TransactionTemplate` over a `DataSourceTransactionManager` (the same
+  boundary pattern `InboxDedupService` uses):
+  1. `requireRepository()` — `503` when any repository / the transaction boundary is absent (the
+     beans are `@Autowired(required = false)`, registered only when a `DataSource` exists, so the app
+     still boots without a database, S01-02, and fails loud rather than pretending an empty store);
+  2. `400` when the operator `reason` is `null` / blank (a redrive without a reason is an
+     unaccounted re-delivery);
+  3. resolve the DLQ record (`404` when gone) and the original outbox envelope (`404` when gone);
+  4. idempotency anchor — `dlq_redriveAttempts.findByDlqId(dlqId)`: a replay returns the already
+     recorded redrive regardless of the current inbox state (a re-run business change may already be
+     `PROCESSED`), never re-publishing a second envelope;
+  5. **inbox guard (invariant 2):** `inbox.findByConsumerAndEvent(...)` — a `PROCESSED` row (a
+     completed business change) or a `PENDING` row (an in-flight delivery) refuses `409`; a
+     `FAILED` / absent row is safe to re-run;
+  6. re-publish the original envelope under a fresh `event_id` (`outbox.insert(OutboxEvent.pending(...))`),
+     append the `dlq_redrive_attempts` linkage row (`dlq_id` PRIMARY KEY) and record the operator
+     `READ` / `DLQ` audit row (`auditService.record(tenantId, actor, READ, DLQ, dlqId, reason)`) — the
+     reason redacted through the audit port (invariant 8). All three commit or roll back together.
+- **The request / result DTOs.** `DlqRedriveRequest` (the operator-supplied `reason`) and
+  `DlqRedriveResult` (re-published envelope id, original / requeued ids, topic, consumer, reason,
+  operator, timestamp).
+- **The durable linkage table (`dlq_redrive_attempts`).** Migration `V3_3_31__create_dlq_redrive_attempts.sql`
+  (forward-only, ADR-008, `IF NOT EXISTS` for quiet Testcontainers rebuilds). `dlq_id` is the
+  PRIMARY KEY and the idempotency anchor (invariant 4): one row per operator redrive, recording the
+  `event_id → requeued_event_id` linkage so a second redrive of the same record returns the existing
+  redrive (never a second linkage row).
+  `tenant_id` is recorded for operational visibility only — the DLQ / inbox are tenant-wide (keyed by
+  `consumer_name, event_id`), so this column is **not** a scoping FK (invariant 1).
+- **No new module edge, no ADR required.** `DlqRedriveService` calls only `messaging` repositories
+  (its own module), the `AuditService` port (already on the `messaging → audit` edge, ADR-022) and the
+  identity *catalogue* (`Permission`, `AccessMatrix` — the existing `messaging → identity` edge) — so
+  the architecture boundary and the ALLOW map are unchanged. The `READ`/`DLQ` audit reuses the DLQ
+  operator family from S12-11 (`audit-contract` §4.6); no new verb. The route is registered on the
+  already-existing inspection controller, so no new controller class.
+
+### Verification
+
+Unit suites, JUnit-XML-verified (`failures="0"` `errors="0"` `skipped="0"`, fresh this session):
+`DlqRedriveServiceTest` (8 — re-publishes under a **fresh** event id and records the attempt +
+`READ`/`DLQ` audit, `400` for a blank reason that writes nothing, `404` when no DLQ row or no
+original envelope, `409` for a `PROCESSED` inbox row and for a `PENDING` inbox row re-publishing
+nothing, an idempotent replay returns the original requeued id without a second publish or audit
+row, `503` when the datasource is `null`). Integration on real
+`pgvector/pgvector:0.8.6-pg18` (`DlqRedriveServiceIT`, 4 — the redrive writes the attempt / republish
+/ audit row **atomically** and a later read on a fresh connection observes all of them; a committed
+`PROCESSED` inbox row refuses `409` and writes nothing; a second redrive returns the original requeued
+id with neither a second envelope nor a second linkage row (storage-level idempotency via the
+`dlq_id` PRIMARY KEY); and a blank reason is a `400` that writes nothing). `./gradlew
+:apps:agentflow-app:check --rerun-tasks` green — unit + architecture (the unchanged ALLOW map,
+`moduleBoundaries` passes) + no-cycles + formatting (`spotlessApply`) + OpenAPI contract (the new
+`POST` route generated into the contract via the deterministic `generateOpenApiContract` task).
+
+### Documentation
+
+- `docs/security/audit-contract.md` §4.6 — redrive recorded `READ` / `DLQ` on the DLQ operator
+  family (S12-11 … S12-13, operator-scoped; the reason recorded redacted).
+- `docs/runbooks/dlq-redrive.md` — when to redrive a held message (never a `PROCESSED` inbox), how
+  the fresh-id re-publish keeps the inbox guard, the idempotency table, and the audit record.
+- `docs/architecture/module-api.md` — `DlqRedriveService#redrive`, the `POST /api/v1/ops/dlq/{dlqId}/redrive`
+  route, the `dlq_redrive_attempts` table, the `READ`/`DLQ` audit edge, and the `ops:dlq` gating.
+- `apps/agentflow-app/src/main/java/com/example/agentflow/messaging/AGENTS.md` — the redrive route,
+  the idempotency + inbox-guard guarantees, and `READ`/`DLQ` audit.
+- `apps/agentflow-app/src/main/java/com/example/agentflow/audit/AGENTS.md` — `READ`/`DLQ` for redrive.
+- `docs/security/permissions.md` — the `ops:dlq` rule on the redrive route.
+- `docs/devlog/sprint-12-usage-metering-cost.md` (this entry).
+
+### Acceptance
+
+An operator who holds `ops:dlq` can re-run the business change behind a held message; the redrive
+re-publishes the original envelope under a fresh id (so the inbox runs it once, never a same-event
+re-run), is a no-op replay of the same record (never a second envelope), refuses `409` when the
+business change already completed or is in flight (never a duplicated side effect), and records
+`READ` / `DLQ` in the append-only audit trail — all in one transaction that commits or rolls back
+together, so the audit never diverges from the re-publish.
 
 ## S12-11 — the operator DLQ inspection API
 

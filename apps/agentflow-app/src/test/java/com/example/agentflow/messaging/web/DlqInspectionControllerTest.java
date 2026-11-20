@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -15,6 +16,8 @@ import com.example.agentflow.messaging.application.DlqInspectionService;
 import com.example.agentflow.messaging.application.DlqMessageDetailDto;
 import com.example.agentflow.messaging.application.DlqMessageDto;
 import com.example.agentflow.messaging.application.DlqMessagePageDto;
+import com.example.agentflow.messaging.application.DlqRedriveResult;
+import com.example.agentflow.messaging.application.DlqRedriveService;
 import com.example.agentflow.messaging.domain.DlqMessage;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -23,6 +26,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -42,12 +46,14 @@ class DlqInspectionControllerTest {
 
   private MockMvc mockMvc;
   private DlqInspectionService inspectionService;
+  private DlqRedriveService redriveService;
 
   @BeforeEach
   void setUp() {
     inspectionService = mock(DlqInspectionService.class);
+    redriveService = mock(DlqRedriveService.class);
     DlqInspectionController controller =
-        new DlqInspectionController(inspectionService, TENANT.toString(), "local");
+        new DlqInspectionController(inspectionService, redriveService, TENANT.toString(), "local");
     mockMvc =
         MockMvcBuilders.standaloneSetup(controller)
             .setControllerAdvice(new GlobalExceptionHandler())
@@ -120,6 +126,62 @@ class DlqInspectionControllerTest {
     assertThat(overview.errorClass()).isEqualTo(DlqMessage.ErrorClass.PERMANENT);
     DlqMessageDetailDto full = detail();
     assertThat(full.lastError()).isNotBlank();
+  }
+
+  @Test
+  void the_redrive_republishes_under_the_configured_tenant_and_actor() throws Exception {
+    DlqRedriveResult result =
+        DlqRedriveResult.redriven(
+            DLQ_ID,
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            "agent-run.v1",
+            "agent:run:step",
+            "verified and retrying",
+            "local",
+            NOW);
+    when(redriveService.redrive(eq(DLQ_ID), eq(TENANT), eq("local"), any())).thenReturn(result);
+
+    mockMvc
+        .perform(
+            post("/api/v1/ops/dlq/{id}/redrive", DLQ_ID)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"verified and retrying\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.dlqId").value(DLQ_ID.toString()))
+        .andExpect(jsonPath("$.requeuedEventId").isNotEmpty())
+        .andExpect(jsonPath("$.reason").value("verified and retrying"));
+
+    verify(redriveService).redrive(eq(DLQ_ID), eq(TENANT), eq("local"), any());
+  }
+
+  @Test
+  void the_redrive_republishes_only_under_the_configured_tenant_actor_and_reason_body()
+      throws Exception {
+    when(redriveService.redrive(any(), any(), any(), any())).thenReturn(redriveResult());
+
+    mockMvc
+        .perform(
+            post("/api/v1/ops/dlq/{id}/redrive", DLQ_ID)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"retry after fix\"}"))
+        .andExpect(status().isOk());
+
+    // The controller passes the configured tenant + actor (from configuration) and the request
+    // body (the reason) — the tenant is never read from the request body (invariant 1).
+    verify(redriveService).redrive(eq(DLQ_ID), eq(TENANT), eq("local"), any());
+  }
+
+  private static DlqRedriveResult redriveResult() {
+    return DlqRedriveResult.redriven(
+        DLQ_ID,
+        UUID.randomUUID(),
+        UUID.randomUUID(),
+        "agent-run.v1",
+        "agent:run:step",
+        "verified and retrying",
+        "local",
+        NOW);
   }
 
   private static DlqMessagePageDto page(long totalElements, int page, int size, int totalPages) {

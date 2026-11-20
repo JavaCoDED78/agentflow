@@ -3,6 +3,7 @@ package com.example.agentflow.messaging.persistence;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -154,6 +155,25 @@ public class OutboxEventRepository {
   public void markFailed(
       UUID id, int publishAttempts, OffsetDateTime nextAttemptAt, String lastError) {
     jdbc.update(MARK_FAILED_SQL, publishAttempts, nextAttemptAt, lastError, id);
+  }
+
+  /**
+   * Select the envelope for a domain {@code event_id} &mdash; the id the DLQ record points to, and
+   * the inbox dedup anchor (invariant 3).
+   *
+   * <p>Used by the controlled redrive (S12-12): the DLQ stores only a pointer to the failed event
+   * (never the envelope inline), so the operator redrive re-publishes the <b>original</b> envelope
+   * &mdash; its payload and correlation headers live in this row &mdash; under a fresh envelope id.
+   *
+   * @param eventId the domain event id (the {@code dlq_messages.event_id})
+   * @return the envelope for the id, or empty when no row has it (a missing original envelope is a
+   *     {@code 404} for the redrive)
+   */
+  public Optional<OutboxEvent> findByEventId(UUID eventId) {
+    List<OutboxEvent> rows =
+        jdbc.query(
+            "SELECT " + COLUMNS + " FROM outbox_events WHERE event_id = ?", rowMapper, eventId);
+    return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
   }
 
   // A package-private row mapper (S06-07); unit-tested directly in OutboxEventRowMapperTest.
