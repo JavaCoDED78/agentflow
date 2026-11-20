@@ -2,6 +2,7 @@
 
 ## Contents
 
+- [S12-15](#s12-15-documenting-usage-budgets-dlq-operations) — documenting usage metering, cost budgets and DLQ operations: the new `docs/usage-and-costs.md` records the recording path, the price catalogue, the durable budget + reservations + quota, the reserve→settle→reconcile lifecycle, the ambiguous-billing failure, and the operator DLQ inspection/redrive — anchored to the `usage` / `ai` / `messaging` classes and every referenced file verified to exist (S12-15)
 - [S12-14](#s12-14-the-ambiguous-provider-billing-failure-tests) — the ambiguous provider billing failure tests: a provider timeout after the request actually executed records an ambiguous outcome, and the reservation is settled / reconciled so one attempt is never counted twice on retry / redelivery (S12-14)
 - [S12-13](#s12-13-the-rate-limited-gated-operator-ops-surface) — the rate limited, gated operator ops surface: the `ops:dlq` inspection / redrive endpoints throttled under a dedicated budget (default 300/min), a `429` that carries a correlation id, and the surface not published through an external ingress by default (S12-13)
 - [S12-12](#s12-12-the-controlled-operator-redrive-of-a-held-message) — the controlled operator redrive of a held message: re-publish the original envelope under a fresh id, idempotent via `dlq_redrive_attempts`, guarded by the inbox, audited `READ`/`DLQ` (S12-11 … S12-13)
@@ -19,7 +20,86 @@
 
 ---
 
-## S12-14 — the ambiguous provider billing failure tests
+## S12-15 — documenting usage budgets, audit and DLQ operations
+
+**Task (P0):** document how the platform records usage and cost, bounds a tenant's spend, and how an
+operator recovers a held message — `docs/usage-and-costs.md` (new) plus the existing
+`docs/runbooks/dlq-redrive.md`.
+
+**Deliverable.** The new [`docs/usage-and-costs.md`](../usage-and-costs.md) is the operational view
+of the **usage** module (and its two consumers, `ai` and `workflowexecution`), in the same style as
+`docs/security/agent-actions.md` and `docs/security/audit-contract.md`. It covers, anchored to the
+current code, not the plan:
+
+- **The uniform usage recording path (S12-02).** [`UsageMeteringService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/application/UsageMeteringService.java)
+  as the single recording port; [`UsageRecordDto`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/domain/UsageRecordDto.java)
+  (`type` / `measurement` / `inputTokens` / `outputTokens` / cost + `provider` / `model` / `toolName`);
+  unknown recorded as unknown (a provider refusal leaves `inputTokens` / `outputTokens` `null`, stored
+  as `NULL`, never coerced to `0`, invariant 8); `UsageType` (`MODEL` / `TOOL` / `EMBEDDING`) and what
+  each records (the `usage → ai` edge, module-map arrow 8).
+- **The price catalogue and versioning (S12-03).** [`PricingResolver`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/application/PricingResolver.java),
+  [`PricingProperties`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/application/PricingProperties.java)
+  (`usage.pricing`), [`PricingInfo`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/domain/PricingInfo.java),
+  [`UnitDivisor`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/domain/UnitDivisor.java)
+  (`token` / `1k-tokens` / `1m-tokens`); `V3_3_25` adds `price_version` / `pricing_revision` so every
+  historical estimate is explainable through the price version that produced it (unknown → `NULL`, never
+  invented).
+- **The durable cost budget and its reservations (S12-04).** `V3_3_26` (`tenant_budgets` + `budget_reservations`);
+  [`BudgetService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/application/BudgetService.java)
+  reserve-before / settle-after / reconcile-orphan; idempotency keys; [`BudgetExhaustedException`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/application/BudgetExhaustedException.java)
+  as the mirror of `ai`'s pre-call `InsufficientBudgetException` (S09-10); the value vocabulary.
+- **The per-tenant parallel-run quota (S12-05).** `V3_3_27` (`tenant_run_slots`); [`QuotaService`](../../apps/agentflow-app/src/main/java/com/example/agentflow/usage/application/QuotaService.java)
+  serialises in PostgreSQL (row-lock, the same serialization `BudgetService#reserve` uses); the composite
+  `(tenant_id, run_id)` key makes acquire/release idempotent — at-least-once, never exactly-once (invariant
+  3); **Redis is never the durable quota state** (invariant 2).
+- **The reservation lifecycle: preliminary estimate → settled actual → reconciled orphan.**
+  `reserve` (preliminary, `ON CONFLICT DO NOTHING`) → `settle` (final, guarded `settled_at IS NULL`
+  conditional update, invariant 4) → `reconcileUnsettled` (`V3_3_28`, marks `settled_at` /
+  `reconciled_at`, recovers a worker-crashed reservation to its best-known amount). A settle after
+  reconcile is a no-op.
+- **The ambiguous provider billing failure (S12-14).** a provider call that actually executes but returns
+  an ambiguous outcome (a timeout after the request ran) is recorded once, never charged twice on retry /
+  redelivery — a duplicate settle, a re-reserved duplicate attempt, a second reconcile and a late settle
+  are all no-ops; the single true cost is what the run records.
+- **The operator DLQ inspection and redrive (S12-11 … S12-13).** read-only, `ops:dlq`-gated inspection
+  (`DlqInspectionController` / `DlqInspectionService`, tenant-scoped reads → another tenant is a `404`);
+  the controlled redrive (`DlqRedriveService`, re-publishes the original `outbox_events` row under a
+  fresh id, idempotent via `dlq_redrive_attempts`, guarded by the inbox, audited) — **authorization and
+  audit are mandatory (acceptance criterion)**, and **secrets / personal data are not disclosed in
+  diagnostics** (invariant 8; the shared `SecretRedactor`, ADR-020). The full procedure is
+  [`docs/runbooks/dlq-redrive.md`](../runbooks/dlq-redrive.md).
+- **The no-billing boundary and observability.** `usage_records` / `budget_reservations` /
+  `tenant_run_slots` are a consumption ledger, not a bill (no invoice endpoint; `product-scope.md` §3);
+  metrics are free of secrets and high-cardinality labels (invariant 9, tightened for secrets in
+  [`docs/security/secrets.md`](../security/secrets.md)).
+
+**Ownership.** Everything is owned by the **usage** module (the same owner as `usage_records`); the two
+durable guards follow the execution-SPI pattern — `usage` implements the `workflowexecution`-owned port
+across the sanctioned `usage → workflowexecution` edges (module-map arrows 8–9, declared in
+`PackageDependencyGraphTest`), so **no new module edge is introduced** and the architecture gate is
+unchanged — no ADR required (same precedent as the S12-04 `BudgetGuard` and the inbox error policy,
+ADR-016).
+
+**Verification.** A documentation-only change — no build gate applies (nothing is claimed in code,
+migration, endpoint or module edge). Every `../` / relative anchor in the document resolves to an
+existing file: `docs/usage-and-costs.md` links to `docs/domain-glossary.md`, `docs/devlog/…`,
+`docs/architecture/{module-map,module-api,database-conventions,database-migrations}.md`,
+`docs/security/{secrets,audit-contract}.md`, `docs/runbooks/dlq-redrive.md`, `docs/product-scope.md`
+and `docs/adr/ADR-003…ADR-021` (by full filename), to the `usage` / `ai` / `messaging` / `common`
+classes with `../../apps/` anchors, and to the root `AGENTS.md` invariants — all 36 link targets were
+checked against the working tree (14 document anchors + 22 code anchors, all resolve). Each cited class,
+method and migration name was verified to exist on disk before it was named: `UsageMeteringService`,
+`UsageRecordDto`, `PricingResolver`, `PricingProperties`, `PricingInfo`, `UnitDivisor`, `BudgetService`
+(`reserve` / `settle` / `checkBudget` / `reconcileUnsettled`), `BudgetRepository`
+(`findUnsettled` / `reconcileUnsettled`), `BudgetReservation.reservationIdForAttempt`,
+`UsageBudgetGuard`, `QuotaService`, `UsageType`, `Measurement`, `BudgetExhaustedException`, the value
+types, `BudgetGuard` (`workflowexecution.application`), the `DlqInspectionController` /
+`DlqInspectionService` / `DlqRedriveService` / DTOs, `AuditResourceType#DLQ`, `Permission#OPS_DLQ` and
+`SecretRedactor`. A documentation guide that cited a file, class or method which does not exist would
+assert a control that is not verified — so none is cited without a check. **Docs.** New
+[`docs/usage-and-costs.md`](../usage-and-costs.md); `docs/README.md` (its tree entry + the "Usage,
+costs, budgets" row, ⚠ planned marker removed); `docs/devlog/sprint-12-usage-metering-cost.md`
+(S12-15 section + Contents entry); `CHANGELOG.md` (`Unreleased` → `Added`).
 
 **Task (P0):** prove that an ambiguous provider outcome never double-charges a single attempt.
 **Deliverable:** failure tests for the `usage` accounting — reservation settlement and reconciliation
