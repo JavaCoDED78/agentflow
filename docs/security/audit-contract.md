@@ -151,8 +151,9 @@ operator resource, so the closed resource-type catalogue adds one dedicated cons
 `DLQ`, written through the public `audit.application.AuditService` port via the new `messaging →
 audit` edge (`ADR-022`); the `READ` verb is reused, so no new verb is added. The DLQ stores only a
 pointer to the failed event (never the envelope inline) and the surfaced `lastError` is redacted at
-write time, so this audit entry carries no secret or prompt (invariant 8). Redrive (S12-12) will
-reuse the same `DLQ` family.
+write time, so this audit entry carries no secret or prompt (invariant 8). Redrive (S12-12) reuses
+the same `DLQ` family: it audits `READ`/`DLQ` (the operator resource it acts on — no ops-specific
+verb) and records the operator-supplied reason redacted through `AuditService` (invariant 8).
 
 ## 5. Coverage summary
 
@@ -163,7 +164,7 @@ reuse the same `DLQ` family.
 | Document lifecycle | — | `UPLOAD`, `READ` |
 | Tool authorization | `INVOKE` | `ALLOW`, `DENY` |
 | Approval decisions | `APPROVE`, `REJECT`, `EXPIRE` | — |
-| Ops actions | `READ`/`DLQ` (inspection detail, S12-11) | redrive verb (S12-12) |
+| Ops actions | `READ`/`DLQ` (inspection detail, S12-11), `READ`/`DLQ` (controlled redrive, S12-12) | — |
 
 The acceptance criterion — *every security-sensitive action leaves an `audit_events` row* — is fully
 met for **definition mutations, tool side-effect invocation and approval decisions** today. The

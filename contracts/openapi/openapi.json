@@ -376,6 +376,94 @@
         }
       }
     },
+    "/api/v1/ops/dlq/{dlqId}/redrive" : {
+      "post" : {
+        "tags" : [ "dlq-inspection-controller" ],
+        "description" : "Operator-only, controlled redrive (S12-12): re-publish the failed envelope under a fresh id, guarded by the inbox source of truth, recorded idempotently and audited. Requires {@code ops:dlq}; an ordinary tenant principal is denied (403).",
+        "operationId" : "redrive",
+        "parameters" : [ {
+          "name" : "dlqId",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/DlqRedriveRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "the redrive result (re-published envelope id, or the existing redrive on a replay)",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqRedriveResult"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "a blank operator reason",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqRedriveResult"
+                }
+              }
+            }
+          },
+          "403" : {
+            "description" : "caller lacks the ops:dlq permission",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqRedriveResult"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "no DLQ message / original outbox envelope with that id",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqRedriveResult"
+                }
+              }
+            }
+          },
+          "409" : {
+            "description" : "the message is already processed (terminal) or in-flight — redrive refused, the business change must not be duplicated",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqRedriveResult"
+                }
+              }
+            }
+          },
+          "503" : {
+            "description" : "no database connection is configured",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/DlqRedriveResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/workflows/{workflowId}" : {
       "get" : {
         "tags" : [ "workflow-definition-controller" ],
@@ -828,6 +916,47 @@
           },
           "decisionComment" : {
             "type" : "string"
+          }
+        }
+      },
+      "DlqRedriveRequest" : {
+        "type" : "object",
+        "properties" : {
+          "reason" : {
+            "type" : "string"
+          }
+        }
+      },
+      "DlqRedriveResult" : {
+        "type" : "object",
+        "properties" : {
+          "dlqId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "originalEventId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "requeuedEventId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "topic" : {
+            "type" : "string"
+          },
+          "consumerName" : {
+            "type" : "string"
+          },
+          "reason" : {
+            "type" : "string"
+          },
+          "operator" : {
+            "type" : "string"
+          },
+          "requeuedAt" : {
+            "type" : "string",
+            "format" : "date-time"
           }
         }
       },

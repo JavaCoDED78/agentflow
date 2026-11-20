@@ -12,7 +12,7 @@ outbox, inbox, event envelope/versioning, publisher/consumer and DLQ.
 
 ## Data ownership
 
-`messaging` owns exactly one table (plus outbox/inbox) and no other module may change its migration or schema: `workflow_events`, `outbox_events`, `inbox_messages`, `dlq_messages` (the DLQ investigation store; the read-only, paginated, `ops:dlq`-gated inspection endpoints in `web` and the `READ`/`DLQ` inspection audit in `application`).
+`messaging` owns exactly one table (plus outbox/inbox) and no other module may change its migration or schema: `workflow_events`, `outbox_events`, `inbox_messages`, `dlq_messages` (the DLQ investigation store; the read-only, paginated, `ops:dlq`-gated inspection endpoints in `web`, the audited controlled redrive `POST /api/v1/ops/dlq/{dlqId}/redrive` in `web` (S12-12), and the `READ`/`DLQ` inspection audit in `application`).
 
 ## Package layout (internal vs public)
 

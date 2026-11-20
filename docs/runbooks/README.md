@@ -18,8 +18,12 @@ The durable-execution **model** (run/step lease, fencing, recovery) lives in
   API with a real Keycloak token: the machine-to-machine and the Authorization
   Code + PKCE flows, the `curl`/token commands, and issuer/audience
   troubleshooting.
+- **`dlq-redrive.md`** (S12-12) — when and how to redrive a held DLQ message: the fresh-id
+  re-publish, the inbox `409` guard, idempotency, the audit record, how to confirm it landed,
+  and when to escalate.
 - **`observability/*.md`** (S13) — observability alerts and recovery.
 
 Scaffolded in **S01-03**. Durable execution design (`durable-execution.md`) and
 the recovery runbook (`workflow-recovery.md`) are added in **S07-17**;
+the DLQ redrive runbook (`dlq-redrive.md`) in **S12-12**;
 observability runbooks in **S13**.
