@@ -9,6 +9,7 @@ This thread is bounded by [`ADR-021`](../../adr/ADR-021-redis-role.md): Redis is
 - [S12-16 — the opt-in Redis client: typed config, enabled flag and single connection creator](#s12-16-the-opt-in-redis-client-typed-config-enabled-flag-single-connection-creator)
 - [S12-17 — the Redis health indicator and the Testcontainers fixture](#s12-17-the-redis-health-indicator-and-the-testcontainers-fixture)
 - [S12-18 — the redis key builder, value codec and TTL policy](#s12-18-the-redis-key-builder-value-codec-and-ttl-policy)
+- [S12-19 — the distributed fail-open rate limiter](#s12-19-the-distributed-fail-open-rate-limiter)
 
 ---
 
@@ -159,3 +160,46 @@ DB-free suites, JUnit-XML-verified, **fresh this run**:
 ### Scope / follow-up
 
 S12-18 defines the contract only (no Redis wiring). The concrete Redis adapter / fail-open rate limiter is `S12-19`; the run cache is `S14-18`.
+
+## S12-19 — the distributed fail-open rate limiter
+
+### What changed
+
+**A Redis-backed `RateLimiter` adapter.** `common` gains [`RedisRateLimiter`](../../apps/agentflow-app/src/main/java/com/example/agentflow/common/rate_limit/RedisRateLimiter.java) (`com.example.agentflow.common.rate_limit`, the same package as the S04-17 `InMemoryRateLimiter`). It resolves the same `RateLimiter` port, counts each key against a one-minute budget the same way, but the counter lives in Redis so the limit is **global across the deployment** — several workers / instances on one Redis observe the same limit (`ADR-021`: Redis is the shared helper store).
+
+The counter is keyed the tenant-scoped `ratelimit` key the `RedisKeyBuilder` (S12-18) builds — `agentflow:{env}:ratelimit:{tenantId}:{group}:…` — the tenantId in the namespace, not a post-filter (`invariant 1`): a per-window counter, the window index part of the key, so it resets on every 60 s boundary. The budget per group is derived from the `RateLimitPolicy` (exactly like the in-memory adapter). The increment is one atomic Lua script (`INCR` + a first-writer `PEXPIRE` of two windows) over `StringRedisTemplate`, so a crash mid-window never inflates the budget and a write is never TTL-less; the script returns `used` and the adapter reports `remaining = budget − used` as `Optional<Integer>` (empty when the group is unbounded).
+
+**Fail-open, never a blanket 429 (`ADR-021`).** Redis is a helper: an outage must not reject legitimate traffic. On any Redis failure or command timeout — a `RuntimeException` thrown by `StringRedisTemplate.execute` (the whole `Lettuce` failure family is a `RuntimeException`, verified against the 4.1.1 jar) — the adapter does **not** throw or reject: it increments the `agentflow.redis.rate_limit.fallback_open` counter (no tenant / principal / id in the label, `invariant 9`) and delegates the decision to the injected in-memory `RateLimiter`. A permanently down Redis therefore throttles the local JVM like the in-memory adapter, not like a hard 429.
+
+**A plain class, wired by condition.** The adapter is `final` and never a `@Component` — a bean factory (`RateLimitConfiguration`) produces it, so when Redis is disabled the `common.rate_limit` package still compiles and no Redis import leaks into the skeleton. Exactly one adapter is produced: the `redisRateLimiter` bean in [`RateLimitConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/RateLimitConfiguration.java) is `@ConditionalOnProperty(prefix = "agentflow.redis", name = "enabled", havingValue = "true")`, and the `inMemoryRateLimiter` bean in [`RateLimitWebMvcConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/common/rate_limit/RateLimitWebMvcConfiguration.java) is `@ConditionalOnProperty(..., havingValue = "false")` — mutually exclusive. The unchanged `RateLimitInterceptor` (S04-17) consumes the `RateLimiter` bean, so nothing else changes.
+
+### Why
+
+The in-memory limiter throttles per JVM, so a multi-replica deployment could each serve its own full budget — the throttle is only *N×* replicas strong and a single slow replica cannot be throttled. A Redis-backed counter makes the throttle a single global limit, which is the intended shape (one limit across the deployment), while the fail-open keeps the `ADR-021` boundary: Redis is never the reason a legitimate request is rejected.
+
+### Acceptance
+
+- The Redis `RateLimiter` counts one global budget across instances: two limiter instances wired to one Redis serve exactly the budget (60) of 120 calls (`RedisRateLimiterIT#globalLimitIsGlobalAcrossTwoInstances`).
+- Per-window reset: the counter is per window (window index in the key).
+- Fail-open: on a throwing template the adapter returns the in-memory result and increments the `fallback_open` meter (`RedisRateLimiterTest`, `RedisRateLimiterIT#failsOpenWhenRedisIsUnavailable`).
+- No secret / no high-cardinality label: the `fallback_open` meter carries only the metric name; the principal is hashed (SHA-256, first 12 bytes hex) before it is put in the key.
+- The adapter compiles and boots with Redis disabled (the in-memory adapter is produced instead).
+
+### Verification
+
+Unit, DB-free, JUnit-XML-verified, **fresh this run**:
+
+- `RedisRateLimiterTest` — `tests="8"` `failures="0"` `errors="0"` `skipped="0"`: budget accounting (`budget − used`); the key is tenant-scoped and deterministic (`execute` is called with `agentflow:local:ratelimit:{tenant}:…`); the TTL is ≤ the bound; the `fallback_open` meter increments once per Redis failure; a throwing template fails open to the in-memory limiter (returns its `remaining`, never throws).
+
+Integration, real Redis, Testcontainers **fresh this run**:
+
+- `RedisRateLimiterIT` — `tests="2"` `failures="0"` `errors="0"` `skipped="0"`: `globalLimitIsGlobalAcrossTwoInstances` (two instances on one `redis:8.10.2` serve exactly 60 of 120) and `failsOpenWhenRedisIsUnavailable` (an unreachable port fails open to the in-memory limiter and the `fallback_open` meter counts 2).
+
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (`ArchitectureBoundaryTest` — `RedisRateLimiter` is in `common.ratelimit`, importing only `common` / `common.redis`; the ALLOW map is unchanged) + no-cycles + formatting (`spotlessCheck`) + OpenAPI contract. The `RedisPasswordLeakTest` canary scan also passes.
+
+**No new dependency, no new module edge, no ADR** — the adapter imports only `common`, `common.redis`, the JDK and the already-present Spring Data Redis; the wiring is in the already-present `config` / `common.rate_limit` classes. The new files are the adapter, the unit test and the integration test.
+
+### Documentation
+
+- This file (`docs/devlog/sprint-12-redis.md`).
+- `CHANGELOG.md` — the S12-19 entry.
