@@ -7,6 +7,7 @@ import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
@@ -79,6 +80,29 @@ public class RedisConnectionConfiguration {
         redis.getCommandTimeoutSeconds());
 
     return new LettuceConnectionFactory(serverConfig, buildClientConfig(redis));
+  }
+
+  /**
+   * The Redis health indicator (S12-17, {@code ADR-021}), created only when Redis is enabled (
+   * {@code agentflow.redis.enabled=true}) so the contributor exists exactly alongside the
+   * connection factory. The bean is deliberately named {@code redisHealthIndicator}: Spring Boot's
+   * own {@code DataRedisHealthContributorAutoConfiguration} is
+   * {@code @ConditionalOnMissingBean(name = "redisHealthIndicator")}, so this bean name suppresses
+   * the second, duplicate {@code redis} contributor it would otherwise register. The generated
+   * contributor id is the bean name with the {@code HealthIndicator} suffix stripped, i.e. {@code
+   * redis}, so it is exposed under {@code /health/redis} inside a non-critical health group (never
+   * part of the {@code readiness}/{@code liveness} probes — see application-local.yml), where an
+   * unavailable Redis can never drop a pod. Fail-open is not applied here — the indicator is only
+   * an operator observation, not a gate; the fail-open behaviour lives in the consumers that use
+   * Redis (the rate limiter, the cache).
+   *
+   * @param connectionFactory the opt-in connection factory created by this class
+   * @return the indicator; {@code null}-safe only in that it is only created when the factory
+   *     exists
+   */
+  @Bean
+  public HealthIndicator redisHealthIndicator(RedisConnectionFactory connectionFactory) {
+    return new RedisHealthIndicator(connectionFactory);
   }
 
   /**
