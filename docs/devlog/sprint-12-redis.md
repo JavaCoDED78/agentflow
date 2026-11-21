@@ -8,6 +8,7 @@ This thread is bounded by [`ADR-021`](../../adr/ADR-021-redis-role.md): Redis is
 
 - [S12-16 — the opt-in Redis client: typed config, enabled flag and single connection creator](#s12-16-the-opt-in-redis-client-typed-config-enabled-flag-single-connection-creator)
 - [S12-17 — the Redis health indicator and the Testcontainers fixture](#s12-17-the-redis-health-indicator-and-the-testcontainers-fixture)
+- [S12-18 — the redis key builder, value codec and TTL policy](#s12-18-the-redis-key-builder-value-codec-and-ttl-policy)
 
 ---
 
@@ -103,3 +104,58 @@ DB-free suites, JUnit-XML-verified, **fresh this run**:
 
 - This file (`docs/devlog/sprint-12-redis.md`).
 - [`CHANGELOG.md`](../../CHANGELOG.md) — the S12-17 entry.
+
+## S12-18 — the redis key builder, value codec and TTL policy
+
+### What changed
+
+**One builder, one codec, one TTL policy.** `common` gains the small domain-neutral package `com.example.agentflow.common.redis` (the same home and precedent as the S12-09 `SecretRedactor` and the S04-17 rate limiter — a domain-neutral primitive, not business logic). The `ADR-021` acceptance (key format, TTL policy, no-secret) is expressed here, enforced before Redis is even touched.
+
+**`RedisPurpose` (closed enum).** `ratelimit` / `cache`, both tenant-scoped (`isTenantScoped()`). An unknown purpose is rejected by `RedisPurpose.fromWire(String)` (throws `IllegalArgumentException` naming the allowed set), so no later author can quietly store workflow state, an idempotency key or auth material under a new purpose (`ADR-021` — the purpose names the key namespace, so a consumer tells the value's role from the key alone).
+
+**`RedisKeySpec` / `RedisKey` / `RedisKeyBuilder`.** The builder is the single entry point that assembles every key. Key shape: `agentflow:{env}:{purpose}:{tenantId}:…`.
+- `{env}` is a trusted, bounded config tag (1–24 chars), written as the second segment.
+- `{tenantId}` sits in the namespace (not a post-filter), so cross-tenant keys never overlap and a missing key is indistinguishable from another tenant's (`invariant 1`); a tenant-scoped purpose without a tenantId is rejected.
+- Each suffix segment is scanned before it is written: no whitespace / control characters, ≤ `MAX_SEGMENT_LENGTH = 40` characters, and no `SecretRedactor.containsSecret` signature; the assembled key is ≤ `MAX_KEY_LENGTH = 200` characters. A rejected segment is **never echoed** into the error message, so a secret cannot leak into a log or metric (`invariant 8`).
+- Every build fails with an unclassified `IllegalArgumentException`, so the refusal is a contract fault, not a runtime crash.
+
+**`RedisValue` / `RedisValueCodec`.** `RedisValue` wraps content in a `0.1` versioned envelope with a defensive copy of the payload bytes (`RedisValue.wrap(byte[])` / `wrap(String)`; the codec exposes `encode(String) → RedisValue` and `decode(RedisValue) → String`). `RedisValueCodec.encode` rejects a value that carries a secret / PII / prompt / document field (`SecretRedactor.containsSecret`) or exceeds `MAX_VALUE_BYTES = 1024` UTF-8 bytes (large payloads go to Garage, `ADR-021`). Decode is lossless UTF-8; the version stamp is preserved for a future format bump.
+
+**`RedisTtl` (mandatory, positive).** `RedisTtl.of(long)` / `of(Duration)` require a positive TTL ≤ `MAX_SECONDS = 300` (zero / negative / over-the-bound all reject). The `RedisKeyValueStore` port takes a `RedisTtl` on `put` — there is no `put` without one, so "write without TTL" is impossible (`ADR-021` / TTL policy). `get` returns `Optional<byte[]>`, so an empty store never masquerades as an empty string.
+
+**`RedisKeyValueStore` (port).** The only Redis entry point: `put(RedisKey, RedisValue, RedisTtl)` + `get(RedisKey)`. The concrete Redis adapter is `S12-19`.
+
+**No new module edge.** Everything lives in `com.example.agentflow.common.redis` and imports only `com.example.agentflow.common` (`SecretRedactor`) and the JDK — the `common` boundary permits `common` itself. No architecture-gate change, no ADR (same precedent as S12-09). The builder / codec / TTL are plain utilities (the `Fingerprint` idiom, not Spring beans, no state), so `S12-19` (rate limiter) and `S14-18` (cache) share one instance per deployment.
+
+### Why
+
+The key format, the tenant-scoping, the no-secret rule and the mandatory TTL are the Redis contract. Expressing them once in a shared boundary — not repeated in the rate limiter, the cache and any later Redis use — prevents them from drifting apart: the tenantId in the namespace is a single guard, not a discipline; the secret signature is the one `SecretRedactor` already owns; the TTL bound is a single value. It is the "expressed once, cannot drift" shape the rest of this thread was built on.
+
+### Acceptance
+
+- Every key is built through `RedisKeyBuilder`; the closed purpose set, tenant-scoping and no-secret rule are enforced (tests below).
+- An unknown purpose is rejected; a tenant-scoped purpose without a tenantId is rejected; a segment with whitespace / a secret / too long is rejected; a key over the bound is rejected.
+- `encode` / `decode` round-trip; a value over 1024 bytes or carrying a secret is rejected; the envelope is `0.1`.
+- The TTL is always positive and ≤ 300 s; there is no `put` without a TTL.
+- The canary never leaves its fixture: `RedisKeyCanaryTest` proves the planted key canary is rejected by the builder and never enters a built key.
+
+### Verification
+
+DB-free suites, JUnit-XML-verified, **fresh this run**:
+
+- `RedisKeyBuilderTest` — `tests=12` `failures=0` `errors=0` `skipped=0`: key format `agentflow:local:ratelimit:{tenant}:…`; cross-tenant keys never overlap; unknown purpose rejected; tenant-scoped without tenantId rejected; whitespace / secret / json-api-key / over-bound segments rejected; over-long env rejected; a valid key builds.
+- `RedisValueCodecTest` — `tests=9` `failures=0` `errors=0` `skipped=0`: `0.1` envelope; encode/decode round-trip; null content / null value rejected; over-1024-bytes rejected; bearer / json-api-key secret rejected; defensive copy.
+- `RedisTtlTest` — `tests=7` `failures=0` `errors=0` `skipped=0`: positive within bound accepted; 0 / negative / over-300 / null rejected.
+- `RedisKeyCanaryTest` — `tests=3` `failures=0` `errors=0` `skipped=0`: the canary lives only in the sanctioned fixture, is rejected as a key segment (never enters a key) and never appears in a legitimately built key.
+
+`./gradlew :apps:agentflow-app:check` green — unit + architecture (`ArchitectureBoundaryTest` — the new classes are in `common.redis`, importing only `common`; the ALLOW map is unchanged) + no-cycles + formatting (`spotlessCheck`) + OpenAPI contract. The `RedisPasswordLeakTest` (canary scan over all tracked files) also passes — the new test class reads the fixture and never hardcodes the canary.
+
+### Documentation
+
+- This file (`docs/devlog/sprint-12-redis.md`).
+- `CHANGELOG.md` — the S12-18 entry.
+- `ADR-021` — the key-format / TTL contract is recorded there as enforced by these tests.
+
+### Scope / follow-up
+
+S12-18 defines the contract only (no Redis wiring). The concrete Redis adapter / fail-open rate limiter is `S12-19`; the run cache is `S14-18`.

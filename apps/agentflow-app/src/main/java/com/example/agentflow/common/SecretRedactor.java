@@ -83,4 +83,20 @@ public final class SecretRedactor {
     masked = PROMPT_CONTENT.matcher(masked).replaceAll("$1$2" + MASK);
     return masked;
   }
+
+  /**
+   * @param text the text to inspect; may be {@code null}
+   * @return {@code true} when {@code text} carries any shape {@link #redact(String)} masks — a
+   *     bearer token / JWT, an AWS access key, a sensitive {@code key=value} pair, or a prompt /
+   *     document field value
+   */
+  public static boolean containsSecret(String text) {
+    if (text == null) {
+      return false;
+    }
+    return BEARER_TOKEN.matcher(text).find()
+        || AWS_ACCESS_KEY.matcher(text).find()
+        || KEY_SECRET.matcher(text).find()
+        || PROMPT_CONTENT.matcher(text).find();
+  }
 }
