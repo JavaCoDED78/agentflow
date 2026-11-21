@@ -10,6 +10,7 @@ This thread is bounded by [`ADR-021`](../../adr/ADR-021-redis-role.md): Redis is
 - [S12-17 — the Redis health indicator and the Testcontainers fixture](#s12-17-the-redis-health-indicator-and-the-testcontainers-fixture)
 - [S12-18 — the redis key builder, value codec and TTL policy](#s12-18-the-redis-key-builder-value-codec-and-ttl-policy)
 - [S12-19 — the distributed fail-open rate limiter](#s12-19-the-distributed-fail-open-rate-limiter)
+- [S12-20 — the Redis limiter is a helper, the quota is durable](#s12-20-the-redis-limiter-is-a-helper-the-quota-is-durable)
 
 ---
 
@@ -203,3 +204,86 @@ Integration, real Redis, Testcontainers **fresh this run**:
 
 - This file (`docs/devlog/sprint-12-redis.md`).
 - `CHANGELOG.md` — the S12-19 entry.
+
+## S12-20 — the Redis limiter is a helper, the quota is durable
+
+### What changed
+
+**The durable quota stays on PostgreSQL; Redis never owns it (`ADR-021`).** The per-tenant
+parallel-run quota is the sole owner on PostgreSQL: the `QuotaService` (`usage.application`) backed by
+the `tenant_budgets.max_runs` column and the `tenant_run_slots` rows (`V3_3_27`, `S12-05`). The Redis
+adapter (S12-19) is a **per-tenant rate limiter** on the run-creation endpoint only — it throttles the
+*rate* of run creation, it never counts or caps concurrent runs. The two concerns are independent, so
+a full Redis cleanup changes nothing durable: the usage / budget state is byte-for-byte unchanged and a
+tenant cannot bypass the tenant quota (the PostgreSQL quota still serializes the acquire race).
+
+**Tests.** The `usage.application` package gains
+[`QuotaRedisDependencyIT`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/usage/application/QuotaRedisDependencyIT.java)
+(real `pgvector/pgvector:0.8.6-pg18` + `redis:8.10.2` Testcontainers, the same pinned images Compose
+runs — no H2 stand-in):
+
+- `the_race_caps_at_the_budget_with_the_redis_limiter_present` — the `S12-05` concurrent-acquire race
+  caps at `max_runs` exactly as it does without Redis, while the Redis limiter is live for the tenant
+  (proven by the limiter returning its live `remaining` before the race).
+- `clearing_redis_leaves_usage_state_unchanged_and_keeps_the_quota` — a `FLUSHALL` leaves
+  `budgets` / `usage_records` / `slots` counts unchanged, a tenant already at its limit gains no new
+  slot (0 of 60), and a fresh tenant's durable quota is still enforced (exactly `1` of 60) with Redis
+  wiped.
+
+The OPS-throttle endpoint path is proven DB-free by
+[`OpsRateLimitEndToEndTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/common/error/OpsRateLimitEndToEndTest.java)
+(the module boundary is respected — see below): the `common.rate_limit.RateLimitInterceptor` produces
+the `RateLimitExceededException` for `OPS` (already covered by `RateLimitInterceptorTest`), and the
+same-package `GlobalExceptionHandler#handleRateLimit` renders it as `429 api_rate_limited` with a
+`correlation_id` and a `Retry-After` header.
+
+**Module boundary.** The handler test lives in `com.example.agentflow.common.error` and builds the
+`RateLimitExceededException` directly, so it imports **only** `common.error` / `common` — no
+`common.rate_limit`. A naive combined test in `common.error` would add a `common.error →
+common.rate_limit` edge; production already has the reverse `common.rate_limit → common.error` (the
+interceptor throws the exception), so that edge would close a cycle and fail the no-cycles gate. The
+throw half therefore stays in `common.rate_limit` (`RateLimitInterceptorTest`, existing edge) and the
+render half in `common.error`; together they prove the full `interceptor → exception → 429` chain
+without introducing any new edge.
+
+### Why
+
+Redis is a helper, never the source of truth (`ADR-021` / `ADR-002`): losing Redis must not lose a
+run or a tenant quota. The quota is the durable parallel-run ceiling enforced on PostgreSQL
+(`tenant_budgets` row lock, `SELECT … FOR UPDATE`, counted in `V3_3_27`); the Redis limiter is a
+separate, non-durable throttle on the endpoint *rate*. Keeping the quota off Redis means a Redis
+outage degrades the endpoint throttle to the in-memory limiter (S12-19) while the tenant quota is
+unaffected, and a Redis cleanup is an operation that changes nothing the system depends on.
+
+### Acceptance
+
+- The concurrent-acquire race caps at the budget with the Redis limiter present (`QuotaRedisDependencyIT`).
+- Clearing Redis leaves the usage / budget state unchanged and does not let a tenant bypass the quota (`QuotaRedisDependencyIT`).
+- The OPS endpoint throttle renders as `429 api_rate_limited` with a `correlation_id` and `Retry-After` (interceptor → exception → handler), the throw half in `common.rate_limit` and the render half in `common.error` (`OpsRateLimitEndToEndTest`).
+
+### Verification
+
+Unit, DB-free, JUnit-XML-verified, **fresh this run**:
+
+- `OpsRateLimitEndToEndTest` — `tests="1"` `failures="0"` `errors="0"` `skipped="0"`: the OPS throttle
+  maps to `429`, `error_class = api_rate_limited`, `retryable = true`, a non-blank `correlation_id`
+  and a `Retry-After` of `30`.
+
+Integration, real PostgreSQL + Redis, Testcontainers **fresh this run**:
+
+- `QuotaRedisDependencyIT` — `tests="2"` `failures="0"` `errors="0"` `skipped="0"`: the race caps at
+  `max_runs` with the live Redis limiter, and a `FLUSHALL` leaves the durable state unchanged while a
+  fresh tenant's quota is still enforced (0 bypass).
+
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture
+(`ArchitectureBoundaryTest` + no-cycles: the new handler test adds no new edge) + formatting
+(`spotlessCheck`) + OpenAPI contract.
+
+**No new dependency, no new module edge, no ADR** — the tests import only classes already inside
+`common` / `usage` / `common.redis`; `ADR-021` already records that Redis is a helper, never the
+source of truth. The new files are the integration test and the handler test.
+
+### Documentation
+
+- This file (`docs/devlog/sprint-12-redis.md`).
+- `CHANGELOG.md` — the S12-20 entry.
