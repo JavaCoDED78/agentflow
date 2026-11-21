@@ -7,6 +7,7 @@ This thread is bounded by [`ADR-021`](../../adr/ADR-021-redis-role.md): Redis is
 ## Contents
 
 - [S12-16 — the opt-in Redis client: typed config, enabled flag and single connection creator](#s12-16-the-opt-in-redis-client-typed-config-enabled-flag-single-connection-creator)
+- [S12-17 — the Redis health indicator and the Testcontainers fixture](#s12-17-the-redis-health-indicator-and-the-testcontainers-fixture)
 
 ---
 
@@ -64,3 +65,41 @@ DB-free suites, JUnit-XML-verified, **fresh this run**:
 ### Scope / follow-up
 
 S12-16 wires the opt-in client only; it does **not** store anything in Redis. The follow-ups (all inside the `ADR-021` boundary) are: S12-17 the Redis health indicator (Testcontainers fixture, non-critical group, never readiness/liveness); S12-18 the key builder + TTL policy; S12-19 the distributed fail-open rate limiter; S12-20 quota/ops; S12-21 the `docs/architecture/redis-usage.md` runbook.
+
+## S12-17 — the Redis health indicator and the Testcontainers fixture
+
+### What changed
+
+**An observable Redis dependency.** [`RedisHealthIndicator`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/RedisHealthIndicator.java) (`com.example.agentflow.config`) implements `org.springframework.boot.health.contributor.HealthIndicator` — the Boot 4.x health package, which moved out of the actuator artifact in 4.x (the health API now lives under `org.springframework.boot.health`, as noted in `ADR-021`) — and reports `org.springframework.boot.health.contributor.Status`. A single check opens a connection, sends the bare `PING`, and returns `UP` with the `PONG` in the details; any failure closes the connection and reports `DOWN`. The connection is always closed in a `finally`, so both paths release it. Fail-open is **not** applied here — the indicator is an operator observation, not a gate; the Redis *consumers* (the rate limiter, the cache) keep their own fail-open behaviour (S12-19).
+
+**A non-critical group.** `RedisConnectionConfiguration` exposes the indicator as a bean named `redisHealthIndicator` and is `@ConditionalOnMissingBean(name = "redisHealthIndicator")`, so it is the only `redis` contributor (it suppresses Boot's own auto-configured one). The `local` profile's `management.health.group.cache.include = redis` ([`application-local.yml`](../../apps/agentflow-app/src/main/resources/application-local.yml)) puts it under a **non-critical** `cache` group that is deliberately **not** part of `readiness`/`liveness` (the base profile keeps those empty of app indicators, `ADR-021` / scenario 8 §13): a down Redis moves `/health/redis` to `DOWN` but never drops the pod from rotation. The indicator exists only when Redis is enabled — the connection bean exists — so the group reference is never dangling.
+
+**The fixture and the smoke test.** [`RedisSmokeTest`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/config/RedisSmokeTest.java) (the `integrationTest` source set) spins up one `redis:8.10.2` Testcontainers container — the **same pinned image Compose runs** (`infra/compose/docker-compose.yml`, S01-13) — and exercises the exact client the app uses (`LettuceConnectionFactory`, built the same way `RedisConnectionConfiguration` wires it for the local profile: plain TCP, no auth, no TLS). Three things are asserted: a `SET`/`GET` cache value, a `TTL` that counts down within its window, and the bare `PING` the indicator depends on. It needs no external Redis (Testcontainers).
+
+### Why
+
+Scenario 8 (§13): an unavailable Redis must not drop the app from rotation. An observability dependency that also gated readiness/liveness would turn every Redis blip into a restart; grouping it as non-critical keeps Redis a *helper* (`ADR-021`) while still making its reachability visible to the orchestrator and operators.
+
+### Acceptance
+
+- A stoppable Redis moves the indicator to `DOWN` while `readiness` stays `UP` (`RedisHealthIndicatorReadinessIsolationTest` — real `local` profile, connection pointed at an unreachable `127.0.0.1:1`, read through `HealthEndpoint`: `redis` = `DOWN`, `readiness` = `UP`).
+- The unit test covers both paths: reachable → `UP` (the `PONG`), unreachable → `DOWN` (`RedisHealthIndicatorTest`).
+- The fixture uses the same major-version image as Compose (`redis:8.10.2`).
+- `./gradlew :apps:agentflow-app:integrationTest` runs the smoke test with no external Redis (Testcontainers).
+
+### Verification
+
+DB-free suites, JUnit-XML-verified, **fresh this run**:
+
+- `RedisHealthIndicatorTest` — `tests="2"` `failures="0"` `errors="0"` `skipped="0"`: reachable Redis reports `UP` with the `PONG`; an unreachable Redis (a `PING` that throws) reports `DOWN` and closes the connection.
+- `RedisHealthIndicatorReadinessIsolationTest` — `tests="1"` `failures="0"` `errors="0"` `skipped="0"`: a down Redis moves `/health/redis` to `DOWN` and leaves the readiness group `UP` (`RedisConnectionConfiguration` wires the real connection from `agentflow.redis.host=127.0.0.1`, `agentflow.redis.port=1`; the `DataSourceAutoConfiguration` is excluded so the local profile's real database is not required).
+- `RedisSmokeTest` (integration, Testcontainers) — `tests="3"` `failures="0"` `errors="0"` `skipped="0"`: `SET`/`GET` round-trip, a `TTL` that counts down within its window, the `PING` the health indicator depends on returns `PONG`.
+
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (`ArchitectureBoundaryTest` — the indicator + fixture live in `com.example.agentflow.config`, no new edge) + no-cycles + formatting (`spotlessApply`) + OpenAPI contract.
+
+**No new dependency, no new module edge, no ADR** — the indicator and the fixture import only Spring / the already-present typed config. The new files are the indicator, the unit test, the integration smoke test and the `cache` group wiring in `application-local.yml`.
+
+### Documentation
+
+- This file (`docs/devlog/sprint-12-redis.md`).
+- [`CHANGELOG.md`](../../CHANGELOG.md) — the S12-17 entry.
