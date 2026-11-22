@@ -186,6 +186,26 @@ management:
         include:
           - health
           - info
+          # S13-02: the Prometheus scrape endpoint, for the internal observability stack.
+          # It is deliberately NOT permitAll-ed: it stays behind the default-deny secured chain,
+          # so a scrape must carry a bearer token (the Prometheus server's Authorization header,
+          # from the internal network) and an external anonymous client gets 401. The health/info
+          # probes remain permitAll (orchestrator). The internal-network restriction itself is
+          # enforced by the Kubernetes NetworkPolicy in the deployment sprint (S15) — the metrics
+          # surface never leaves the cluster, and the endpoint is never exposed publicly.
+          - prometheus
+  metrics:
+    # Common tag on every meter (service identity; bounded: one value, the app name).
+    tags:
+      application: ${spring.application.name}
+    # S13-02: disable the instrument groups that add no operational value here. HTTP/JVM/DB-pool
+    # metrics (tomcat HTTP server, jvm, hikaricp) stay enabled (Boot auto-configuration defaults).
+    # The Redis command latency is off — S13-22 owns the Redis-helper meters; logback event counters
+    # are off — logs are JSON on stdout, not per-level metrics; cache is off — no caches configured.
+    enable:
+      'spring.data.redis': false
+      logback: false
+      cache: false
   health:
     group:
       liveness:

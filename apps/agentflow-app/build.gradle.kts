@@ -44,6 +44,12 @@ dependencies {
     // configprops, beans, ...) are closed by the application config. Managed by
     // the Spring Boot BOM, so no version is pinned here.
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Prometheus registry (S13-02): exposes the scrape endpoint /actuator/prometheus.
+    // Required for the endpoint to exist at all (the actuator autoconfiguration wires a
+    // PrometheusMeterRegistry only when this artifact is on the runtime classpath). Version
+    // is BOM-managed by the Spring Boot BOM (it rides the micrometer line), so no version is
+    // pinned here and the registry can never diverge from the Boot-managed Micrometer.
+    implementation("io.micrometer:micrometer-registry-prometheus")
     // OAuth 2.0 Resource Server (S04-03): validates the JWT access token (signature, issuer,
     // audience, expiry) and backs the bearer/JWT security scheme. Managed by the Spring Boot BOM,
     // so no version is pinned here. It is transitive on the Nimbus JOSE library
