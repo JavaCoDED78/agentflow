@@ -121,7 +121,7 @@ applies to these endpoints:
 ### Rate limiting (`S04-16`)
 
 The `RateLimiter` port and the per-group budgets are the S04-16 contract; the actual per-key
-counting lives in a storage-agnostic adapter — the in-memory adapter (S04-17), later the Redis
+counting lives in a storage-agnostic adapter — the in-memory adapter (S04-17) and the Redis
 adapter (S12-19) — which the `RateLimiter` interface abstracts. The budgets are typed, validated
 configuration (`agentflow.ratelimit.*`, bound to `AgentFlowProperties.RateLimit`); a value below
 the per-group minimum is a startup failure, never a silent no-op, so a misconfiguration is loud.
@@ -131,8 +131,10 @@ cache; `ADR-021`).
 
 #### In-memory adapter (`S04-17`)
 
-The shipped adapter is a fixed-window, in-memory store (`InMemoryRateLimiter`). It is storage
-agnostic — no database or Redis dependency — so the app boots and throttles even in the
+The shipped adapter is a fixed-window, in-memory store (`InMemoryRateLimiter`). This is the default
+when Redis is disabled (`agentflow.redis.enabled=false`) and the fail-open fallback when Redis is
+unavailable (S12-19, `ADR-021`). It is
+storage-agnostic — no database or Redis dependency — so the app boots and throttles even in the
 skeleton state. Each key is counted against a one-minute window derived from an injected `Clock`
 (frozen in the time-dependent tests), and the number of live keys is bounded by an access-ordered
 eviction (least-recently-used keys are dropped past a fixed cap), so memory stays bounded as
@@ -167,14 +169,25 @@ an authentication or authorization decision (invariant 1): it never accepts or
 rejects a principal, and it never substitutes for the request size limit and the
 timeout from §9, which bound resource use independently.
 
-With several replicas running, each keeps its own in-memory counters, so the per-minute budget
-applies **per replica**: the effective fleet-wide allowance for a group is roughly `N ×` the
-configured budget, where `N` is the number of live replicas. This is an inherent property of a
-per-instance in-memory limiter — the counters are not shared between processes. When the Redis
-adapter is added (S12-19) the counters are stored in Redis and the budget applies across the
-fleet instead, at the cost of depending on the cache for throttle state.
+With several replicas running, the counters are stored in Redis (`agentflow.redis.enabled=true`,
+the `RedisRateLimiter` adapter, S12-19), so the per-minute budget applies **per group across the
+fleet**: the effective fleet-wide allowance is the configured budget, not `N ×` it — the cost is
+that the throttle now depends on a helper component, and a Redis outage degrades to the
+per-instance in-memory limiter (fail open, invariant 2), where the budget applies per replica as
+before. The limiter does not count concurrent runs, budgets or durable usage state — it throttles
+the endpoint rate only; a per-group budget is never a spend or quota (S12-20).
 
-The operator DLQ surface (`GET /api/v1/ops/dlq`, `GET /api/v1/ops/dlq/*`, `POST /api/v1/ops/dlq/*/redrive`) shares its own `ops:dlq` budget group (`RateLimitGroup.OPS`, default 300/min,
+#### Redis adapter (`S12-19`)
+
+When `agentflow.redis.enabled=true`, the same `RateLimiter` port is satisfied by `RedisRateLimiter`:
+the counter lives in Redis under `agentflow:{env}:ratelimit:{tenantId}:{group}:{windowSeconds}:
+{windowIndex}:{hashedPrincipal}`, written atomically (`INCR` + first-writer `PEXPIRE` of two windows)
+with a mandatory TTL of two windows. A Redis failure fails open — the adapter increments
+`agentflow.redis.rate_limit.fallback_open` and delegates the decision to the in-memory limiter — so
+the budget is per-replica during an outage, never a blanket 429. See
+`docs/architecture/redis-usage.md`.
+
+The operator DLQ surface (`GET /api/v1/ops/dlq`, `GET /api/v1/ops/dlq/*`, `POST /api/v1/ops/dlq/*/redrive`) shares its own `ops` budget group (`RateLimitGroup.OPS`, default 300/min,
 `agentflow.ratelimit.limits.ops.max-per-minute`), distinct from the business groups — an operator
 cannot exhaust the run API or the inbox it feeds by hammering redrive (S12-13).
 

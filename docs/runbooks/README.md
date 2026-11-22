@@ -21,9 +21,13 @@ The durable-execution **model** (run/step lease, fencing, recovery) lives in
 - **`dlq-redrive.md`** (S12-12) — when and how to redrive a held DLQ message: the fresh-id
   re-publish, the inbox `409` guard, idempotency, the audit record, how to confirm it landed,
   and when to escalate.
+- **`redis-outage.md`** (S12-21) — what a Redis outage looks like, how to confirm it (health
+  groups, fail-open limiter), what is safe to do (restart Redis, leave the app running, never
+  flush) and when recovery is complete.
 - **`observability/*.md`** (S13) — observability alerts and recovery.
 
 Scaffolded in **S01-03**. Durable execution design (`durable-execution.md`) and
 the recovery runbook (`workflow-recovery.md`) are added in **S07-17**;
 the DLQ redrive runbook (`dlq-redrive.md`) in **S12-12**;
+the Redis outage runbook (`redis-outage.md`) in **S12-21**;
 observability runbooks in **S13**.
