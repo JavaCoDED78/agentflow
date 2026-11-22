@@ -11,6 +11,9 @@ Structured JSON logging + secret masking, domain meters, trace/correlation attri
 metric catalogue and the "no high-cardinality labels" rule. Cross-cutting: it offers helpers
 consumed by every module, not a domain module.
 
+The conventions every signal follows (naming/units, bounded labels, trace attributes, redaction,
+what never goes in any signal) are fixed in [`docs/observability/standards.md`](../../../../../../../../../docs/observability/standards.md) (S13-01); the catalogue itself lands with S13-11…S13-13/S13-22 and the handbook with S13-21.
+
 ## Secret masking (S12-09)
 
 Masking is centralized in `common.SecretRedactor` (S12-09; ADR-020): `observability.SecretRedactingValueMasker`
