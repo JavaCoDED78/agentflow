@@ -137,7 +137,11 @@ startup explicitly (`S01-17`). The app connects to the compose services over
 `localhost` (datasource, Redis, Kafka, Garage, Keycloak issuer) and exports
 telemetry to the observability profile's OTLP endpoint. The Kafka KRaft
 `KAFKA_CLUSTER_ID` is the only value that must be generated once; full reference
-and the local-only defaults are in [`.env.example`](.env.example).
+and the local-only defaults are in [`.env.example`](.env.example). The Redis
+helper (rate-limit state, S12-19) has its full reference — applications, key
+format + TTL, failure policy, config and metrics — in
+[`docs/architecture/redis-usage.md`](docs/architecture/redis-usage.md) and its
+operational runbook in [`docs/runbooks/redis-outage.md`](docs/runbooks/redis-outage.md).
 
 ### Troubleshooting
 

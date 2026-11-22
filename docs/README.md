@@ -65,6 +65,7 @@ docs/
 │   ├── error-taxonomy.md                ← error classes & retryability (S02-10)
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
+│   ├── redis-usage.md                  ← Redis helper: applications, key format + TTL, failure policy, config reference, metrics (S12-21)
 │   ├── kafka-topics.md                ← topics & partition keys (S06-02)
 │   ├── observability/
 │   │   └── outbox-polling-benchmark.md ← poll delay & poll load: poll-vs-CDC justification gate (S06-15)
@@ -83,6 +84,7 @@ docs/
 ├── evaluation/
 │   ├── README.md                      ← Planner baseline eval cases (S09-14)
 │   └── rag/                           README.md ← how the RAG eval works (S10-20); corpus.md ← the fixed sample documents, questions and reference pages/chunks (S10-20)
+├── runbooks/                          ← operational runbooks: workflow-recovery.md (S07-17); local-auth.md (S04-14); dlq-redrive.md (S12-12); redis-outage.md (S12-21)
 ├── observability/                     ⚠ planned (S13) — standards, metric catalogue, SLOs
 └── load-tests/                        ⚠ planned — k6 scenarios, reports, environment description
 ```
@@ -121,6 +123,8 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Observability (metrics, dashboards, SLOs) | `docs/observability/` | ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
 | Usage, costs, budgets | `docs/usage-and-costs.md` | S12-15 |
+| Redis helper reference (applications, key format + TTL, failure policy, config, metrics) | `docs/architecture/redis-usage.md` | S12-21 |
+| Operational runbooks (Redis outage) | `docs/runbooks/redis-outage.md` | S12-21 |
 | Audit action catalogue (audit contract) | `docs/security/audit-contract.md` | S12-07 |
 | HTTP API (`/api/v1`) | `contracts/openapi/` | `../contracts/openapi/README.md` |
 | Event envelope & payloads | `contracts/events/json-schema/` | `../contracts/events/README.md` |

@@ -78,7 +78,11 @@ treated as untrusted.*
 
 Internal infrastructure — PostgreSQL (+ pgvector/FTS), Kafka and Redis — lives
 **inside** the trusted boundary; it is the persistence/messaging layer, not an
-external dependency of the context diagram.
+external dependency of the context diagram. The API role connects to PostgreSQL
+and Kafka (with the outbox); the **rate limiter** (S12-19) is the one Redis
+consumer, and it connects to Redis — never the worker role, never durable state.
+Redis is a helper (ADR-021): the limit counter and any rebuildable cache live
+there, never the workflow state, the lease or the inbox.
 
 ---
 

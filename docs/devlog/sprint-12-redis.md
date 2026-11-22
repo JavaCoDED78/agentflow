@@ -11,6 +11,7 @@ This thread is bounded by [`ADR-021`](../../adr/ADR-021-redis-role.md): Redis is
 - [S12-18 — the redis key builder, value codec and TTL policy](#s12-18-the-redis-key-builder-value-codec-and-ttl-policy)
 - [S12-19 — the distributed fail-open rate limiter](#s12-19-the-distributed-fail-open-rate-limiter)
 - [S12-20 — the Redis limiter is a helper, the quota is durable](#s12-20-the-redis-limiter-is-a-helper-the-quota-is-durable)
+- [S12-21 — documenting the Redis boundary in one reference](#s12-21-documenting-the-redis-boundary-in-one-reference)
 
 ---
 
@@ -287,3 +288,85 @@ source of truth. The new files are the integration test and the handler test.
 
 - This file (`docs/devlog/sprint-12-redis.md`).
 - `CHANGELOG.md` — the S12-20 entry.
+
+## S12-21 — documenting the Redis boundary in one reference
+
+### What changed
+
+**A new canonical reference — [`docs/architecture/redis-usage.md`](../architecture/redis-usage.md)** —
+covering everything the plan (`S12-21`) requires that the per-task devlog records and the ADRs do not:
+the permitted uses and the prohibited ones (ADR-021), the exact key format and TTL policy (single
+`RedisKeyBuilder`, `agentflow:{env}:{purpose}:{tenantId}:…`, ≤ 200 chars, every key TTL-bound), the
+failure policy per use (fail-open for the rate limiter, fail-open for a rebuildable cache, fail-closed
+for coordination), the full configuration reference (`agentflow.redis.*` + the three env vars, per
+profile), what the observability profile can observe (`agentflow.redis.rate_limit.fallback_open`, the
+`cache` health group), and the smoke/health verification evidence (a live boot: `/actuator/health/cache`
+`DOWN` + `readiness` `UP` with Redis stopped, `UP` after recovery).
+
+**A new operational runbook — [`docs/runbooks/redis-outage.md`](../runbooks/redis-outage.md)** — the
+symptoms (healthy-path health groups UP/DOWN), the diagnosis (`docker ps`, `redis-cli ping`, the
+health endpoints), the safe actions (restart Redis, leave the app running, never `FLUSHALL`, never
+silence the limiter), and the recovery criterion, with the same evidence.
+
+**Alignment of the reference docs with the shipped Redis surface:**
+
+- `docs/architecture/system-context.md` now names the API→Redis connection (the rate limiter,
+  S12-19) in the internal-infrastructure block — the diagram/description now matches the code.
+- `docs/architecture/api-conventions.md`: the stale "When the Redis adapter is added (S12-19) the
+  counters are stored in Redis…" prediction became reality (the adapter is shipped, S12-19); the
+  ops budget group name is corrected from the wrong `ops:dlq` to the shipped `ops`
+  (`RateLimitGroup.OPS`, `agentflow.ratelimit.limits.ops.max-per-minute`); and a `#### Redis
+  adapter (S12-19)` subsection documents the key shape, the atomic Lua script, the fail-open
+  contract and the link to `redis-usage.md`.
+- `.env.example`: the Redis block now documents the three real env vars
+  (`AGENTFLOW_REDIS_HOST` / `AGENTFLOW_REDIS_PORT` / `AGENTFLOW_REDIS_PASSWORD`) and the typed
+  `agentflow.redis.*` config, replacing the invented `spring.redis.host` / `spring.redis.password`
+  entries that did not match the code.
+- `docs/runbooks/README.md`, `docs/README.md` (tree + document-type table) and `README.md` (environment
+  variables) now link the new reference and the new runbook.
+
+**No code, no config, no migration, no module edge.** This is a documentation-only task; the doc
+references are verified to exist on disk (every `../runbooks/…`, `../architecture/…`, `docs/…` and
+`apps/…` anchor resolves) and no claim exceeds a verified behaviour.
+
+### Why
+
+The per-task devlog records and the ADRs capture decisions but not the operational surface: an
+operator reading the runbook or the config reference today could not tell, from the docs, what Redis is
+allowed to hold, what a Redis outage looks like, or what the `cache` health group probes. The plan's
+`S12-21` requires exactly that reference, so the two documents are the single source of truth for the
+Redis boundary — the ADRs and the per-task devlog records stay and now link to it.
+
+### Acceptance
+
+- `docs/architecture/redis-usage.md` — exists; covers the plan's five required sections (applications,
+  key format + TTL, failure policy, config, metrics) — this file.
+- `docs/runbooks/redis-outage.md` — exists; reuses the verified evidence (`RedisHealthIndicatorReadinessIsolationTest`, `RedisRateLimiterIT`, `RedisSmokeTest`, live boot).
+- `docs/architecture/system-context.md` — the internal-infrastructure block now names the API→Redis connection (rate limiter).
+- `docs/architecture/api-conventions.md` — the stale S12-19 prediction is replaced by the shipped reality; the ops group is corrected to `ops`.
+- `.env.example` — the Redis block names the three env vars actually read by `RedisConnectionConfiguration` and no invented config.
+- `docs/runbooks/README.md`, `docs/README.md`, `README.md` — link the new documents.
+- Every cross-reference resolves; no claim exceeds a verified behaviour.
+
+### Verification
+
+- Every referenced file/anchor in the new documents and the updated ones resolves (the runbook
+  references `docs/runbooks/README.md`, `docs/architecture/redis-usage.md`, `ADR-021`; the reference
+  links `api-conventions.md`, `docs/runbooks/redis-outage.md`, the ADR and the devlog; each is
+  read from disk).
+- The `.env.example` block was read back: the three env vars are the only Redis variables, matching
+  `RedisConnectionConfiguration` (host/port read, password via `spring.redis.password`, never typed).
+- The internal-infrastructure sentence was read back and is consistent with the diagram.
+- The `api-conventions.md` changes were read back: no stale `ops:dlq`/`When the Redis adapter is
+  added` predictions remain.
+- `git status` confirms only the documented files changed (plus the unrelated pre-existing
+  `apps/agentflow-app/gradle.lockfile` regen, which is out of scope and left as is).
+
+**No build gate applies** — documentation-only; no code, config or migration changes.
+
+### Documentation
+
+- This file (`docs/devlog/sprint-12-redis.md`).
+- `CHANGELOG.md` — the S12-21 entry (this change).
+- `docs/architecture/redis-usage.md` (new).
+- `docs/runbooks/redis-outage.md` (new).
