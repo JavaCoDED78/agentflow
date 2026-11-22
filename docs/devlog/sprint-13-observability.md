@@ -5,6 +5,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 ## Contents
 
 - [S13-01 — telemetry conventions](#s13-01-telemetry-conventions)
+- [S13-02 — Micrometer/Actuator metrics](#s13-02--micrometeractuator-metrics)
 
 ---
 
@@ -49,3 +50,39 @@ Documentation-only change — no build/test gate applies. Verified:
 ### Scope / follow-up
 
 The metric catalogue, SLOs, dashboards, alerts and the cardinality/privacy check remain scheduled (S13-11…S13-22) and must all follow this file. The `observability` module gains no code in this task.
+
+## S13-02 — Micrometer/Actuator metrics
+
+### What changed
+
+The application now exposes a Prometheus scrape endpoint and a bounded metrics surface, so the Sprint 13 observability stack (Collector → Prometheus) has something real to scrape.
+
+- **Dependency** — `io.micrometer:micrometer-registry-prometheus` (BOM-managed, rides the Micrometer line) is added to `apps/agentflow-app/build.gradle.kts` behind the existing `spring-boot-starter-actuator`. Without it, `/actuator/prometheus` does not exist at all — the endpoint only exists when the registry is on the runtime classpath.
+- **Endpoint exposure** — `/actuator/prometheus` is added to `management.endpoints.web.exposure.include` in `application.yml`. It is **not** in the permit-all diagnostics set: it stays behind the default-deny secured chain (S04-11), so a scrape must carry a bearer token (the internal Prometheus server's `Authorization` header) and an external anonymous client gets `401`. The `health` / `info` probes remain permitAll (orchestrator). The internal-network restriction is enforced at the deployment layer (Kubernetes NetworkPolicy, S15) — the metrics surface never leaves the cluster.
+- **Common tag** — every meter carries `application: <app-name>` (the one bounded identity tag the S13-01 standards require); no high-cardinality tags.
+- **Disabled instrument groups** — `spring.data.redis`, `logback` and `cache` are switched off via `management.metrics.enable:`. HTTP/server (tomcat `http.server.requests`), JVM and DB-pool (HikariCP) auto-configuration stay enabled, so the S13-02 criterion — HTTP/JVM/DB-pool metrics up — holds. Redis-helper meters are S13-22's surface; logback event counters add nothing over the JSON stdout log; no caches are configured.
+
+### Why
+
+The telemetry standards (S13-01) assign metrics to one home — Micrometer → Prometheus/Actuator scrape — but the endpoint did not exist and no metrics were exposed. This change wires the registry, the endpoint, the common tag and the disabled groups, so the next tasks (S13-04…S13-08, S13-11…S13-22) have a minimal, honest metrics surface to build on.
+
+### Verification
+
+`PrometheusMetricsEndpointTest` (new, `secured-test` profile, `@SpringBootTest` on a random port) — 3 tests, fresh this run:
+
+1. **Anonymous scrape is rejected** — `GET /actuator/prometheus` without a token → `401`.
+2. **Authenticated scrape carries the JVM and HTTP metrics** — with a valid bearer token → `200`, `text/plain`, body contains `jvm_memory_used_bytes` and `http_server_requests` and the common `application="agentflow-app"` tag.
+3. **The disabled instrument groups are absent** — the body contains no `spring_data_redis`, no `logback_events`, and no metric name starting with `cache_` (a line-prefix match, not a substring — the spring-security `requestcache_` metric is legitimately present).
+
+DB-pool (hikaricp) meters are not asserted: the app boots without a DataSource on the secured-test profile, so the HikariCP meters are not on the scrape here. They ride the same auto-configuration that the JVM and HTTP meters use; they are exercised by the profiles that wire a real DataSource.
+
+`./gradlew :apps:agentflow-app:check` green — unit + architecture + no-cycles + formatting + OpenAPI. `generateLockFiles --write-locks` was run so `gradle.lockfile` pins the new registry for every classpath configuration (compile/runtime/productionRuntime/test).
+
+### Documentation
+
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line.
+- `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Metrics-only: no OTLP tracing (S13-03), no dashboards (S13-14…S13-16), no Redis/rate-limit meters (S13-22), no Collector/Prometheus/Grafana provisioning (S13-04…S13-08), no NetworkPolicy (S15). The scrape requires a bearer token; the token is the Prometheus server's own — it is infrastructure, not an app secret, and remains out of the repo (S15).
