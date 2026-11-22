@@ -1,9 +1,10 @@
 # Devlog (detailed changelog, recent)
 
-Detailed per-task changelog records for recent work (Sprint 6 messaging, Sprint 7 durable execution). Slim one-line summaries with links are in the root [`CHANGELOG.md`](../../CHANGELOG.md).
+Detailed per-task changelog records for recent work (Sprint 6 messaging through Sprint 13 observability). Slim one-line summaries with links are in the root [`CHANGELOG.md`](../../CHANGELOG.md).
 
 ## Contents
 
+- [Sprint 13 — Observability: metrics pipeline as code](sprint-13-observability.md) — S13-01 …
 - [Sprint 12 — usage metering, budgets and cost](sprint-12-usage-metering-cost.md) — S12-01 … S12-15
 - [Sprint 12 — Redis wiring](sprint-12-redis.md) — S12-16 … S12-21
 - [Sprint 11 — Human approval, MCP and security of agent actions](sprint-11-human-approval-mcp-security.md) — S11-01 …
