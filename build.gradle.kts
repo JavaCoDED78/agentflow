@@ -152,6 +152,7 @@ tasks.register("generateLockFiles") {
             val classpaths = listOf(
                 "compileClasspath",
                 "runtimeClasspath",
+                "productionRuntimeClasspath",
                 "testCompileClasspath",
                 "testRuntimeClasspath",
             )
