@@ -245,10 +245,17 @@ public class GlobalExceptionHandler {
   }
 
   /**
-   * @return the current trace id when tracing is wired (S13), otherwise a fresh correlation id. The
-   *     id is added to the response so a client can quote it when raising a support ticket.
+   * @return the id of the request: the filter-seeded {@code correlationId} when the {@code
+   *     CorrelationIdFilter} ran for this request, then the {@code traceId} when tracing is wired,
+   *     then a fresh correlation id. The id is added to the response so a client can quote it when
+   *     raising a support ticket, and it appears verbatim in the request's log lines (via the
+   *     encoder's whitelist).
    */
   private String correlationId() {
+    String correlationId = MDC.get("correlationId");
+    if (correlationId != null && !correlationId.isBlank()) {
+      return correlationId;
+    }
     String traceId = MDC.get("traceId");
     return (traceId != null && !traceId.isBlank()) ? traceId : UUID.randomUUID().toString();
   }

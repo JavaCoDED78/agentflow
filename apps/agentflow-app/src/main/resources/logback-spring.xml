@@ -3,9 +3,11 @@
   Logging configuration for the AgentFlow artifact (S01-19).
 
   Logs are structured JSON on stdout (consumed by the OpenTelemetry Collector /
-  Loki in later sprints). The logstash-logback-encoder renders each event as a
-  JSON object and masks sensitive values before serialization, so JWTs, API keys
-  and other secrets never reach stdout, disk or the Actuator.
+  Loki). The structure lives in
+  com.example.agentflow.observability.StructuredJsonLogstashEncoder: severity,
+  @timestamp, message, logger_name, thread_name, the whitelisted MDC keys
+  (service, environment, traceId, spanId, correlationId) and, when present, the
+  exception — masked before serialization.
 
   Named logback-SPRING.xml (not logback.xml) so Spring Boot's <springProperty>
   and <profile> elements are available. This file is parsed before the Spring
@@ -16,11 +18,15 @@
 <configuration>
 
   <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-      <!-- MDC carries the correlation/trace identifiers (traceId, spanId,
-           correlationId) plus the service/environment seeded by the Spring bean.
-           MDC is written by the encoder's default LogstashProvider; OTel
-           populates traceId/spanId once tracing is wired (S13). -->
+    <!-- S13-09: the encoder class is the ONE place the JSON log field contract
+         lives (@timestamp, severity, message, logger_name, thread_name, the
+         whitelisted MDC keys service/environment/traceId/spanId/correlationId,
+         plus the exception/stack trace when present). Do not configure ad-hoc
+         encoders per module; change the encoder here. -->
+    <encoder class="com.example.agentflow.observability.StructuredJsonLogstashEncoder">
+      <!-- Masking stays on the wire path: the security-sensitive values are
+           masked before serialization, so a canary key, a secret-like header
+           or a credential-shaped message never reaches stdout / Loki. -->
       <decorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
         <defaultMask>***</defaultMask>
         <valueMasker class="com.example.agentflow.observability.SecretRedactingValueMasker"/>
