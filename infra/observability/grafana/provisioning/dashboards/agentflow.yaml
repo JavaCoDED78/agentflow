@@ -1,0 +1,25 @@
+# AgentFlow Grafana dashboard provider (S13-06) — configuration as code.
+#
+# Wires the dashboards directory (infra/observability/grafana/dashboards,
+# mounted read-only at /etc/grafana/dashboards) into Grafana. Every AgentFlow
+# dashboard lives there as JSON with a stable UID; the Grafana UI cannot save
+# changes to provisioned dashboards (allowUiUpdates: false), so a dashboard
+# change is a Git change or it does not exist.
+#
+# Rich dashboards (API/JVM/DB, Workflow/Kafka) land in S13-14/15; this provider
+# is the pipeline they plug into.
+
+apiVersion: 1
+
+providers:
+  - name: agentflow
+    orgId: 1
+    folder: AgentFlow
+    folderUid: agentflow
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

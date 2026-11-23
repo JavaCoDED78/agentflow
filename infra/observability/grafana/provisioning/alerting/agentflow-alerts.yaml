@@ -1,0 +1,85 @@
+# AgentFlow Grafana alert rules (S13-06) — configuration as code.
+#
+# Provisioned alert definitions: a rule here is a rule in Grafana; a rule created
+# in the UI is not a change (infra/AGENTS.md). Every rule carries a `for` guard,
+# a severity label and a runbook_url annotation pointing at docs/runbooks/.
+#
+# Query model: A = instant PromQL against a provisioned datasource, B = reduce
+# (last), C = threshold — the stable Grafana 13 expression chain (no
+# classic_conditions). noDataState: Alerting is deliberate: a scrape target
+# vanishing from discovery entirely is as alertable as up == 0.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: agentflow-scrape
+    folder: AgentFlow
+    folderUid: agentflow
+    interval: 30s
+    rules:
+      - uid: agentflow-scrape-target-down
+        title: AgentFlow scrape target down
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: up{job=~"agentflow-api|otel-collector"}
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: "AgentFlow scrape target {{ $labels.job }} is down or missing"
+          description: "Prometheus cannot scrape {{ $labels.job }} (up < 1 or no series) for more than 1 minute. Locally the agentflow-api target is expected to be down while the app is not running (see runbook before acting)."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/observability-scrape-target-down.md"
+        labels:
+          severity: warning
