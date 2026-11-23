@@ -11,8 +11,8 @@
 #   messaging     Kafka (KRaft)                        — durable event transport
 #   identity      Keycloak                             — OIDC identity provider
 #   ai-local      Ollama                               — local LLM (OpenAI-compatible API)
-#   observability grafana/otel-lgtm (OTel Collector, Prometheus, Loki, Tempo,
-#                     Grafana in one image)
+#   observability grafana/otel-lgtm (Grafana + the bundled backends) plus the
+#                     standalone otel-collector, prometheus, loki and tempo services
 #   full          every service above
 #
 # The `full` profile reuses each service's definition by listing `full` in that
@@ -294,25 +294,28 @@ services:
   # absent from the standard contrib collector and Loki exposes no OTLP ingest,
   # so the all-in-one lgtm image keeps the stack fully working; a production
   # deployment would run these as separate services (deployment sprint). Data
-  # lives on one named volume under /data (Prometheus, Loki, Grafana, Tempo all
-  # persist there).
+  # lives on one named volume under /data (Prometheus and Grafana persist there;
+  # the bundled Loki/Tempo receive nothing since the dedicated services took
+  # over).
   #
   # Since S13-04 the standalone `otel-collector` service below is the OTLP ingress:
   # the app exports to localhost:4317/:4318 (owned by the collector), the collector
   # redacts/batches/memory-limits and forwards over the observability network:
-  # traces/metrics to this container's bundled collector, logs to the dedicated
-  # loki service (S13-07). Grafana (:3000) exposes all three as datasources. The lgtm OTLP ports
+  # metrics to this container's bundled collector, logs to the dedicated
+  # loki service (S13-07), traces to the dedicated tempo service (S13-08).
+  # Grafana (:3000) exposes all three as datasources. The lgtm OTLP ports
   # are no longer host-published — only the standalone collector accepts OTLP from
-  # the host; S13-08 will split Tempo out of lgtm as well.
+  # the host.
   #
   # Since S13-05 the host-published :9090 belongs to the dedicated, repo-owned
   # `prometheus` service below (S13-02 metrics ship through the Prometheus scrape,
   # never OTLP push). Since S13-07 the same applies to :3100 — the dedicated
   # `loki` service owns it, and the collector's logs pipeline no longer touches
-  # this container's bundled Loki at all. lgtm's bundled Prometheus keeps
-  # serving the OTLP-carried metrics internally (localhost inside the container)
-  # until S13-08 swaps the collector exporter endpoints to the dedicated
-  # backends.
+  # this container's bundled Loki at all. Since S13-08 the same applies to
+  # :3200 — the dedicated `tempo` service owns it, and the collector's traces
+  # pipeline exports there instead of the bundled Tempo. lgtm's bundled
+  # Prometheus keeps serving the OTLP-carried metrics internally (localhost
+  # inside the container) — metrics are not host-published anywhere.
   #
   # Since S13-06 Grafana itself is provisioned from Git
   # (infra/observability/grafana/, mounted read-only): datasources, the dashboard
@@ -336,7 +339,6 @@ services:
       GF_PATHS_PERMITTED_PROVISIONING_PATHS: /etc/grafana/provisioning|/etc/grafana/dashboards
     ports:
       - "3000:3000"   # Grafana UI (datasources for metrics/logs/traces)
-      - "3200:3200"   # Tempo direct access (debug; S13-08 moves it to a dedicated service)
     volumes:
       - agentflow-observability:/data
       # Read-only: the container must never rewrite its own provisioning.
@@ -352,8 +354,8 @@ services:
   # mounted read-only over the image default). Receives OTLP on :4317 (gRPC) /
   # :4318 (HTTP), enforces the memory limiter / redaction / batch contract and
   # exports over the observability network: logs to the dedicated loki service
-  # (S13-07, native OTLP endpoint), traces/metrics to the lgtm backends until
-  # S13-08. The image is
+  # (S13-07, native OTLP endpoint), traces to the dedicated tempo service
+  # (S13-08), metrics to the lgtm bundled collector. The image is
   # distroless (no shell), so the healthcheck re-validates the mounted config with
   # the collector's own `validate` subcommand; the runtime probe is the
   # health_check extension on :13133 (see the config's extensions section). The
@@ -382,6 +384,7 @@ services:
       start_period: 10s
     depends_on:
       - observability
+      - tempo
     logging: *shared-logging
     networks: [observability]
     profiles: ["observability", "full"]
@@ -416,6 +419,43 @@ services:
       # Distroless image: no shell and no curl — the loki binary itself
       # re-validates the mounted config; a broken config edit fails the check.
       test: ["CMD", "/usr/bin/loki", "-config.file=/etc/loki/loki.yaml", "-verify-config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging: *shared-logging
+    networks: [observability]
+    profiles: ["observability", "full"]
+
+
+  # ---------------------------------------------------------------------------
+  # Tempo (S13-08): the dedicated, repo-owned trace store. Configuration as
+  # code — infra/observability/tempo/tempo.yaml is mounted read-only and
+  # single-binary Tempo boots from it; local blocks and the WAL live on the
+  # agentflow-tempo named volume with a 7-day block retention (matching the
+  # dedicated Prometheus and Loki). Ingest is the native OTLP endpoint
+  # (otlp/grpc+http): the otel-collector's otlp_grpc exporter posts spans.
+  # Sampling is decided upstream (the app samples 100% of requests — see the
+  # header of tempo.yaml); Tempo stores what it receives. The image is pinned
+  # by multi-arch index digest and distroless (no shell), so the healthcheck
+  # re-validates the mounted config with the binary's own -config.verify=true —
+  # the same pattern as the otel-collector and Loki services.
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo@sha256:3f0825e14397d3459e11e96f99ddd3976ec0cb75e328459e173298d9fb74b407
+    container_name: agentflow-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "3200:3200"   # Tempo HTTP API (debug; the Grafana Tempo datasource over the observability network)
+    volumes:
+      # Read-only: the container must never rewrite its own configuration.
+      - ../observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - agentflow-tempo:/var/tempo
+    healthcheck:
+      # Distroless image: no shell and no curl — the tempo binary itself
+      # re-validates the mounted config; a broken config edit fails the check.
+      test: ["CMD", "/tempo", "-config.file=/etc/tempo/tempo.yaml", "-config.verify=true"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -495,6 +535,8 @@ volumes:
     name: agentflow-loki
   agentflow-prometheus:
     name: agentflow-prometheus
+  agentflow-tempo:
+    name: agentflow-tempo
 
 networks:
   # Shared app/data network — every service joins this so `full`-profile services
@@ -512,9 +554,10 @@ networks:
   # Observability internal network — the otel-collector (OTLP ingress), the
   # dedicated loki/prometheus and the lgtm backends interconnect here; the
   # collector forwards traces/metrics to lgtm's bundled collector on :4317 and
-  # posts logs to loki's OTLP endpoint on :3100, prometheus scrapes the
+  # posts logs to loki's OTLP endpoint on :3100, traces to tempo's OTLP
+  # endpoint on :4317, prometheus scrapes the
   # collector's :8888 over this network. Host-published surfaces: collector
-  # :4317/:4318/:13133, prometheus :9090, loki :3100, lgtm :3000/:3200. When
+  # :4317/:4318/:13133, prometheus :9090, loki :3100, tempo :3200, lgtm :3000. When
   # the app is containerized (deployment sprint) it joins this network and
   # exports to the collector's :4317 internally.
   observability:

@@ -14,8 +14,8 @@
 #
 # UIDs are stable contracts: dashboards and alert rules reference datasources
 # by UID, so a UID rename is a breaking change. Since S13-07 the Loki UID
-# points at the dedicated, repo-owned log store — only the URL moves; Tempo
-# still serves from lgtm until S13-08 — that swap is a URL edit in this file.
+# points at the dedicated, repo-owned log store; since S13-08 the Tempo UID
+# points at the dedicated, repo-owned trace store — only the URL moves.
 #
 # editable: false everywhere — datasources are provisioned, never UI-edited;
 # a manual UI change is not a change (infra/AGENTS.md).
@@ -37,7 +37,8 @@ datasources:
       timeInterval: 15s
 
   # lgtm's bundled Prometheus: still receives the OTLP-carried app metrics via
-  # the S13-04 pipeline until S13-08 swaps the collector exporter endpoints.
+  # the S13-04 pipeline (the app-pushed OTLP metrics pipeline is unchanged; the
+  # dedicated Prometheus is the canonical scrape of /actuator/prometheus).
   - name: Prometheus
     uid: prometheus
     type: prometheus
@@ -67,12 +68,13 @@ datasources:
           url: "${__value.raw}"
           urlDisplayLabel: "Trace: ${__value.raw}"
 
-  # lgtm's bundled Tempo (S13-08 replaces it with a dedicated service).
+  # The dedicated, repo-owned Tempo (S13-08): the canonical trace store,
+  # reached by container name over the observability network.
   - name: Tempo
     uid: tempo
     type: tempo
     access: proxy
-    url: http://127.0.0.1:3200
+    url: http://tempo:3200
     isDefault: false
     editable: false
     jsonData:

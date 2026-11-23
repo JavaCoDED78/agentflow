@@ -21,9 +21,11 @@
 # Since S13-07 the logs pipeline exports to the dedicated Loki over its native
 # OTLP endpoint (/otlp/v1/logs) via the otlphttp exporter — the contrib
 # collector ships no loki exporter (removed in the 0.165 line), so native OTLP
-# ingestion is the supported path. Traces and metrics still fan out to the lgtm
-# all-in-one's bundled collector until S13-08 — see ../README.md. Swapping the
-# traces exporter for the dedicated Tempo is a one-line change below.
+# ingestion is the supported path. Since S13-08 the traces pipeline exports to
+# the dedicated Tempo over OTLP/gRPC — see ../README.md. Metrics still fan out
+# to the lgtm all-in-one's bundled collector (its OTLP metrics store); the
+# dedicated Prometheus scrapes the app's /actuator/prometheus endpoint instead
+# of receiving OTLP-pushed metrics.
 
 extensions:
   # Liveness/readiness probe endpoint (compose healthcheck, orchestrator probes, smoke scripts).
@@ -78,9 +80,18 @@ exporters:
     endpoint: http://loki:3100/otlp
     tls:
       insecure: true
-  # Local backends via the lgtm all-in-one (see the header): one OTLP/gRPC
-  # exporter carries traces and metrics until S13-08 replaces the traces
-  # half with the dedicated Tempo.
+  # Dedicated Tempo (S13-08): traces over OTLP/gRPC. Tempo owns the trace
+  # store contract (7-day block retention in ../tempo/tempo.yaml); the exporter
+  # sends attributes verbatim — the collector only removes attributes (redaction
+  # above), it never rewrites them.
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  # Local backend via the lgtm all-in-one (see the header): metrics only — the
+  # dedicated Prometheus scrapes the app's /actuator/prometheus endpoint
+  # instead of receiving OTLP-pushed metrics, so the lgtm bundled collector
+  # receives nothing but the app-pushed gauge/histogram points.
   otlp_grpc/lgtm:
     endpoint: observability:4317
     tls:
@@ -92,7 +103,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, attributes/redaction, batch]
-      exporters: [otlp_grpc/lgtm]
+      exporters: [otlp_grpc/tempo]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]

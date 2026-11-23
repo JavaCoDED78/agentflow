@@ -15,14 +15,20 @@ wrong home.
 | Signal | Carrier | Home document | Allowed to carry | Never allowed |
 |---|---|---|---|---|
 | **Metrics** (counts, rates, durations, sizes) | Micrometer (Prometheus registry) → `/actuator/prometheus` scrape | `observability` (domain meters) | Bounded numeric values; bounded category labels | Tenant/run/user/document identifiers, prompts, document text, raw errors, secrets, unbounded labels |
-| **Traces** (one request's journey across API/outbox/worker) | OpenTelemetry SDK → OTLP → Collector → Tempo | `observability` (trace attributes, correlation) | W3C `traceparent`/`tracestate`, `correlationId`, `causationId`, service/environment/version, bounded attributes | Raw request/response bodies, full prompts, document text, secrets, tokens, high-cardinality IDs as **attribute names** that explode cardinality (e.g. one attribute per run) |
+| **Traces** (one request's journey across API/outbox/worker) | OpenTelemetry SDK → OTLP → Collector → Tempo (dedicated repo-owned store since S13-08) | `observability` (trace attributes, correlation) | W3C `traceparent`/`tracestate`, `correlationId`, `causationId`, service/environment/version, bounded attributes | Raw request/response bodies, full prompts, document text, secrets, tokens, high-cardinality IDs as **attribute names** that explode cardinality (e.g. one attribute per run) |
 | **Logs** (one event with context) | `org.slf4j` → logback logstash encoder (JSON stdout) → Loki/Collector | `observability` (encoder + masker) | The full structural context: `traceId`/`spanId`/`correlationId`, service, environment, severity, message | Secrets/tokens, full prompts, document text, raw payloads — anything unredacted |
 
 The assignment follows the plan (§13 of `AGENTFLOW_ARCHITECTURE_AND_PLAN.md`): **Micrometer for
 application metrics and OpenTelemetry/OTLP for traces**; JSON logs via the logback encoder
 (`logback-spring.xml`, S01-19). The metric scrape endpoint is internal-network-only (S13-02);
 the traces exporter reads its endpoint/environment/sampling from configuration (S13-03) and
-never carries a raw request body.
+never carries a raw request body. In the local stack the traces exporter points at the
+standalone Collector (`localhost:4318`), which fans spans out to the dedicated Tempo (S13-08);
+the local stack runs 100% head sampling (`management.tracing.sampling.probability: 1.0`) with no
+collector-side sampling processor, so every span the app emits is stored and searchable —
+Tempo's `compactor` retention (7 days, matching the dedicated Prometheus and Loki) is a
+storage-side bound, not a sampling decision. The kubernetes profile (S15) is the only place the
+rate is lowered.
 
 **Where to add what**
 

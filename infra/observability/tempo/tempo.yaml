@@ -1,0 +1,54 @@
+# AgentFlow Tempo (S13-08).
+#
+# The dedicated trace store of the local observability stack, configuration as
+# code: the container mounts this file read-only and boots from it; there is
+# nothing to set up by hand. Single-binary mode (one container = distributor,
+# ingester, querier, compactor) on local filesystem storage.
+#
+# Ingest: traces arrive over OTLP at /v1/traces from the otel-collector's
+# otlp_grpc exporter (see ../otel-collector/collector.yaml). Tempo is the only
+# trace store in the stack — the lgtm all-in-one image bundles its own Tempo,
+# but nothing sends traces there anymore.
+#
+# Storage: local blocks (/var/tempo/blocks) + the write-ahead log
+# (/var/tempo/wal), all on the agentflow-tempo named volume. The compactor
+# applies a 7-day block retention on top of the WAL, matching the dedicated
+# Prometheus and Loki (S13-05/S13-07).
+#
+# Sampling policy (documented here, deliberately, because it is the one
+# decision Tempo cannot make for us): this is a local, dev/demo stack, so it
+# keeps the app-side head-sampling contract of S13-03 — the application
+# samples 100% of requests (management.tracing.sampling.probability: 1.0, Boot's
+# default is 10%), the collector adds NO sampling processor, and Tempo stores
+# everything it receives. Full-fidelity, unsampled traces. The kubernetes
+# profile lowers the sampling probability when the volume demands it; that is
+# the only place the rate may change, never here.
+#
+# The image is pinned by digest in infra/compose/docker-compose.yml. The
+# image is distroless, so the healthcheck re-validates the mounted config with
+# the binary's own -config.verify=true — the same pattern as the otel-collector
+# and Loki services.
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+compactor:
+  compaction:
+    block_retention: 168h
