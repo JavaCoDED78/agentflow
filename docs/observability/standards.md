@@ -16,7 +16,7 @@ wrong home.
 |---|---|---|---|---|
 | **Metrics** (counts, rates, durations, sizes) | Micrometer (Prometheus registry) → `/actuator/prometheus` scrape | `observability` (domain meters) | Bounded numeric values; bounded category labels | Tenant/run/user/document identifiers, prompts, document text, raw errors, secrets, unbounded labels |
 | **Traces** (one request's journey across API/outbox/worker) | OpenTelemetry SDK → OTLP → Collector → Tempo (dedicated repo-owned store since S13-08) | `observability` (trace attributes, correlation) | W3C `traceparent`/`tracestate`, `correlationId`, `causationId`, service/environment/version, bounded attributes | Raw request/response bodies, full prompts, document text, secrets, tokens, high-cardinality IDs as **attribute names** that explode cardinality (e.g. one attribute per run) |
-| **Logs** (one event with context) | `org.slf4j` → logback logstash encoder (JSON stdout) → Loki/Collector | `observability` (encoder + masker) | The full structural context: `traceId`/`spanId`/`correlationId`, service, environment, severity, message | Secrets/tokens, full prompts, document text, raw payloads — anything unredacted |
+| **Logs** (one event with context) | `org.slf4j` → logback logstash encoder (JSON stdout, the `StructuredJsonLogstashEncoder` of S13-09) → Loki/Collector | `observability` (encoder + masker) | The full structural context: `traceId`/`spanId`/`correlationId`, service, environment, severity, message | Secrets/tokens, full prompts, document text, raw payloads, stray high-cardinality MDC keys — anything unredacted |
 
 The assignment follows the plan (§13 of `AGENTFLOW_ARCHITECTURE_AND_PLAN.md`): **Micrometer for
 application metrics and OpenTelemetry/OTLP for traces**; JSON logs via the logback encoder
@@ -63,8 +63,12 @@ agentflow.<domain>.<what>.<unit>
 extensions below. Span names follow the service's own operation vocabulary, not a literal
 HTTP path with ids embedded.
 
-**Logs** have no naming rule beyond the standard logstash fields; the `message` is a short,
-redacted, human-readable description — never a payload dump.
+**Logs** carry the pinned line contract of `StructuredJsonLogstashEncoder` (S13-09): `@timestamp`,
+`severity`, `service`, `environment`, `correlationId`, `message`, `logger_name`, `thread_name` and — when
+tracing is wired — `traceId` / `spanId`, all inline with no nesting. The encoder whitelists exactly these MDC
+keys, so a stray high-cardinality id (tenant/run/user/document) that some caller puts into the MDC never reaches
+the line. `@version` and `exception` stay as the default encoder emits them. The `message` is a short, redacted,
+human-readable description — never a payload dump.
 
 ## Bounded labels (metrics)
 

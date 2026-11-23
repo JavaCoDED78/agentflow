@@ -14,6 +14,16 @@ consumed by every module, not a domain module.
 The conventions every signal follows (naming/units, bounded labels, trace attributes, redaction,
 what never goes in any signal) are fixed in [`docs/observability/standards.md`](../../../../../../../../../docs/observability/standards.md) (S13-01); the catalogue itself lands with S13-11…S13-13/S13-22 and the handbook with S13-21.
 
+## Structured JSON logging (S13-09)
+
+`StructuredJsonLogstashEncoder` owns the JSON log line: `@timestamp`, `severity` (not `level`; the
+numeric `level_value` dropped), `message`, `logger_name`, `thread_name` and `exception`, with the
+MDC written inline and whitelisted to exactly `service` / `environment` / `traceId` / `spanId` /
+`correlationId` — any other MDC key is dropped, never written. `CorrelationIdFilter` seeds a
+per-request `correlationId` (the active `traceId` when tracing is wired, a fresh UUID otherwise) and
+removes it in a `finally` block. `logback-spring.xml` points at this encoder — the single place the
+field contract lives; do not configure per-module encoders.
+
 ## Secret masking (S12-09)
 
 Masking is centralized in `common.SecretRedactor` (S12-09; ADR-020): `observability.SecretRedactingValueMasker`

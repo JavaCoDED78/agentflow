@@ -12,8 +12,44 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-06 — Grafana provisioning as code](#s13-06-grafana-provisioning-as-code)
 - [S13-07 — Loki as code](#s13-07-loki-as-code)
 - [S13-08 — Tempo as code](#s13-08-tempo-as-code)
+- [S13-09 — standardized JSON logs](#s13-09-standardized-json-logs)
 
 ---
+
+## S13-09 — standardized JSON logs
+
+### What changed
+
+The JSON log line is now a single, pinned contract: a dedicated encoder owns the shape, the whitelisted MDC keys and the correlation id plumbing, and the wire path stays masked end to end.
+
+- **`StructuredJsonLogstashEncoder`** (new, `observability`) — extends the logback logstash encoder with exactly the S13-09 shape: `@timestamp` (unchanged), `severity` (the level rendered as `severity`, not `level` — the vocabulary the [`standards.md`](../observability/standards.md) log-line contract uses), the redundant numeric `level_value` dropped, `@version` kept, and `message`/`logger_name`/`thread_name`/`exception` unchanged. The MDC is written **inline, whitelisted** — only `service`, `environment`, `traceId`, `spanId`, `correlationId` — so a stray high-cardinality id put into the MDC by any caller can never reach a log line.
+- **`CorrelationIdFilter`** (new, `observability`) — a `OncePerRequestFilter` that seeds `correlationId` into the MDC for the duration of one HTTP request: the active `traceId` when tracing is wired (a request that already carries a trace id reports exactly that one), a fresh UUID otherwise, and removed in a `finally` block even when the chain throws — it never leaks into unrelated requests on a thread pool. The filter is observability-only: it never reads identity or business state and never changes what a controller does.
+- **`GlobalExceptionHandler`** — `correlationId()` now reads the filter-seeded `correlationId` first (then `traceId`, then a fresh UUID), so the response's `correlation_id` is the same id that appears in every log line of the request. This is the one cross-cutting call site that consumes the correlation id; it is unchanged otherwise.
+- **`logback-spring.xml`** — now points at the dedicated encoder (the single place the JSON log field contract lives — do not configure ad-hoc encoders per module; change the encoder here). Masking stays on the wire path: `MaskingJsonGeneratorDecorator` + `SecretRedactingValueMasker`, so `Bearer`/JWT/api-key/AWS-key/prompt/document-body shapes never reach stdout/Loki, canary-tested.
+
+### Why
+
+Until now the encoder shape was the logback-logstash default (`level`, `level_value`, and every MDC key written inline — an unbounded set), and every request's logs could not be found by one id: `traceId`/`spanId`/`correlationId` were only written when the tracing bridge populated them, and `correlationId` did not exist as a first-class log field at all. S13-09 closes that: the whitelisted, dedicated encoder fixes the shape, and the filter gives every request one id — so a log line of a request can be found in Loki/console logs by exactly that id.
+
+### Acceptance
+
+A log line of a request carries `@timestamp`, `severity`, `service`, `environment`, `correlationId` and (when tracing is wired) `traceId`/`spanId`; the canary secret is masked. A stray high-cardinality MDC key never reaches the line.
+
+### Verification
+
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.observability.*' --tests 'com.example.agentflow.common.error.*' --rerun-tasks` — green, JUnit XML verified fresh: `LoggingJsonFormatTest` (2 — structured fields incl. `severity`/`@timestamp`/`thread_name`, the exactly five whitelisted MDC keys inline with tenant/run/user ids dropped, secrets masked; the canary fixture `secrets/canary-openai-key.txt` never reaches the line), `CorrelationIdFilterTest` (5 — traceId-derived, fresh-UUID fallback, blank-traceId fallback, `finally` cleanup on exception, no overwrite of a stale id), `GlobalExceptionHandlerTest` (5 — correlation-id response header), `OtlpTracingExportTest`/`PrometheusMetricsEndpointTest`/`SecretRedactingValueMaskerTest` unchanged and green.
+
+### Documentation
+
+- `apps/agentflow-app/src/main/java/com/example/agentflow/observability/StructuredJsonLogstashEncoder.java` (new), `CorrelationIdFilter.java` (new).
+- `apps/agentflow-app/src/main/resources/logback-spring.xml` (the encoder swap).
+- `apps/agentflow-app/src/test/java/com/example/agentflow/observability/LoggingJsonFormatTest.java`, `CorrelationIdFilterTest.java` (new).
+- `apps/agentflow-app/src/main/java/com/example/agentflow/common/error/GlobalExceptionHandler.java` (correlation-id precedence).
+- `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+The Kafka trace-propagation half (trace context over outbox/messaging) is S13-10; the metrics half is S13-11/S13-12. The encoder whitelist and the filter are per-request, in-process — nothing about them crosses a Kafka boundary yet.
 
 ## S13-01 — telemetry conventions
 
