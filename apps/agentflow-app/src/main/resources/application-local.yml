@@ -103,6 +103,15 @@ management:
       group:
         cache:
           include: redis
+  # OTLP trace exporter (S13-03): the local observability stack's Collector (S13-04, the
+  # `observability` compose profile) listens on the standard OTLP port. The common endpoint is
+  # used deliberately — Boot appends the signal-specific path (/v1/traces for traces). The
+  # localhost default is local development only and never ships to a real profile;
+  # AGENTFLOW_OTLP_ENDPOINT overrides it, and the kubernetes profile points at the in-cluster
+  # Collector service in the deployment sprint (S15).
+  opentelemetry:
+    otlp:
+      endpoint: ${AGENTFLOW_OTLP_ENDPOINT:http://localhost:4318}
 
 # Log levels for the local profile (S01-19). The JSON layout lives in
 # logback-spring.xml; this only picks the level per logger. Our code runs at

@@ -57,7 +57,9 @@ class GlobalExceptionHandlerTest {
     assertThat(json.get("type").asString()).isEqualTo("about:blank");
     assertThat(json.get("instance").asString()).isEqualTo("/api/v1/test/valid");
     assertThat(json.get("detail").asString()).contains("name");
-    assertThat(json.get("correlation_id").asString()).matches("[0-9a-f-]{36}");
+    // The correlation id is the request's trace id once tracing is wired (S13-03) — a 32-hex
+    // OTel trace id — or a fresh 36-char UUID when no trace context exists.
+    assertThat(json.get("correlation_id").asString()).matches("([0-9a-f]{32}|[0-9a-f-]{36})");
   }
 
   @Test
@@ -100,7 +102,9 @@ class GlobalExceptionHandlerTest {
     assertThat(json.get("status").asInt()).isEqualTo(500);
     assertThat(json.get("error_class").asString()).isEqualTo("internal");
     assertThat(json.get("detail").asString()).isEqualTo("The request is invalid");
-    assertThat(json.get("correlation_id").asString()).matches("[0-9a-f-]{36}");
+    // The correlation id is the request's trace id once tracing is wired (S13-03) — a 32-hex
+    // OTel trace id — or a fresh 36-char UUID when no trace context exists.
+    assertThat(json.get("correlation_id").asString()).matches("([0-9a-f]{32}|[0-9a-f-]{36})");
     assertThat(body).doesNotContain("postgres");
     assertThat(body).doesNotContain("connection failed");
   }
