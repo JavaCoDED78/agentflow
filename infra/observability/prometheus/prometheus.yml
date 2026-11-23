@@ -1,0 +1,50 @@
+# AgentFlow Prometheus (S13-05).
+#
+# The metrics store of the local observability stack, configuration as code: the
+# container mounts this file read-only and boots from it; after the container is
+# removed, `docker compose up` restores the exact configuration from Git — there
+# is nothing to set up by hand. Retention and scrape intervals are versioned
+# here and in the compose service command (infra/compose/docker-compose.yml).
+#
+# Targets (the plan's S13-05 surface):
+#   - agentflow-api      — the application's /actuator/prometheus scrape endpoint
+#                          (S13-02). The endpoint is behind the default-deny
+#                          secured chain, so the scrape carries a bearer token
+#                          read from /etc/prometheus/scrape/token (mounted by
+#                          compose; a placeholder by default, a real short-lived
+#                          Keycloak JWT after scripts/mint-scrape-token.sh).
+#                          Prometheus re-reads the token file before every
+#                          scrape, so refreshing the file is enough — no reload.
+#                          The app runs on the host (`bootRun`), hence
+#                          host.docker.internal; the target is simply DOWN while
+#                          the app is not running.
+#   - otel-collector     — the Collector's own metrics, exposed by the prometheus
+#                          telemetry reader on :8888 (infra/observability/
+#                          otel-collector/collector.yaml). Scraped over the
+#                          internal observability network; unauthenticated, like
+#                          every internal telemetry port of the local stack.
+#
+# Label discipline (infra/AGENTS.md, docs/observability/standards.md): only
+# bounded labels; no tenant/run/user/document IDs anywhere. external_labels are
+# configuration-fixed, never taken from a request.
+
+global:
+  # One scrape every 15 s: dense enough for local dashboards/alerts, sparse
+  # enough that the TSDB stays small on the 7-day retention.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+scrape_configs:
+  - job_name: agentflow-api
+    metrics_path: /actuator/prometheus
+    # Bearer token file, re-read before every scrape (verified on the pinned
+    # image). Never inline the token in this file: it must not land in Git.
+    bearer_token_file: /etc/prometheus/scrape/token
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8888']

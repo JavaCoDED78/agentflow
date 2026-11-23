@@ -95,3 +95,15 @@ service:
     # visible without per-request noise.
     logs:
       level: warn
+    # The collector's own metrics, scraped by the dedicated Prometheus (S13-05,
+    # job otel-collector) over the observability network. `detailed` keeps
+    # per-receiver/exporter counts — the labels are component ids (bounded),
+    # never tenant/run/user/document IDs.
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

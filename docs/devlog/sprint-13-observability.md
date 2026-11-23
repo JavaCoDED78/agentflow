@@ -8,6 +8,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-02 — Micrometer/Actuator metrics](#s13-02--micrometeractuator-metrics)
 - [S13-03 — OTLP tracing exporter](#s13-03-otlp-tracing-exporter)
 - [S13-04 — OTel Collector config as code](#s13-04-otel-collector-config-as-code)
+- [S13-05 — Prometheus as code](#s13-05-prometheus-as-code)
 
 ---
 
@@ -127,6 +128,48 @@ S13-01 assigned traces to one home (OpenTelemetry → OTLP → Collector → Tem
 ### Scope / follow-up
 
 Traces-only: the Collector, Prometheus, Grafana, Loki and Tempo services (S13-04…S13-08), the workflow/messaging/AI-RAG trace attributes (`agentflow.operation`, `agentflow.step.*`, `agentflow.ai.*` — S13-11…S13-13), the correlation/causation attributes on the outbox/worker hops and the cardinality/privacy check (S13-19) remain scheduled. The kubernetes profile's OTLP endpoint lands with the in-cluster Collector (S15).
+
+## S13-05 — Prometheus as code
+
+### What changed
+
+The local observability stack gains a dedicated, repo-owned Prometheus — the metrics store of the split-stack target (S13-04 → S13-05…S13-08) is now real for metrics.
+
+- **Config** — new [`infra/observability/prometheus/prometheus.yml`](../../infra/observability/prometheus/prometheus.yml), mounted read-only: 15 s scrape/evaluation intervals, `external_labels.environment: local` (bounded, configuration-fixed) and two jobs — `agentflow-api` (the application's `/actuator/prometheus`, S13-02 contract; the endpoint sits behind the default-deny secured chain, so the job carries a bearer token from `/etc/prometheus/scrape/token`) and `otel-collector` (the Collector's own metrics, exposed by a new `prometheus` telemetry reader on :8888 in [`collector.yaml`](../../infra/observability/otel-collector/collector.yaml) — `detailed` level, bounded component-id labels, internal network only).
+- **Compose** — [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) gains the `prometheus` service: image pinned by multi-arch index digest (`prom/prometheus:v3.6.0` → `sha256:76947e…`), versioned retention as command flags (`--storage.tsdb.retention.time=7d`, `--storage.tsdb.retention.size=2GB` — Prometheus keeps retention a startup flag, not a config key), TSDB on the `agentflow-prometheus` named volume, healthcheck via the image's busybox `wget` against `/-/healthy`, a `host-gateway` alias so the host-running app resolves on every engine. Per the S13-04 port-precedent (the collector took over the host OTLP ports), the dedicated service now owns host :9090 and lgtm's bundled Prometheus stops being host-published — Grafana keeps using it internally until S13-06/07/08 swap datasources and collector exporters.
+- **Scrape token** — [`scripts/mint-scrape-token.sh`](../../scripts/mint-scrape-token.sh) mints a short-lived JWT (Client Credentials, `agentflow-service` m2m client, same local-only secret default as the Keycloak service) and rewrites the mounted token file; Prometheus re-reads `bearer_token_file` before every scrape (verified on the pinned image with a header-echo probe), so the 300 s Keycloak token TTL only needs a file refresh — `--watch` loops at 240 s. The committed [`scrape/token`](../../infra/observability/prometheus/scrape/token) is a clearly-marked placeholder, not a valid token; a real token is never committed.
+- **Smoke** — `scripts/smoke-local.sh` now expects `agentflow-otel-collector` and `agentflow-prometheus` in the `observability`/`full` profiles (the collector expectation was missing since S13-04).
+
+### Why
+
+S13-02 made metrics ship through the Prometheus scrape (never OTLP push) and S13-04 made the Collector the repo-owned OTLP ingress, but the metrics store itself still lived inside the digest-pinned lgtm all-in-one — its scrape config was not this repo's. The plan's S13-05 makes Prometheus configuration as code (`prometheus.yml`, scrape intervals, retention, targets for the API and the Collector, pinned image); standing the dedicated service up now and letting it scrape the app directly turns the S13-02 contract into an observable pipeline while Grafana keeps working off lgtm until S13-06/07/08.
+
+### Verification
+
+Live run, this session, from a clean state:
+
+1. `docker compose config --quiet` — exit 0; collector `validate` on the pinned image — exit 0 with the new telemetry reader.
+2. Observability profile up: `agentflow-prometheus` healthy (wget healthcheck), `agentflow-otel-collector` healthy.
+3. **Acceptance — config restores from Git after container removal.** `docker rm -f agentflow-prometheus` → `docker compose --profile observability up -d` → recreated healthy from the mounted Git config; `/api/v1/targets` lists both jobs; `up{job="otel-collector"} = 1`.
+4. Collector self-metrics scraped over the observability network: `otelcol_process_uptime` / `otelcol_process_memory_rss` / `otelcol_exporter_queue_size` present (bounded labels).
+5. **End-to-end authenticated app scrape** — `core`+`identity` profiles up (PostgreSQL, Keycloak), app on `bootRun` (local profile, real DataSource): `bash scripts/mint-scrape-token.sh` → within one scrape interval `up{job="agentflow-api"} = 1` with `jvm_memory_used_bytes` (6 series), `http_server_requests_seconds_count` (3 series) and `hikaricp_connections` (the DB-pool half the S13-02 test could not pin without a DataSource). Placeholder token restored after the run.
+6. `bash scripts/smoke-local.sh --profile observability` — SMOKE TEST: PASS (all three containers healthy; stack torn down after).
+
+No Java/Gradle change — the compose/config validation, the live runs above and the smoke script are the verification.
+
+### Documentation
+
+- `infra/observability/prometheus/prometheus.yml` (new) — the Prometheus config with the boundary contract in the header comments.
+- `infra/observability/otel-collector/collector.yaml` — the `prometheus` telemetry reader (:8888).
+- [`infra/observability/README.md`](../../infra/observability/README.md) — layout, endpoints (:9090 now the dedicated Prometheus), configuration, the scrape-token section, the S13-05 acceptance recipe (the S13-04 backend smoke is kept).
+- [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) — the new service, the lgtm :9090 change and updated comments.
+- Root [`README.md`](../../README.md) — port table gains Prometheus :9090.
+- `scripts/smoke-local.sh` — observability/full expectations.
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Grafana provisioning (datasources pointing at the dedicated Prometheus, dashboards) is S13-06; dedicated Loki/Tempo and the collector exporter swap are S13-07/08. Until then, lgtm's bundled Prometheus serves Grafana internally and receives the OTLP-carried app metrics; the dedicated Prometheus already owns the canonical scrape of the app and the collector. The kubernetes scrape token / NetworkPolicy surface is S15.
 
 ## S13-04 — OTel Collector config as code
 
