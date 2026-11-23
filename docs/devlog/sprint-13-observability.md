@@ -11,6 +11,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-05 — Prometheus as code](#s13-05-prometheus-as-code)
 - [S13-06 — Grafana provisioning as code](#s13-06-grafana-provisioning-as-code)
 - [S13-07 — Loki as code](#s13-07-loki-as-code)
+- [S13-08 — Tempo as code](#s13-08-tempo-as-code)
 
 ---
 
@@ -175,6 +176,50 @@ No Java/Gradle change — the compose/config validation and the live runs above 
 ### Scope / follow-up
 
 Trace and metric fan-out to dedicated services remains S13-08 (Tempo) and S13-07/08 (collector exporter swap for traces/metrics). The Grafana alert rules and dashboards stay on the Git-provisioned provider; the Loki datasource is the URL half of the swap the S13-06 promise made. The kubernetes log pipeline (in-cluster Loki, S15) reuses the same file layout.
+
+## S13-08 — Tempo as code
+
+### What changed
+
+The local observability stack gains a dedicated, repo-owned Tempo — the trace store of the split-stack target — ingesting traces over the OTLP endpoint, so the trace half of the split-stack move becomes repo-owned configuration, exactly like Prometheus did.
+
+- **Config** — new [`infra/observability/tempo/tempo.yaml`](../../infra/observability/tempo/tempo.yaml), mounted read-only and booting the single-binary Tempo (distributor, ingester, querier, compactor): the OTLP/gRPC + HTTP receivers (`0.0.0.0:4317` / `0.0.0.0:4318`), local blocks + WAL on the `agentflow-tempo` named volume (`/var/tempo/blocks`, `/var/tempo/wal`), `compactor.compaction.block_retention: 168h` (7-day), `compaction` on both block stores; replication factor 1 / in-memory ring (single-instance local stack).
+- **Sampling policy** — head sampling at the app (S13-03), unchanged: `management.tracing.sampling.probability: 1.0` boots the local stack at 100% of requests (Boot's default is 10%), the collector adds **no** sampling processor, and Tempo stores everything it receives. The kubernetes profile (S15) is the only place that lowers the rate when real volume demands it.
+- **Compose** — new `tempo` service in [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml): `grafana/tempo:2.9.2` pinned by multi-arch index digest (`sha256:3f0825e1…9fb74b40`), `command: ["-config.file=/etc/tempo/tempo.yaml"]`, host :3200 (the lgtm bundled Tempo no longer host-publishes — the dedicated service owns the port), `agentflow-tempo` named volume, healthcheck via the binary's own `-config.verify=true` (distroless, no shell), `logging: *shared-logging`.
+- **Collector** — the traces pipeline exports through a new `otlp_grpc/tempo` exporter (`tempo:4317`, `tls.insecure: true`); redaction/attributes/batch unchanged. **Metrics still fan out to the lgtm bundled collector** (the app-pushed OTLP metrics pipeline is the S13-04 contract, unchanged).
+- **Grafana** — the `tempo` datasource UID (stable contract) now points at `http://tempo:3200` — the URL half of the S13-06/08 swap; only the URL moved. Grafana's `agentflow-prometheus` datasource exemplar destinations (`tracesToLogsV2`/`nodeGraph`/`search`/`serviceMap`) are unchanged; the `loki` URL from S13-07 stays.
+- **Smoke** — `scripts/smoke-local.sh` expects `agentflow-tempo` in the `observability`/`full` profiles.
+
+### Why
+
+S13-05–S13-07 gave the stack repo-owned metrics/logs stores, but the traces still lived inside the lgtm all-in-one image — the collector's traces pipeline fanned out to it, so the trace store was nobody's code. S13-08 closes the split-stack target: the dedicated Tempo, the OTLP/gRPC exporter, the 7-day retention and the Git-provisioned Grafana datasource together make the whole observability pipeline (Prometheus → metrics, Loki → logs, Tempo → traces) configuration this repository owns.
+
+### Verification
+
+Live run, this session, from a **wiped state** (`docker compose --profile observability down -v` — drops the `agentflow-tempo`, `agentflow-loki`, `agentflow-prometheus` and `agentflow-observability` volumes — then `up -d`). This is the acceptance clean-instance scenario.
+
+1. `docker compose config --quiet` — exit 0.
+2. Clean instance: `agentflow-tempo` + `agentflow-otel-collector` + `agentflow-observability` + `agentflow-prometheus` + `agentflow-loki` all `healthy`.
+3. `docker inspect agentflow-tempo --format '{{json .State.Health}}'` — healthy; the healthcheck re-validates the mounted config with `-config.verify=true`.
+4. A probe OTLP/JSON trace posted to `localhost:4318/v1/traces` (via the collector's traces pipeline) carrying `service.name=agentflow-app`, `deployment.environment=local`, `correlation.id`, a current timestamp and `service.name=agentflow-app` is visible via the dedicated Tempo: `GET localhost:3200/api/search?tags=service.name=agentflow-app` returns the trace with its trace ID, root span (`post /api/v1/workflows`) and 5 s duration.
+5. Grafana end-to-end: the `tempo` datasource proxies the same search — `GET localhost:3000/api/datasources/proxy/uid/tempo/api/search?tags=service.name=agentflow-app` returns the trace, no manual datasource setup; `GET /api/datasources/uid/tempo` is provisioned with `http://tempo:3200` (editable: false).
+6. `bash scripts/smoke-local.sh --profile observability` — SMOKE TEST: PASS (all five observability-profile containers healthy from a clean state).
+
+No Java/Gradle change — the compose/config validation and the live runs above are the verification.
+
+### Documentation
+
+- [`infra/observability/tempo/tempo.yaml`](../../infra/observability/tempo/tempo.yaml) (new).
+- [`infra/observability/README.md`](../../infra/observability/README.md) — layout row, the why-lgtm paragraph, the S13-08 configuration bullet, the endpoints table, the S13-08 acceptance section.
+- [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) — the `tempo` service, the `agentflow-tempo` volume, the collector exporter comment, the lgtm service/port comments.
+- [`infra/observability/otel-collector/collector.yaml`](../../infra/observability/otel-collector/collector.yaml) — the traces pipeline (`otlp_grpc/tempo`) and header.
+- [`infra/observability/grafana/provisioning/datasources/agentflow.yaml`](../../infra/observability/grafana/provisioning/datasources/agentflow.yaml) — the `tempo` URL (`http://tempo:3200`).
+- [`scripts/smoke-local.sh`](../../scripts/smoke-local.sh) — expected service + display entry.
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Metrics fan-out to a dedicated Prometheus-over-OTLP remains future work (the app-pushed OTLP metrics pipeline is the S13-04 contract — the dedicated Prometheus already scrapes the app; the bundled lgtm collector receives the app-pushed stream). The kubernetes pipeline (in-cluster Tempo, S15) reuses the same file layout.
 
 ## S13-06 — Grafana provisioning as code
 
