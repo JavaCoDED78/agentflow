@@ -287,14 +287,15 @@ services:
     profiles: ["ai-local", "full"]
 
   # ---------------------------------------------------------------------------
-  # Observability stack (S01-16, ingress S13-04): grafana/otel-lgtm bundles the
-  # OpenTelemetry Collector, Prometheus (metrics), Loki (logs), Tempo (traces) and
-  # Grafana in a single, pinned image — the officially recommended backend for local
-  # dev/demo. The Loki exporter is absent from the standard contrib collector and
-  # Loki exposes no OTLP ingest, so the all-in-one lgtm image keeps the stack fully
-  # working; a production deployment would run these as separate services (deployment
-  # sprint). Data lives on one named volume under /data (Prometheus, Loki,
-  # Grafana, Tempo all persist there).
+  # Observability stack (S01-16, ingress S13-04, Prometheus S13-05):
+  # grafana/otel-lgtm bundles the OpenTelemetry Collector, Prometheus (metrics),
+  # Loki (logs), Tempo (traces) and Grafana in a single, pinned image — the
+  # officially recommended backend for local dev/demo. The Loki exporter is
+  # absent from the standard contrib collector and Loki exposes no OTLP ingest,
+  # so the all-in-one lgtm image keeps the stack fully working; a production
+  # deployment would run these as separate services (deployment sprint). Data
+  # lives on one named volume under /data (Prometheus, Loki, Grafana, Tempo all
+  # persist there).
   #
   # Since S13-04 the standalone `otel-collector` service below is the OTLP ingress:
   # the app exports to localhost:4317/:4318 (owned by the collector), the collector
@@ -302,7 +303,13 @@ services:
   # this container's bundled collector, which fans the signals out to the three
   # stores. Grafana (:3000) exposes all three as datasources. The lgtm OTLP ports
   # are no longer host-published — only the standalone collector accepts OTLP from
-  # the host; S13-05/07/08 will split Prometheus/Loki/Tempo out of lgtm entirely.
+  # the host; S13-07/08 will split Loki/Tempo out of lgtm entirely.
+  #
+  # Since S13-05 the host-published :9090 belongs to the dedicated, repo-owned
+  # `prometheus` service below (S13-02 metrics ship through the Prometheus scrape,
+  # never OTLP push). lgtm's bundled Prometheus keeps serving Grafana internally
+  # (localhost inside the container) until S13-06/07/08 swap the datasources and
+  # the collector exporter endpoints to the dedicated backends.
   # ---------------------------------------------------------------------------
   observability:
     image: grafana/otel-lgtm@sha256:57b5ab1ca6619beb180174e2fccce04762470750669d043f544b4726d0582d07
@@ -314,7 +321,6 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
     ports:
       - "3000:3000"   # Grafana UI (datasources for metrics/logs/traces)
-      - "9090:9090"   # Prometheus direct access (debug)
       - "3100:3100"   # Loki direct access (debug)
       - "3200:3200"   # Tempo direct access (debug)
     volumes:
@@ -331,7 +337,10 @@ services:
   # forwards to the lgtm backends over the observability network. The image is
   # distroless (no shell), so the healthcheck re-validates the mounted config with
   # the collector's own `validate` subcommand; the runtime probe is the
-  # health_check extension on :13133 (see the config's extensions section).
+  # health_check extension on :13133 (see the config's extensions section). The
+  # collector's own metrics are exposed on :8888 (telemetry reader in the config)
+  # and scraped by the dedicated Prometheus (S13-05) over this network — :8888 is
+  # internal-only, never host-published.
   # ---------------------------------------------------------------------------
   otel-collector:
     image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
@@ -358,6 +367,56 @@ services:
     networks: [observability]
     profiles: ["observability", "full"]
 
+  # ---------------------------------------------------------------------------
+  # Prometheus (S13-05): the dedicated, repo-owned metrics store. Configuration
+  # as code — infra/observability/prometheus/prometheus.yml is mounted read-only
+  # and the TSDB lives on a named volume with a versioned 7-day retention, so a
+  # removed container comes back from Git with no manual setup. Scrapes the
+  # application's /actuator/prometheus (bearer token from the mounted token
+  # file; placeholder by default, scripts/mint-scrape-token.sh mints a real
+  # short-lived JWT — Prometheus re-reads the file before every scrape) and the
+  # otel-collector's own metrics on :8888 over the observability network. The
+  # image is pinned by multi-arch index digest; the healthcheck uses the
+  # busybox wget shipped in the image against /-/healthy.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus@sha256:76947e7ef22f8a698fc638f706685909be425dbe09bd7a2cd7aca849f79b5f64
+    container_name: agentflow-prometheus
+    restart: unless-stopped
+    # Retention is versioned here (not in prometheus.yml — Prometheus keeps it
+    # a startup flag): 7 days of local history, capped on disk.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=2GB
+    ports:
+      - "9090:9090"   # Prometheus UI / HTTP API (debug; the Grafana datasource in S13-06)
+    # The app runs on the host (`bootRun`), so the agentflow-api scrape target
+    # resolves the host from inside the container; host-gateway keeps this
+    # working on Linux engines too (a no-op alias on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Read-only: the container must never rewrite its own configuration.
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Bearer token for the agentflow-api scrape. The committed placeholder is
+      # NOT a valid token (the target is DOWN/401 until a real one is minted);
+      # never overwrite this file with a real token and commit it — the mint
+      # script refreshes the local file in place and Prometheus picks the new
+      # token up on the next scrape.
+      - ../observability/prometheus/scrape/token:/etc/prometheus/scrape/token:ro
+      - agentflow-prometheus:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *shared-logging
+    networks: [observability]
+    profiles: ["observability", "full"]
+
 volumes:
   agentflow-pgdata:
     name: agentflow-pgdata
@@ -375,6 +434,8 @@ volumes:
     name: agentflow-ollama
   agentflow-observability:
     name: agentflow-observability
+  agentflow-prometheus:
+    name: agentflow-prometheus
 
 networks:
   # Shared app/data network — every service joins this so `full`-profile services
@@ -389,11 +450,13 @@ networks:
   messaging:
     name: agentflow-messaging
     driver: bridge
-  # Observability internal network — the otel-collector (OTLP ingress) and the lgtm
-  # backends interconnect here; the collector forwards to lgtm's bundled collector on
-  # :4317 over this network. Host-published surfaces: collector :4317/:4318/:13133,
-  # lgtm :3000/:9090/:3100/:3200. When the app is containerized (deployment sprint) it
-  # joins this network and exports to the collector's :4317 internally.
+  # Observability internal network — the otel-collector (OTLP ingress), the
+  # dedicated prometheus and the lgtm backends interconnect here; the collector
+  # forwards to lgtm's bundled collector on :4317 and prometheus scrapes the
+  # collector's :8888 over this network. Host-published surfaces: collector
+  # :4317/:4318/:13133, prometheus :9090, lgtm :3000/:3100/:3200. When the app
+  # is containerized (deployment sprint) it joins this network and exports to
+  # the collector's :4317 internally.
   observability:
     name: agentflow-observability
     driver: bridge
