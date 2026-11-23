@@ -32,6 +32,10 @@ adapts that single shared utility to the logback `ValueMasker` contract it is gi
 and can never drift apart. `observability` does not own the redaction rules — it only wires the
 shared utility into the encoder.
 
+## Trace-context builder (S13-10)
+
+The one trace-context *builder* consumed outside the messaging boundary — `MessagingTracing` (`parentContext` / `startSpan` / `currentTraceparent`) — lives in `messaging.application`, where the producer (`KafkaMessageDeliverer`) and the consumer workers meet; it is a messaging-boundary helper, not an `observability` export. The `observability` module owns the conventions (`docs/observability/standards.md`, S13-01) and the future meter catalogue, not the span-building code.
+
 ## Rules
 
 - No business logic; only cross-cutting telemetry helpers.

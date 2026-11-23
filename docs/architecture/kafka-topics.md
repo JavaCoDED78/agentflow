@@ -227,6 +227,16 @@ is routing/correlation only — never an authorization source (invariant 1).
 
 ---
 
+## Trace context propagation
+
+Every event out of the outbox now carries the W3C trace-context header end to end, so a trace view shows the API request → outbox publish → worker processing as one trace (`S13-10`). The trace is carried in the record's `traceparent` header — read from the `headers` JSON the producer wrote into the outbox row — never in the envelope `payload` (which stays payload-only, redacted, and bounded) and never in the headers as a secret. Correlation and causation ids travel in the headers too (the producer re-asserts them at publish time), and each leg records them as span attributes.
+
+- **Producer (`KafkaMessageDeliverer`).** The outbox append path (`OutboxService#enqueue`) is the one place a new event enters the pipeline: it threads the active span's W3C `traceparent` into the event's `headers` JSON when the producer did not set one (the HTTP create-run path threads the request traceparent explicitly; every other traced enqueue gets it automatically — e.g. the ingestion worker's `indexed` event queued from its own span). The publish itself runs inside a `KafkaMessageDeliverer#deliver` span parented on that `traceparent` and attributed `correlation_id` / `causation_id` when present; the record carries the headers verbatim — never a secret / never `tenantId`.
+- **Consumer (`DocumentIndexingWorker`, and the other workers).** Each `handle()` runs inside a span (e.g. `DocumentIndexingWorker#handle`) parented on the record's `traceparent` header — the context the producer wrote — never on the consumer's own poll, which groups unrelated work. The span is closed in a `finally` block and records `correlation_id` / `causation_id` as attributes.
+- **The boundary rules.** An explicit `traceparent` in the event's `headers` always wins (the HTTP create-run path always supplies one); a blank payload yields the threaded traceparent; a corrupt payload is left untouched (the deliverer warns and drops it, never silently replaced); a `traceparent` the producer cannot parse is detected and logged, never silently overwritten. Both legs are built on the one shared `MessagingTracing` builder (`messaging.application`) — the same cross-cutting tracer the `observability` module documents (`S13-01`) — never a bespoke per-class propagation scheme, and tenant / run / document ids never appear as span attributes (invariant 9).
+
+---
+
 ## Event and contract versioning
 
 - **Topics and partition keys are versioned** (`topic.vN`). Changing/removing a field,

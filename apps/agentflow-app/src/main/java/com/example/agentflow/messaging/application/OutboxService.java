@@ -2,6 +2,7 @@ package com.example.agentflow.messaging.application;
 
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import com.example.agentflow.messaging.persistence.OutboxEventRepository;
+import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -44,7 +45,41 @@ public class OutboxService {
   @Transactional
   public void enqueue(OutboxEvent event) {
     requireRepository(outboxEventRepository);
-    outboxEventRepository.insert(event);
+    outboxEventRepository.insert(threadTraceContext(event));
+  }
+
+  /**
+   * Thread the active span into the event's {@code headersJson} when the producer did not supply
+   * one (S13-10).
+   *
+   * <p>The HTTP create-run path threads the request traceparent explicitly ({@code RunService});
+   * every other enqueue (the ingestion worker's {@code indexed} event, any event queued from a
+   * traced request without an explicit parent) would otherwise strand the publish/consume legs of
+   * the trace as a fresh root. Threading the current span's W3C traceparent lets the publish span
+   * ({@code KafkaMessageDeliverer#deliver}) chain onto the request &rarr; outbox &rarr; worker
+   * trace. The caller's own traceparent always wins; correlation/causation ids are preserved
+   * verbatim; a corrupt producer payload is left untouched (the deliverer warns and drops it, never
+   * the silent replacement).
+   *
+   * @param event the event to queue
+   * @return the event with the current traceparent folded into its headers, or the event unchanged
+   */
+  private static OutboxEvent threadTraceContext(OutboxEvent event) {
+    String json = event.headersJson();
+    Optional<CorrelationHeaders> parsed = CorrelationHeaders.parse(json);
+    if (parsed.isEmpty() && json != null && !json.isBlank()) {
+      return event; // corrupt producer payload — keep it; the deliverer warns and drops it
+    }
+    CorrelationHeaders headers = parsed.orElse(CorrelationHeaders.of(null, null, null));
+    if (headers.traceparent() != null && !headers.traceparent().isBlank()) {
+      return event; // the caller already threaded a trace context
+    }
+    String current = MessagingTracing.currentTraceparent();
+    if (current == null) {
+      return event; // no active span (background / non-traced context)
+    }
+    return event.withHeadersJson(
+        CorrelationHeaders.of(headers.correlationId(), headers.causationId(), current).toJson());
   }
 
   /**

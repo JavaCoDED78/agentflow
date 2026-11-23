@@ -266,9 +266,11 @@ root `AGENTS.md` dependency rules). The resolution (plan open decision §4.2.3):
 - **`common`** — shared primitives with no business logic: IDs, `Clock`, the
   error taxonomy (`S02-10`), secret redaction. It owns no business table and is
   not an escape route for business rules.
-- **`observability`** — meters, trace attributes, correlation helpers and the
+- **`observability`** — meters, trace attributes, the trace/log conventions and the
   structured JSON logging / secret masking. Owns the metric catalogue and the
-  "no high-cardinality labels" rule.
+  "no high-cardinality labels" rule. (The one trace-context builder consumed across the
+  messaging boundary — `MessagingTracing` — lives in `messaging.application`; the conventions
+  and the catalogue stay here.)
 
 ---
 

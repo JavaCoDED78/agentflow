@@ -87,6 +87,29 @@ public record OutboxEvent(
   }
 
   /**
+   * @return a copy carrying a replaced {@code headersJson} payload (e.g. a trace context threaded
+   *     by the outbox boundary at enqueue time, S13-10).
+   */
+  public OutboxEvent withHeadersJson(String headersJson) {
+    return new OutboxEvent(
+        id,
+        eventId,
+        tenantId,
+        aggregateType,
+        aggregateId,
+        topic,
+        eventKey,
+        payloadJson,
+        headersJson,
+        status,
+        publishAttempts,
+        nextAttemptAt,
+        lastError,
+        createdAt,
+        publishedAt);
+  }
+
+  /**
    * @return a copy marked delivered to the broker and awaiting consumer acknowledgement.
    */
   public OutboxEvent markPublished() {

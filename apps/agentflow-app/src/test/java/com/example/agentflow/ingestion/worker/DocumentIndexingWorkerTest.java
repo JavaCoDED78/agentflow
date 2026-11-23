@@ -17,7 +17,11 @@ import com.example.agentflow.ingestion.application.IngestionStatusDto;
 import com.example.agentflow.messaging.application.InboxConsumeResult;
 import com.example.agentflow.messaging.application.InboxConsumerAction;
 import com.example.agentflow.messaging.application.InboxConsumerService;
+import com.example.agentflow.messaging.application.RecordingSpanExporter;
 import com.example.agentflow.messaging.domain.InboxMessage;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,6 +33,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.internals.RecordHeader;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -175,5 +180,90 @@ class DocumentIndexingWorkerTest {
 
     verify(consumer, never()).commitSync(any(Map.class));
     verify(consumer, never()).seek(any(TopicPartition.class), anyLong());
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void a_record_with_trace_headers_is_processed_inside_a_span_parented_on_them() {
+    String traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    ConsumerRecord<String, String> record = record(0, envelopeJson());
+    record
+        .headers()
+        .add(new RecordHeader("traceparent", traceparent.getBytes(StandardCharsets.UTF_8)));
+    record
+        .headers()
+        .add(new RecordHeader("correlationId", "correlation-1".getBytes(StandardCharsets.UTF_8)));
+    record
+        .headers()
+        .add(new RecordHeader("causationId", "causation-1".getBytes(StandardCharsets.UTF_8)));
+
+    try (RecordingSpanExporter.Fixture fixture = RecordingSpanExporter.fixture()) {
+      worker =
+          new DocumentIndexingWorker(
+              consumer,
+              ingestionService,
+              inboxConsumerService,
+              Duration.ofMillis(1),
+              fixture.provider);
+      when(consumer.poll(any(Duration.class))).thenReturn(batch(record));
+      when(inboxConsumerService.apply(anyString(), any(), any()))
+          .thenAnswer(
+              invocation -> {
+                InboxConsumerAction action = invocation.getArgument(2);
+                action.execute();
+                return InboxConsumeResult.PROCESSED;
+              });
+      when(ingestionService.index(any(), eq(EVENT)))
+          .thenReturn(new IngestionStatusDto(DOCUMENT, "INDEXED", "v1"));
+
+      worker.pollOnce();
+
+      List<SpanData> spans = fixture.spans();
+      assertThat(spans).hasSize(1);
+      SpanData span = spans.get(0);
+      assertThat(span.getName()).isEqualTo("DocumentIndexingWorker#handle");
+      assertThat(span.getParentSpanContext().isValid()).isTrue();
+      assertThat(span.getParentSpanContext().getTraceId())
+          .isEqualTo("4bf92f3577b34da6a3ce929d0e0e4736");
+      assertThat(span.getParentSpanContext().getSpanId()).isEqualTo("00f067aa0ba902b7");
+      assertThat(span.getAttributes().get(AttributeKey.stringKey("correlation_id")))
+          .isEqualTo("correlation-1");
+      assertThat(span.getAttributes().get(AttributeKey.stringKey("causation_id")))
+          .isEqualTo("causation-1");
+    }
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void a_record_without_trace_headers_produces_a_root_span_without_attributes() {
+    try (RecordingSpanExporter.Fixture fixture = RecordingSpanExporter.fixture()) {
+      worker =
+          new DocumentIndexingWorker(
+              consumer,
+              ingestionService,
+              inboxConsumerService,
+              Duration.ofMillis(1),
+              fixture.provider);
+      when(consumer.poll(any(Duration.class))).thenReturn(batch(record(0, envelopeJson())));
+      when(inboxConsumerService.apply(anyString(), any(), any()))
+          .thenAnswer(
+              invocation -> {
+                InboxConsumerAction action = invocation.getArgument(2);
+                action.execute();
+                return InboxConsumeResult.PROCESSED;
+              });
+      when(ingestionService.index(any(), eq(EVENT)))
+          .thenReturn(new IngestionStatusDto(DOCUMENT, "INDEXED", "v1"));
+
+      worker.pollOnce();
+
+      List<SpanData> spans = fixture.spans();
+      assertThat(spans).hasSize(1);
+      SpanData span = spans.get(0);
+      assertThat(span.getName()).isEqualTo("DocumentIndexingWorker#handle");
+      assertThat(span.getParentSpanContext().isValid()).isFalse();
+      assertThat(span.getAttributes().get(AttributeKey.stringKey("correlation_id"))).isNull();
+      assertThat(span.getAttributes().get(AttributeKey.stringKey("causation_id"))).isNull();
+    }
   }
 }
