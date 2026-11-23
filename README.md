@@ -124,6 +124,7 @@ profile for `DEBUG` logging:
 | Ollama (local LLM) | 11434 | ai-local |
 | Observability (Grafana) | 3000 | observability |
 | Observability (Prometheus) | 9090 | observability |
+| Observability (Loki) | 3100 | observability |
 | Observability (OTLP gRPC / HTTP, otel-collector ingress) | 4317 / 4318 | observability |
 | Observability (collector health check) | 13133 | observability |
 

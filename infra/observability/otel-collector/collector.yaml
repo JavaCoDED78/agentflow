@@ -16,12 +16,14 @@
 #   - no tenant/run/user/document identifiers are added anywhere: the collector only
 #     removes attributes, it never invents them.
 #
-# Backend wiring: the split-stack target (S13-05…S13-08) is Prometheus (metrics), Loki
-# (logs) and Tempo (traces) as dedicated services. Until those land, all three pipelines
-# export to the lgtm all-in-one's bundled collector, which accepts OTLP on :4317 over the
-# observability network and distributes to its own Prometheus/Loki/Tempo — see
-# ../README.md. Swapping the exporters for the dedicated backends is a one-line change
-# per pipeline below.
+# Backend wiring: the split-stack target (S13-05…S13-08) is Prometheus (metrics,
+# S13-05), Loki (logs, S13-07) and Tempo (traces, S13-08) as dedicated services.
+# Since S13-07 the logs pipeline exports to the dedicated Loki over its native
+# OTLP endpoint (/otlp/v1/logs) via the otlphttp exporter — the contrib
+# collector ships no loki exporter (removed in the 0.165 line), so native OTLP
+# ingestion is the supported path. Traces and metrics still fan out to the lgtm
+# all-in-one's bundled collector until S13-08 — see ../README.md. Swapping the
+# traces exporter for the dedicated Tempo is a one-line change below.
 
 extensions:
   # Liveness/readiness probe endpoint (compose healthcheck, orchestrator probes, smoke scripts).
@@ -67,9 +69,18 @@ processors:
     send_batch_max_size: 16384
 
 exporters:
-  # Local backends via the lgtm all-in-one (see the header): one OTLP/gRPC exporter
-  # carries traces, metrics and logs; S13-05/07/08 replace it with the dedicated
-  # prometheusremotewrite / otlp_http(loki) / otlp_http(tempo) exporters per pipeline.
+  # Dedicated Loki (S13-07): logs over the native OTLP endpoint. Loki owns the
+  # label/structured-metadata split (its loki.yaml otlp_config keeps only the
+  # two bounded identity attributes as index labels), so the exporter sends
+  # attributes verbatim — the collector only removes attributes (redaction
+  # above), it never rewrites them into labels here.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+  # Local backends via the lgtm all-in-one (see the header): one OTLP/gRPC
+  # exporter carries traces and metrics until S13-08 replaces the traces
+  # half with the dedicated Tempo.
   otlp_grpc/lgtm:
     endpoint: observability:4317
     tls:
@@ -89,7 +100,7 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, attributes/redaction, batch]
-      exporters: [otlp_grpc/lgtm]
+      exporters: [otlp_http/loki]
   telemetry:
     # The collector's own logs: warn keeps exporter errors (e.g. a backend restart)
     # visible without per-request noise.
