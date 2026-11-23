@@ -41,6 +41,7 @@ declare -A SERVICE_DISPLAY=(
   [agentflow-observability]="Observability (Grafana)|3000"
   [agentflow-otel-collector]="OTel Collector (OTLP ingress)|4317/4318"
   [agentflow-prometheus]="Prometheus|9090"
+  [agentflow-loki]="Loki|3100"
 )
 
 usage() {
@@ -55,8 +56,8 @@ expected_services() {
     messaging)     echo "agentflow-kafka" ;;
     identity)      echo "agentflow-keycloak" ;;
     ai-local)      echo "agentflow-ollama" ;;
-    observability) echo "agentflow-otel-collector agentflow-observability agentflow-prometheus" ;;
-    full)          echo "agentflow-postgres agentflow-redis agentflow-garage agentflow-kafka agentflow-keycloak agentflow-ollama agentflow-otel-collector agentflow-observability agentflow-prometheus" ;;
+    observability) echo "agentflow-otel-collector agentflow-observability agentflow-prometheus agentflow-loki" ;;
+    full)          echo "agentflow-postgres agentflow-redis agentflow-garage agentflow-kafka agentflow-keycloak agentflow-ollama agentflow-otel-collector agentflow-observability agentflow-prometheus agentflow-loki" ;;
     *)
       echo "error: unknown profile '$PROFILE' (choose core, messaging, identity, ai-local, observability or full)" >&2
       exit 2

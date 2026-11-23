@@ -299,17 +299,20 @@ services:
   #
   # Since S13-04 the standalone `otel-collector` service below is the OTLP ingress:
   # the app exports to localhost:4317/:4318 (owned by the collector), the collector
-  # redacts/batches/memory-limits and forwards over the observability network to
-  # this container's bundled collector, which fans the signals out to the three
-  # stores. Grafana (:3000) exposes all three as datasources. The lgtm OTLP ports
+  # redacts/batches/memory-limits and forwards over the observability network:
+  # traces/metrics to this container's bundled collector, logs to the dedicated
+  # loki service (S13-07). Grafana (:3000) exposes all three as datasources. The lgtm OTLP ports
   # are no longer host-published — only the standalone collector accepts OTLP from
-  # the host; S13-07/08 will split Loki/Tempo out of lgtm entirely.
+  # the host; S13-08 will split Tempo out of lgtm as well.
   #
   # Since S13-05 the host-published :9090 belongs to the dedicated, repo-owned
   # `prometheus` service below (S13-02 metrics ship through the Prometheus scrape,
-  # never OTLP push). lgtm's bundled Prometheus keeps serving Grafana internally
-  # (localhost inside the container) until S13-06/07/08 swap the datasources and
-  # the collector exporter endpoints to the dedicated backends.
+  # never OTLP push). Since S13-07 the same applies to :3100 — the dedicated
+  # `loki` service owns it, and the collector's logs pipeline no longer touches
+  # this container's bundled Loki at all. lgtm's bundled Prometheus keeps
+  # serving the OTLP-carried metrics internally (localhost inside the container)
+  # until S13-08 swaps the collector exporter endpoints to the dedicated
+  # backends.
   #
   # Since S13-06 Grafana itself is provisioned from Git
   # (infra/observability/grafana/, mounted read-only): datasources, the dashboard
@@ -333,8 +336,7 @@ services:
       GF_PATHS_PERMITTED_PROVISIONING_PATHS: /etc/grafana/provisioning|/etc/grafana/dashboards
     ports:
       - "3000:3000"   # Grafana UI (datasources for metrics/logs/traces)
-      - "3100:3100"   # Loki direct access (debug)
-      - "3200:3200"   # Tempo direct access (debug)
+      - "3200:3200"   # Tempo direct access (debug; S13-08 moves it to a dedicated service)
     volumes:
       - agentflow-observability:/data
       # Read-only: the container must never rewrite its own provisioning.
@@ -349,7 +351,9 @@ services:
   # configured entirely from Git (infra/observability/otel-collector/collector.yaml,
   # mounted read-only over the image default). Receives OTLP on :4317 (gRPC) /
   # :4318 (HTTP), enforces the memory limiter / redaction / batch contract and
-  # forwards to the lgtm backends over the observability network. The image is
+  # exports over the observability network: logs to the dedicated loki service
+  # (S13-07, native OTLP endpoint), traces/metrics to the lgtm backends until
+  # S13-08. The image is
   # distroless (no shell), so the healthcheck re-validates the mounted config with
   # the collector's own `validate` subcommand; the runtime probe is the
   # health_check extension on :13133 (see the config's extensions section). The
@@ -378,6 +382,44 @@ services:
       start_period: 10s
     depends_on:
       - observability
+    logging: *shared-logging
+    networks: [observability]
+    profiles: ["observability", "full"]
+
+  # ---------------------------------------------------------------------------
+  # Loki (S13-07): the dedicated, repo-owned log store. Configuration as code —
+  # infra/observability/loki/loki.yaml is mounted read-only and single-binary
+  # Loki boots from it; chunks and the TSDB index live on the agentflow-loki
+  # named volume with a 7-day retention (matching the dedicated Prometheus).
+  # Ingest is the native OTLP endpoint (/otlp/v1/logs): the otel-collector's
+  # otlphttp exporter posts logs (the contrib collector ships no loki exporter
+  # in the 0.165 line). The label contract is enforced Loki-side
+  # (limits_config.otlp_config): only service.name / deployment.environment are
+  # index labels; every other attribute lands in per-entry structured metadata,
+  # so tenant/run/user/document IDs can never become index labels. The image is
+  # pinned by multi-arch index digest and distroless (no shell), so the
+  # healthcheck re-validates the mounted config with the binary's own
+  # -verify-config — the same pattern as the otel-collector service.
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki@sha256:92bd5700577b6640235820c49ab454fbd792675ba8f4898ac56d522058a88389
+    container_name: agentflow-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100"   # Loki HTTP API (debug; the Grafana Loki datasource over the observability network)
+    volumes:
+      # Read-only: the container must never rewrite its own configuration.
+      - ../observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - agentflow-loki:/loki
+    healthcheck:
+      # Distroless image: no shell and no curl — the loki binary itself
+      # re-validates the mounted config; a broken config edit fails the check.
+      test: ["CMD", "/usr/bin/loki", "-config.file=/etc/loki/loki.yaml", "-verify-config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     logging: *shared-logging
     networks: [observability]
     profiles: ["observability", "full"]
@@ -449,6 +491,8 @@ volumes:
     name: agentflow-ollama
   agentflow-observability:
     name: agentflow-observability
+  agentflow-loki:
+    name: agentflow-loki
   agentflow-prometheus:
     name: agentflow-prometheus
 
@@ -466,12 +510,13 @@ networks:
     name: agentflow-messaging
     driver: bridge
   # Observability internal network — the otel-collector (OTLP ingress), the
-  # dedicated prometheus and the lgtm backends interconnect here; the collector
-  # forwards to lgtm's bundled collector on :4317 and prometheus scrapes the
+  # dedicated loki/prometheus and the lgtm backends interconnect here; the
+  # collector forwards traces/metrics to lgtm's bundled collector on :4317 and
+  # posts logs to loki's OTLP endpoint on :3100, prometheus scrapes the
   # collector's :8888 over this network. Host-published surfaces: collector
-  # :4317/:4318/:13133, prometheus :9090, lgtm :3000/:3100/:3200. When the app
-  # is containerized (deployment sprint) it joins this network and exports to
-  # the collector's :4317 internally.
+  # :4317/:4318/:13133, prometheus :9090, loki :3100, lgtm :3000/:3200. When
+  # the app is containerized (deployment sprint) it joins this network and
+  # exports to the collector's :4317 internally.
   observability:
     name: agentflow-observability
     driver: bridge

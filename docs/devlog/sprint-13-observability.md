@@ -10,6 +10,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-04 — OTel Collector config as code](#s13-04-otel-collector-config-as-code)
 - [S13-05 — Prometheus as code](#s13-05-prometheus-as-code)
 - [S13-06 — Grafana provisioning as code](#s13-06-grafana-provisioning-as-code)
+- [S13-07 — Loki as code](#s13-07-loki-as-code)
 
 ---
 
@@ -129,6 +130,51 @@ S13-01 assigned traces to one home (OpenTelemetry → OTLP → Collector → Tem
 ### Scope / follow-up
 
 Traces-only: the Collector, Prometheus, Grafana, Loki and Tempo services (S13-04…S13-08), the workflow/messaging/AI-RAG trace attributes (`agentflow.operation`, `agentflow.step.*`, `agentflow.ai.*` — S13-11…S13-13), the correlation/causation attributes on the outbox/worker hops and the cardinality/privacy check (S13-19) remain scheduled. The kubernetes profile's OTLP endpoint lands with the in-cluster Collector (S15).
+
+## S13-07 — Loki as code
+
+### What changed
+
+The local observability stack gains a dedicated, repo-owned Loki — the log store of the split-stack target — ingesting logs over the native OTLP endpoint, with the label contract enforced Loki-side, so high-cardinality IDs can never become index labels.
+
+- **Config** — new [`infra/observability/loki/loki.yaml`](../../infra/observability/loki/loki.yaml), mounted read-only and booting the single-binary Loki (distributor, ingester, querier, compactor): filesystem storage (`chunks_directory`/`rules_directory`/`compactor.working_directory` under `/loki`), `schema_config` TSDB v13 from `2026-01-01`, replication factor 1 / in-memory ring (single-instance local stack, matching the lgtm all-in-one's single-node use), `allow_structured_metadata: true`, `reject_old_samples: true`, 7-day retention via `limits_config.retention_period: 168h` (enforced by the compactor on the filesystem delete-request store) — matching the dedicated Prometheus.
+- **Label contract** — `limits_config.otlp_config`: `ignore_defaults: true` drops Loki's 17-attribute default index-label list, the only `index_label` rules are `service.name` and `deployment.environment`, and every other resource attribute falls back to **structured metadata** (Loki's `actionForAttribute` default) — same for scope and log attributes (`structured_metadata`, regex `.*`). The index is therefore bounded by construction, never by convention: a tenant/run/user/document ID arriving as an attribute lands in per-entry structured metadata and cannot index-label a stream. A `run_id`-shaped value visible in a query response is a display quirk of Loki 3.x (structured metadata is returned alongside stream labels) — the authoritative index label set is `/loki/api/v1/labels`.
+- **Compose** — new `loki` service in [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml): `grafana/loki:3.6.1` pinned by multi-arch index digest (`sha256:92bd57…a88389`), `command: ["-config.file=/etc/loki/loki.yaml"]`, host :3100 (the lgtm bundled Loki no longer host-publishes — the dedicated service owns the port, the S13-04 port precedent), `agentflow-loki` named volume, healthcheck via the binary's own `-verify-config` (distroless, no shell — the same pattern as the otel-collector), `logging: *shared-logging`.
+- **Collector** — the logs pipeline exports through a new `otlp_http/loki` exporter (`http://loki:3100/otlp`, `tls.insecure: true`) — the contrib collector ships no loki exporter in the 0.165 line (the old `loki` exporter was removed), so native OTLP ingestion is the supported path. The redaction/attributes pipeline is unchanged; the exporter sends attributes verbatim — the label decision is made by Loki's `otlp_config`, not by the exporter. Traces and metrics still fan out to the lgtm bundled collector until S13-08.
+- **Grafana** — the `loki` datasource UID (stable contract) now points at `http://loki:3100` — the URL half of the S13-06/07 swap; only the URL moved.
+- **Smoke** — `scripts/smoke-local.sh` expects `agentflow-loki` in the `observability`/`full` profiles.
+
+### Why
+
+S13-05 gave the stack a repo-owned metrics store and S13-06 made Grafana Git-provisioned, but the logs still lived only inside the lgtm all-in-one image — the collector's logs pipeline fanned out to it, so the log store was nobody's code. Loki 3.x added native OTLP ingest (`/otlp/v1/logs`), which is the supported path for a dedicated log store behind the collector (the contrib collector has no loki exporter in 0.165). Taking the dedicated Loki now — the label contract in Git, the index bounded by construction — turns the log half of the split-stack target into repo-owned configuration, exactly like Prometheus did.
+
+### Verification
+
+Live run, this session, from a **wiped state** (`docker compose --profile observability down -v` — drops the `agentflow-loki`, `agentflow-prometheus` and `agentflow-observability` volumes — then `up -d`). This is the acceptance clean-instance scenario.
+
+1. `docker compose config --quiet` — exit 0.
+2. Clean instance: `agentflow-loki` + `agentflow-otel-collector` + `agentflow-observability` + `agentflow-prometheus` all `healthy`.
+3. `GET /loki/api/v1/labels` → `["deployment_environment","service_name"]` — only the two bounded labels, nothing else (the numbered `nonce` assertions below confirm it stays that way).
+4. A probe OTLP/JSON log posted to `localhost:4318/v1/logs` (via the collector's logs pipeline) carrying `service.name=agentflow-app`, `deployment_environment=local`, `tenant.id=…` and `run.id=a1b2c3d4-…` with a `correlation_id` scope/log attribute is visible via the `{service_name="agentflow-app"}` query; `run_id`/`tenant_id`/`correlation_id` appear in the stream object as per-entry structured metadata (48 bytes processed) — **not** as index labels.
+5. `{tenant_id="8b3d9a2f-…"}` — empty result; `tenant.id` can never index-label a stream however it is emitted.
+6. Grafana's `GET /api/datasources` — `loki` → `http://loki:3100`.
+7. `bash scripts/smoke-local.sh --profile observability` — SMOKE TEST: PASS (all four services healthy from a clean state).
+
+No Java/Gradle change — the compose/config validation and the live runs above are the verification.
+
+### Documentation
+
+- [`infra/observability/loki/loki.yaml`](../../infra/observability/loki/loki.yaml) (new).
+- [`infra/observability/README.md`](../../infra/observability/README.md) — layout row, the why-lgtm paragraph (the S13-07 swap), the S13-07 configuration bullet, the endpoints table.
+- [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) — the `loki` service, the `agentflow-loki` volume, the collector exporter comment, the lgtm service/port comments.
+- [`infra/observability/otel-collector/collector.yaml`](../../infra/observability/otel-collector/collector.yaml) — the logs pipeline (`otlp_http/loki`) and header.
+- [`infra/observability/grafana/provisioning/datasources/agentflow.yaml`](../../infra/observability/grafana/provisioning/datasources/agentflow.yaml) — the `loki` URL (`http://loki:3100`).
+- [`scripts/smoke-local.sh`](../../scripts/smoke-local.sh) — expected service + display entry.
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Trace and metric fan-out to dedicated services remains S13-08 (Tempo) and S13-07/08 (collector exporter swap for traces/metrics). The Grafana alert rules and dashboards stay on the Git-provisioned provider; the Loki datasource is the URL half of the swap the S13-06 promise made. The kubernetes log pipeline (in-cluster Loki, S15) reuses the same file layout.
 
 ## S13-06 — Grafana provisioning as code
 

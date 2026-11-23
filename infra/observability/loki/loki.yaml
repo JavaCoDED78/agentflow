@@ -1,0 +1,94 @@
+# AgentFlow Loki (S13-07).
+#
+# The dedicated log store of the local observability stack, configuration as
+# code: the container mounts this file read-only and boots from it; there is
+# nothing to set up by hand. Single-binary mode (one container = distributor,
+# ingester, querier, compactor) on local filesystem storage.
+#
+# Ingest: logs arrive over OTLP at /otlp/v1/logs from the otel-collector's
+# otlphttp exporter (the contrib collector has NO loki exporter since the
+# removed-in-0.165 deprecation — native OTLP ingestion is the supported path,
+# see ../README.md).
+#
+# Label discipline (infra/AGENTS.md, docs/observability/standards.md) — this is
+# the acceptance-critical part of the config, verified live in S13-07:
+#   - ONLY service.name and deployment.environment are index labels
+#     (limits_config.otlp_config.resource_attributes, ignore_defaults: true).
+#     Everything else arriving as a resource/scope/log attribute is stored as
+#     structured metadata (per-entry, line-level) — never in the index.
+#   - No tenant/run/user/document IDs can become index labels, however an
+#     instrument tries to emit them: unmatched attributes fall back to
+#     structured_metadata (Loki's actionForAttribute), so the index stays
+#     bounded by construction, not by convention.
+#   - Loki returns structured metadata alongside stream labels in query
+#     responses: a run_id-shaped value visible in a query result is per-entry
+#     metadata, NOT an index label. The index label set is observable via
+#     /loki/api/v1/labels (proven in the S13-07 acceptance run).
+#
+# Retention: 7 days, matching the dedicated Prometheus (S13-05); the compactor
+# applies it (retention_enabled) on the filesystem delete-request store.
+# Healthcheck (distroless image, no shell): the loki binary re-validates the
+# mounted config with its own -verify-config — the same pattern as the
+# otel-collector service.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  # warn keeps operator-relevant errors visible without per-push noise.
+  log_level: warn
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+ingester:
+  max_chunk_age: 2h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+limits_config:
+  # Structured metadata is where non-index attributes live; required for the
+  # OTLP endpoint to accept payloads carrying them.
+  allow_structured_metadata: true
+  # 7 days, matching the dedicated Prometheus retention (S13-05).
+  retention_period: 168h
+  reject_old_samples: true
+
+  otlp_config:
+    resource_attributes:
+      # Ignore the 17-attribute default index-label list; the AgentFlow index
+      # carries exactly the two bounded identity labels below.
+      ignore_defaults: true
+      attributes_config:
+        - action: index_label
+          regex: service\.name
+        - action: index_label
+          regex: deployment\.environment
+    scope_attributes:
+      - action: structured_metadata
+        regex: .*
+    log_attributes:
+      - action: structured_metadata
+        regex: .*
