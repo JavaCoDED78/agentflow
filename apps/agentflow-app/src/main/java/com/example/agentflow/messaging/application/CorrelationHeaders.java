@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * The correlation metadata an event carries across Kafka, in addition to the envelope body
@@ -73,5 +74,37 @@ public record CorrelationHeaders(String correlationId, String causationId, Strin
     if (value != null && !value.isBlank()) {
       fields.put(key, value);
     }
+  }
+
+  /**
+   * Parse the persisted headers JSON back into the correlation metadata.
+   *
+   * <p>Returns {@link Optional#empty()} for a blank or absent payload and for a corrupt payload —
+   * callers distinguish the two by checking the input first (blank = "no headers", corrupt =
+   * "unparseable producer output"). Only the three known fields are read; unknown keys are dropped,
+   * matching the contract that only {@code correlationId} / {@code causationId} / {@code
+   * traceparent} ever cross the Kafka boundary.
+   *
+   * @param headersJson the raw {@code outbox_events.headers} content, or {@code null}/blank
+   * @return the parsed metadata, or {@link Optional#empty()} when blank or corrupt
+   */
+  public static Optional<CorrelationHeaders> parse(String headersJson) {
+    if (headersJson == null || headersJson.isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      Map<String, Object> fields = MAPPER.readValue(headersJson, Map.class);
+      return Optional.of(
+          of(
+              asString(fields.get("correlationId")),
+              asString(fields.get("causationId")),
+              asString(fields.get("traceparent"))));
+    } catch (Exception corrupt) {
+      return Optional.empty();
+    }
+  }
+
+  private static String asString(Object value) {
+    return value instanceof String s && !s.isBlank() ? s : null;
   }
 }

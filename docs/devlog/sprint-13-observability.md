@@ -13,6 +13,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-07 — Loki as code](#s13-07-loki-as-code)
 - [S13-08 — Tempo as code](#s13-08-tempo-as-code)
 - [S13-09 — standardized JSON logs](#s13-09-standardized-json-logs)
+- [S13-10 — trace context over Kafka](#s13-10-trace-context-over-kafka)
 
 ---
 
@@ -50,6 +51,46 @@ A log line of a request carries `@timestamp`, `severity`, `service`, `environmen
 ### Scope / follow-up
 
 The Kafka trace-propagation half (trace context over outbox/messaging) is S13-10; the metrics half is S13-11/S13-12. The encoder whitelist and the filter are per-request, in-process — nothing about them crosses a Kafka boundary yet.
+
+## S13-10 — trace context over Kafka
+
+### What changed
+
+The producer and consumer legs of the outbox/inbox boundary now carry the W3C trace-context header end to end, and both legs create their own spans parented on whatever the headers say — the replay/queueing delay between PostgreSQL and the worker is no longer a trace break.
+
+- **`MessagingTracing`** (new, `messaging.application`) — the single trace-context builder for the messaging boundary: `parentContext(traceparent)` (the extracted parent context — a remote span context for a valid header, `Context.root()` otherwise), `startSpan(tracer, name, parentContext, correlationId, causationId)` (a root span or a span parented on the remote parent, recording `correlation_id` / `causation_id` only as attributes when present — never tenant / run / document ids), `currentTraceparent()` (the active span's `traceparent` string — ready to be stored in `CorrelationHeaders#traceparent()`, `null` when no valid span is active). The `messaging` module is the home of the messaging boundary's trace-context builder (`S13-10`; `S13-01` fixed the conventions in `docs/observability/standards.md` — spans are built by the module that owns the operation); nothing else in the codebase builds spans for Kafka today.
+- **`KafkaMessageDeliverer`** (producer) — derives the trace parent and the correlation/causation attributes from the record's `headers` JSON (the `OutboxService#enqueue` path threads the request traceparent into the event — the HTTP create-run path via the explicit `RunService` traceparent, every other traced enqueue automatically). The trace is now visible as `KafkaMessageDeliverer#deliver`, a span that brackets the blocking `send().get()` — parented on the producer-side request span (the `API → outbox → publisher` leg) and attributed `correlation_id` / `causation_id` from the headers when present. A permanent auth failure ends the span with an error immediately rather than leaking a never-ending publish span. The class requires an `ObjectProvider<SdkTracerProvider>` (like the repositories) so it boots without tracing — the provider is injected as `tracerProvider.getIfAvailable()`, and `null` disables the spans.
+- **`DocumentIndexingWorker`** (consumer) — `pollOnce()` now runs each `handle()` inside a `DocumentIndexingWorker#handle` span (parent context taken from the record's `traceparent` header — the request context the producer wrote — never from the consumer's own poll span); `correlationId` / `causationId` from the record headers are recorded as attributes. The span is closed in a `finally` block so an exception in the action leaves the exporter with a proper span. The class requires an `ObjectProvider<SdkTracerProvider>`, consistent with the rest of the workers — the provider is injected as `tracerProvider.getIfAvailable()`, and `null` disables the spans (the worker behaves exactly as before).
+- **`CorrelationHeaders`** (the immutable value type) — gains `parse(...)`, the symmetric reader of the `headers` JSON the producer writes (the producer previously could not read it back). The wire contract is unchanged: the same three fields, the same stable JSON order, only non-blank fields emitted.
+- **`OutboxService`** (the outbox boundary) — `enqueue()` now threads the active span's `traceparent` into the event's `headers` JSON when the producer did not set one (blank, corrupt, or carry only correlation/causation), so an event persisted inside a traced request carries the trace end-to-end with no caller-side knowledge of OpenTelemetry. The same three rules: an explicit `traceparent` wins, a corrupt payload is left untouched, and a blank payload gets the threaded `traceparent`.
+- **`OutboxEvent`** (domain) — gains the `withHeadersJson` accessor (the record already carried the raw `headersJson`; the new accessor is what `enqueue` uses to rewrite it). No new schema, no migration — the `headers` JSON shape is unchanged.
+
+### Why
+
+S13-09 fixes the log-line correlation contract, but until S13-10 nothing crossed a Kafka boundary: the producer's `traceparent` was silently dropped (the producer only forwarded `correlationId` / `causationId`) and the consumer ran blind. S13-10 closes that in one boundary — one shared builder (`MessagingTracing`) for both legs, the JSON headers keeping the same `correlationId`/`causationId`/`traceparent` contract end-to-end — so the API request, the queueing delay, the publisher and the worker processing all land in one trace.
+
+### Acceptance
+
+A trace view shows the API request → outbox publish → worker processing as one trace: the producer span (`KafkaMessageDeliverer#deliver`) is parented on the API request span, and the consumer span (`DocumentIndexingWorker#handle`) is parented on the same record `traceparent` the producer wrote — the API request span's — so all three land in one trace; correlation/causation ids are preserved across the boundary, as span attributes and as record headers.
+
+### Verification
+
+DB-free, JUnit XML verified fresh (`failures=0`, `errors=0`, `skipped=0`): `MessagingTracingTest` (10 — root/remote context, garbage/blank/unparseable input, active context, traceparent extraction, correlation/causation attributes, parent context valid/invalid), `RecordingSpanExporter` (the `SpanExporter` test double used by every span test below), `OutboxServiceTest` (5 — the active span's traceparent threads into an unthreaded event, an explicit traceparent is left untouched, a blank payload gets threaded, a no-span event is unchanged, a corrupt payload is untouched), `DocumentIndexingWorkerTest` (8 — 6 pre-existing + 2 new: a record with `traceparent`/`correlationId`/`causationId` headers is processed inside a span parented on the record's `traceparent` with the ids as attributes; a headerless record gets a root span with no attributes).
+
+Integration, real KRaft broker (Testcontainers, Apache Kafka 4.3.1), `KafkaTraceContextIT` (1 — the request span, the producer span and the consumer span land in one trace across the broker: the producer and consumer spans are parented on the request span, the record carries the request span's `traceparent` plus the correlation/causation ids as headers, and both legs record correlation/causation as span attributes). Spotless applied. `./gradlew :apps:agentflow-app:check` — green.
+
+### Documentation
+
+- `apps/agentflow-app/src/main/java/com/example/agentflow/messaging/application/MessagingTracing.java` (new) + test (`MessagingTracingTest`).
+- `apps/agentflow-app/src/main/java/com/example/agentflow/messaging/application/OutboxService.java`, `CorrelationHeaders.java`, `domain/OutboxEvent.java`, `worker/KafkaMessageDeliverer.java` (the trace-context contract).
+- `apps/agentflow-app/src/main/java/com/example/agentflow/ingestion/worker/DocumentIndexingWorker.java` (the consumer span).
+- `apps/agentflow-app/src/test/java/com/example/agentflow/messaging/application/RecordingSpanExporter.java`, `OutboxServiceTest.java`, `MessagingTracingTest.java`, `DocumentIndexingWorkerTest.java` (the test double and span assertions).
+- `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/messaging/worker/KafkaTraceContextIT.java` (the real-broker end-to-end trace-context test).
+- `docs/architecture/kafka-topics.md` (the trace-context propagation subsection), `docs/architecture/module-api.md` / `docs/architecture/module-map.md` / `docs/domain-glossary.md` / `docs/observability/standards.md` / `apps/agentflow-app/src/main/java/com/example/agentflow/observability/AGENTS.md` (the ownership + the real span names), `CHANGELOG.md` (this file's entry).
+
+### Scope / follow-up
+
+The metrics half (S13-11/S13-12) is untouched. The `WorkflowWorker` span is not added here — it is constructed with a tracer in a later observability task; the worker's own trace handling follows the same `MessagingTracing` builder.
 
 ## S13-01 — telemetry conventions
 

@@ -59,8 +59,8 @@ agentflow.<domain>.<what>.<unit>
   counter over a *bounded* state label, not a per-run counter.
 
 **Traces** name spans by operation (`POST /api/v1/workflows`, `OutboxPublisherService#pollOnce`,
-`ToolExecutor.execute`) with the standard OTel semantic-convention attributes plus the `agentflow.*`
-extensions below. Span names follow the service's own operation vocabulary, not a literal
+`ToolExecutor.execute`, `KafkaMessageDeliverer#deliver`, `DocumentIndexingWorker#handle`) with the standard
+OTel semantic-convention attributes plus the `agentflow.*` extensions below. Span names follow the service's own operation vocabulary, not a literal
 HTTP path with ids embedded.
 
 **Logs** carry the pinned line contract of `StructuredJsonLogstashEncoder` (S13-09): `@timestamp`,

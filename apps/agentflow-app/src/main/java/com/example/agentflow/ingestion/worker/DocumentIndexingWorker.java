@@ -8,9 +8,15 @@ import com.example.agentflow.messaging.application.DlqService;
 import com.example.agentflow.messaging.application.InboxConsumeResult;
 import com.example.agentflow.messaging.application.InboxConsumerService;
 import com.example.agentflow.messaging.application.InboxDedupService;
+import com.example.agentflow.messaging.application.MessagingTracing;
 import com.example.agentflow.messaging.domain.InboxMessage;
 import com.example.agentflow.messaging.persistence.InboxMessageRepository;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import jakarta.annotation.PreDestroy;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -25,9 +31,11 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -90,6 +98,7 @@ public class DocumentIndexingWorker {
   private final IngestionService ingestionService;
   private final InboxConsumerService inboxConsumerService;
   private final Duration pollTimeout;
+  private final Tracer tracer;
 
   /**
    * Spring-managed constructor: builds the consumer from {@code agentflow.kafka.producer.*
@@ -109,7 +118,8 @@ public class DocumentIndexingWorker {
       IngestionService ingestionService,
       InboxMessageRepository inboxRepository,
       DlqService dlqService,
-      DataSource dataSource) {
+      DataSource dataSource,
+      ObjectProvider<SdkTracerProvider> tracerProvider) {
     this(
         new KafkaConsumer<>(consumerProps(properties)),
         ingestionService,
@@ -120,7 +130,8 @@ public class DocumentIndexingWorker {
                 properties.getWorker().getIngestionMaxAttempts()),
             dlqService,
             inboxRepository),
-        Duration.ofMillis(properties.getWorker().getIngestionPollTimeoutMs()));
+        Duration.ofMillis(properties.getWorker().getIngestionPollTimeoutMs()),
+        tracerProvider.getIfAvailable());
   }
 
   /**
@@ -137,10 +148,31 @@ public class DocumentIndexingWorker {
       IngestionService ingestionService,
       InboxConsumerService inboxConsumerService,
       Duration pollTimeout) {
+    this(consumer, ingestionService, inboxConsumerService, pollTimeout, null);
+  }
+
+  /**
+   * Test constructor with an explicit OTel tracer provider (e.g. an in-memory provider recording
+   * spans in a unit/integration test).
+   *
+   * @param consumer the Kafka consumer (manual commits)
+   * @param ingestionService the indexing use case
+   * @param inboxConsumerService the assembled inbox boundary
+   * @param pollTimeout the long-poll timeout of {@link #pollOnce()}
+   * @param tracerProvider the OTel SDK tracer provider, or {@code null} (no spans)
+   */
+  DocumentIndexingWorker(
+      KafkaConsumer<String, String> consumer,
+      IngestionService ingestionService,
+      InboxConsumerService inboxConsumerService,
+      Duration pollTimeout,
+      SdkTracerProvider tracerProvider) {
     this.consumer = consumer;
     this.ingestionService = ingestionService;
     this.inboxConsumerService = inboxConsumerService;
     this.pollTimeout = pollTimeout;
+    this.tracer =
+        tracerProvider == null ? null : tracerProvider.get("com.example.agentflow.ingestion");
   }
 
   /**
@@ -188,6 +220,38 @@ public class DocumentIndexingWorker {
    *     record is held uncommitted (DLQ-recorded)
    */
   private HandleOutcome handle(ConsumerRecord<String, String> record) {
+    // Pull the trace/correlation context off the record before doing any work: an explicit
+    // traceparent (the request that produced the event, S13-10) makes this span a child of that
+    // request; absent/invalid headers honestly yield a root span. The correlation/causation ids
+    // ride on the span as bounded attributes — never on metrics labels.
+    String traceparent = headerOf(record.headers(), "traceparent");
+    String correlationId = headerOf(record.headers(), "correlationId");
+    String causationId = headerOf(record.headers(), "causationId");
+    Span span =
+        MessagingTracing.startSpan(
+            tracer,
+            "DocumentIndexingWorker#handle",
+            MessagingTracing.parentContext(traceparent),
+            correlationId,
+            causationId);
+    try {
+      if (span == null) {
+        return handleInSpan(record);
+      }
+      // Make the span current so the producer side of the indexing pass (the outbox enqueue for
+      // the "indexed" event, etc.) threads the worker's span as its parent too.
+      try (Scope scope = span.makeCurrent()) {
+        return handleInSpan(record);
+      }
+    } finally {
+      if (span != null) {
+        span.end();
+      }
+    }
+  }
+
+  /** The indexing pass proper (unchanged), run inside the span. */
+  private HandleOutcome handleInSpan(ConsumerRecord<String, String> record) {
     Optional<IngestionEventEnvelope> envelope = IngestionEventEnvelope.parse(record.value());
     if (envelope.isEmpty()) {
       log.error(
@@ -217,6 +281,16 @@ public class DocumentIndexingWorker {
       case PROCESSED, OTHER_CLAIMED -> HandleOutcome.ACK;
       case RETRY, DEAD_LETTER -> HandleOutcome.HELD;
     };
+  }
+
+  /** The last header value of the named record header, or {@code null} when absent. */
+  private static String headerOf(Headers headers, String name) {
+    var header = headers == null ? null : headers.lastHeader(name);
+    if (header == null || header.value() == null) {
+      return null;
+    }
+    String value = new String(header.value(), StandardCharsets.UTF_8);
+    return value.isBlank() ? null : value;
   }
 
   /**

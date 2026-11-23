@@ -1,16 +1,19 @@
 package com.example.agentflow.messaging.worker;
 
 import com.example.agentflow.config.AgentFlowProperties;
+import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.MessageDeliverer;
+import com.example.agentflow.messaging.application.MessagingTracing;
 import com.example.agentflow.messaging.domain.OutboxEvent;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import jakarta.annotation.PreDestroy;
 import java.io.Closeable;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +28,7 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -71,22 +75,27 @@ import org.springframework.stereotype.Service;
 public class KafkaMessageDeliverer implements MessageDeliverer, Closeable {
 
   private static final Logger log = LoggerFactory.getLogger(KafkaMessageDeliverer.class);
-  private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private final KafkaProducer<String, String> producer;
   private final long deliveryTimeoutMs;
+  private final Tracer tracer;
 
   /**
    * Spring-managed constructor. Binds the reliability settings from {@code agentflow.kafka.*} and
    * builds the producer from them.
    *
    * @param properties the validated typed configuration, bound from {@code agentflow.*}
+   * @param tracerProvider the OTel SDK tracer provider, injected when tracing is wired (the {@code
+   *     agentflow.observability} auto-configuration); the deliverer no-ops spans when it is absent
+   *     (tracing disabled, S01-19)
    */
   @Autowired
-  public KafkaMessageDeliverer(AgentFlowProperties properties) {
+  public KafkaMessageDeliverer(
+      AgentFlowProperties properties, ObjectProvider<SdkTracerProvider> tracerProvider) {
     this(
         propsFrom(properties.getKafka().getProducer()),
-        properties.getKafka().getProducer().getDeliveryTimeoutSeconds() * 1000L);
+        properties.getKafka().getProducer().getDeliveryTimeoutSeconds() * 1000L,
+        tracerProvider.getIfAvailable());
   }
 
   /**
@@ -97,58 +106,110 @@ public class KafkaMessageDeliverer implements MessageDeliverer, Closeable {
    * @param deliveryTimeoutMs the send confirmation bound in milliseconds
    */
   KafkaMessageDeliverer(Map<String, Object> producerProps, long deliveryTimeoutMs) {
+    this(producerProps, deliveryTimeoutMs, null);
+  }
+
+  /**
+   * Test constructor with an explicit OTel tracer provider (e.g. an in-memory provider recording
+   * spans in a unit/integration test).
+   *
+   * @param producerProps the Kafka producer client properties
+   * @param deliveryTimeoutMs the send confirmation bound in milliseconds
+   * @param tracerProvider the OTel SDK tracer provider, or {@code null} (no spans)
+   */
+  KafkaMessageDeliverer(
+      Map<String, Object> producerProps, long deliveryTimeoutMs, SdkTracerProvider tracerProvider) {
     this.producer = new KafkaProducer<>(new HashMap<>(producerProps));
     this.deliveryTimeoutMs = deliveryTimeoutMs;
+    this.tracer =
+        tracerProvider == null ? null : tracerProvider.get("com.example.agentflow.messaging");
   }
 
   @Override
   public DeliverResult deliver(OutboxEvent event) {
-    ProducerRecord<String, String> record = toRecord(event);
-    log.debug(
-        "outbox event {}: forwarding {} to topic {} (key {})",
-        event.eventId(),
-        event.eventId(),
-        record.topic(),
-        record.key());
-
-    Future<RecordMetadata> future;
+    // Resolve the correlation metadata once: it feeds both the span context (the trace parent and
+    // the correlation/causation attributes) and the Kafka record headers (the wire contract), so
+    // both always carry the same values.
+    Optional<CorrelationHeaders> correlation =
+        parseCorrelation(event.headersJson(), event.eventId());
+    String traceparent = correlation.map(CorrelationHeaders::traceparent).orElse(null);
+    String correlationId = correlation.map(CorrelationHeaders::correlationId).orElse(null);
+    String causationId = correlation.map(CorrelationHeaders::causationId).orElse(null);
+    Span span =
+        MessagingTracing.startSpan(
+            tracer,
+            "KafkaMessageDeliverer#deliver",
+            MessagingTracing.parentContext(traceparent),
+            correlationId,
+            causationId);
     try {
-      future =
-          producer.send(
-              record,
-              (metadata, exception) -> {
-                if (exception != null) {
-                  log.warn(
-                      "outbox event {}: broker rejected the send: {}",
-                      event.eventId(),
-                      exception.getMessage());
-                }
-              });
-    } catch (RuntimeException synchronous) {
-      // A malformed envelope can fail synchronously before the record is queued.
-      return classifySynchronous(synchronous);
-    }
-
-    try {
-      future.get(deliveryTimeoutMs, TimeUnit.MILLISECONDS);
-      return DeliverResult.DELIVERED;
-    } catch (TimeoutException timeout) {
-      // Either our bound or the producer's own delivery.timeout.ms fired: the broker may or may
-      // not hold the envelope. Never mark delivered &mdash; re-publish at a bounded-backoff
-      // instant.
-      log.warn(
-          "outbox event {}: broker confirmation timed out after {} ms; outcome ambiguous, re-publish (at-least-once, S06-08)",
+      ProducerRecord<String, String> record = toRecord(event, correlation);
+      log.debug(
+          "outbox event {}: forwarding {} to topic {} (key {})",
           event.eventId(),
-          deliveryTimeoutMs);
-      return DeliverResult.AMBIGUOUS;
-    } catch (ExecutionException execution) {
-      return classifyFailure(event.eventId(), execution.getCause());
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      // Interrupted while waiting: the send outcome is undetermined.
-      log.warn("outbox event {}: delivery interrupted; outcome ambiguous", event.eventId());
-      return DeliverResult.AMBIGUOUS;
+          event.eventId(),
+          record.topic(),
+          record.key());
+
+      Future<RecordMetadata> future;
+      try {
+        future =
+            producer.send(
+                record,
+                (metadata, exception) -> {
+                  if (exception != null) {
+                    log.warn(
+                        "outbox event {}: broker rejected the send: {}",
+                        event.eventId(),
+                        exception.getMessage());
+                  }
+                });
+      } catch (RuntimeException synchronous) {
+        // A malformed envelope can fail synchronously before the record is queued.
+        return classifySynchronous(synchronous);
+      }
+
+      try {
+        future.get(deliveryTimeoutMs, TimeUnit.MILLISECONDS);
+        return DeliverResult.DELIVERED;
+      } catch (TimeoutException timeout) {
+        // Either our bound or the producer's own delivery.timeout.ms fired: the broker may or may
+        // not hold the envelope. Never mark delivered &mdash; re-publish at a bounded-backoff
+        // instant.
+        log.warn(
+            "outbox event {}: broker confirmation timed out after {} ms; outcome ambiguous, re-publish (at-least-once, S06-08)",
+            event.eventId(),
+            deliveryTimeoutMs);
+        return DeliverResult.AMBIGUOUS;
+      } catch (ExecutionException execution) {
+        return classifyFailure(event.eventId(), execution.getCause());
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        // Interrupted while waiting: the send outcome is undetermined.
+        log.warn("outbox event {}: delivery interrupted; outcome ambiguous", event.eventId());
+        return DeliverResult.AMBIGUOUS;
+      }
+    } finally {
+      if (span != null) {
+        span.end();
+      }
     }
+  }
+
+  /**
+   * Parse the stored headers JSON into the correlation metadata, warning (once per corrupt record)
+   * when the payload is present but unparseable — the send must still happen, correlation is
+   * correlation, not delivery.
+   */
+  private Optional<CorrelationHeaders> parseCorrelation(String headersJson, Object eventId) {
+    Optional<CorrelationHeaders> correlation = CorrelationHeaders.parse(headersJson);
+    if (correlation.isEmpty() && headersJson != null && !headersJson.isBlank()) {
+      log.warn(
+          "outbox event {}: could not parse headers JSON ({}); sending without correlation headers",
+          eventId,
+          headersJson);
+    }
+    return correlation;
   }
 
   /**
@@ -235,38 +296,25 @@ public class KafkaMessageDeliverer implements MessageDeliverer, Closeable {
    * the default partitioner routes by aggregate), {@code payload} as the value, and the parsed
    * {@code headers} as correlation headers.
    */
-  private static ProducerRecord<String, String> toRecord(OutboxEvent event) {
-    RecordHeaders headers = parseHeaders(event.headersJson());
+  private static ProducerRecord<String, String> toRecord(
+      OutboxEvent event, Optional<CorrelationHeaders> correlation) {
+    RecordHeaders headers = new RecordHeaders();
+    correlation.ifPresent(
+        h -> {
+          addHeader(headers, "correlationId", h.correlationId());
+          addHeader(headers, "causationId", h.causationId());
+          addHeader(headers, "traceparent", h.traceparent());
+        });
     // partition null &mdash; the key-based default partitioner assigns the partition, giving
     // per-aggregate ordering (docs/architecture/kafka-topics.md).
     return new ProducerRecord<>(
         event.topic(), null, event.eventKey(), event.payloadJson(), headers);
   }
 
-  /**
-   * Parse the stored {@code headers} JSON object (correlation metadata: correlation/causation/
-   * traceparent) into Kafka record headers. A null/blank/unparseable body yields no headers (never
-   * a failure of the send) &mdash; correlation is correlation, not delivery.
-   */
-  private static RecordHeaders parseHeaders(String headersJson) {
-    RecordHeaders headers = new RecordHeaders();
-    if (headersJson == null || headersJson.isBlank()) {
-      return headers;
+  private static void addHeader(RecordHeaders headers, String name, String value) {
+    if (value != null && !value.isBlank()) {
+      headers.add(new RecordHeader(name, value.getBytes(StandardCharsets.UTF_8)));
     }
-    try {
-      Map<String, String> map =
-          MAPPER.readValue(headersJson, new TypeReference<Map<String, String>>() {});
-      for (Map.Entry<String, String> entry : map.entrySet()) {
-        headers.add(
-            new RecordHeader(entry.getKey(), entry.getValue().getBytes(StandardCharsets.UTF_8)));
-      }
-    } catch (RuntimeException | JsonProcessingException notParsed) {
-      log.warn(
-          "outbox event {}: could not parse headers JSON ({}); sending without correlation headers",
-          headersJson,
-          notParsed.getMessage());
-    }
-    return headers;
   }
 
   /**
