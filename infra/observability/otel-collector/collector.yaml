@@ -1,0 +1,97 @@
+# AgentFlow OpenTelemetry Collector (S13-04).
+#
+# The OTLP ingress of the local observability stack: the application (and only the
+# application-facing surface) exports to this collector on :4317 (gRPC) / :4318 (HTTP);
+# the collector redacts, batches and memory-limits the signals and fans them out to the
+# local backends. Everything here is configuration as code — the container mounts this
+# file read-only and boots from it; there is nothing to set up by hand.
+#
+# Boundaries enforced here (infra/AGENTS.md, docs/observability/standards.md):
+#   - memory_limiter caps the resident buffer (a crash or a burst can never OOM the host);
+#   - batch bounds per-export size and adds at most `timeout` of export delay;
+#   - attributes/redaction drops content-carrying span/metric attributes (raw request
+#     bodies, prompts, document text) — defense in depth on top of the app-side rule that
+#     instrumentation never emits them (S13-03); log bodies are already masked at the app
+#     by the logback ValueMasker (S01-19 / S12-09) and are not re-written here;
+#   - no tenant/run/user/document identifiers are added anywhere: the collector only
+#     removes attributes, it never invents them.
+#
+# Backend wiring: the split-stack target (S13-05…S13-08) is Prometheus (metrics), Loki
+# (logs) and Tempo (traces) as dedicated services. Until those land, all three pipelines
+# export to the lgtm all-in-one's bundled collector, which accepts OTLP on :4317 over the
+# observability network and distributes to its own Prometheus/Loki/Tempo — see
+# ../README.md. Swapping the exporters for the dedicated backends is a one-line change
+# per pipeline below.
+
+extensions:
+  # Liveness/readiness probe endpoint (compose healthcheck, orchestrator probes, smoke scripts).
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Hard ceiling on the in-flight buffer, checked every second; spike_limit_mib bounds how
+  # much the limiter itself may overshoot while it reacts.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  # Defense-in-depth redaction: delete content-carrying attributes if an instrument ever
+  # emits one (the app never should). Only deletions — the collector never adds attributes.
+  attributes/redaction:
+    actions:
+      - key: http.request.body
+        action: delete
+      - key: http.response.body
+        action: delete
+      - key: prompt
+        action: delete
+      - key: prompt.*
+        action: delete
+      - key: document.text
+        action: delete
+      - key: document.*
+        action: delete
+  # Batch exports: at most `send_batch_max_size` spans/metrics/log-records per request,
+  # flushed at least every `timeout` even when the batch is small.
+  batch:
+    timeout: 5s
+    send_batch_size: 8192
+    send_batch_max_size: 16384
+
+exporters:
+  # Local backends via the lgtm all-in-one (see the header): one OTLP/gRPC exporter
+  # carries traces, metrics and logs; S13-05/07/08 replace it with the dedicated
+  # prometheusremotewrite / otlp_http(loki) / otlp_http(tempo) exporters per pipeline.
+  otlp_grpc/lgtm:
+    endpoint: observability:4317
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redaction, batch]
+      exporters: [otlp_grpc/lgtm]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/lgtm]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redaction, batch]
+      exporters: [otlp_grpc/lgtm]
+  telemetry:
+    # The collector's own logs: warn keeps exporter errors (e.g. a backend restart)
+    # visible without per-request noise.
+    logs:
+      level: warn

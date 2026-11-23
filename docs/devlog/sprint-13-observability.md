@@ -7,6 +7,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-01 — telemetry conventions](#s13-01-telemetry-conventions)
 - [S13-02 — Micrometer/Actuator metrics](#s13-02--micrometeractuator-metrics)
 - [S13-03 — OTLP tracing exporter](#s13-03-otlp-tracing-exporter)
+- [S13-04 — OTel Collector config as code](#s13-04-otel-collector-config-as-code)
 
 ---
 
@@ -126,3 +127,45 @@ S13-01 assigned traces to one home (OpenTelemetry → OTLP → Collector → Tem
 ### Scope / follow-up
 
 Traces-only: the Collector, Prometheus, Grafana, Loki and Tempo services (S13-04…S13-08), the workflow/messaging/AI-RAG trace attributes (`agentflow.operation`, `agentflow.step.*`, `agentflow.ai.*` — S13-11…S13-13), the correlation/causation attributes on the outbox/worker hops and the cardinality/privacy check (S13-19) remain scheduled. The kubernetes profile's OTLP endpoint lands with the in-cluster Collector (S15).
+
+## S13-04 — OTel Collector config as code
+
+### What changed
+
+The standalone `otel-collector` service is now the OTLP ingress of the local observability stack. Previously the app exported directly into the lgtm all-in-one's embedded collector; now the ingress contract — memory limit, batching, attribute redaction, health check — is this repo's configuration, independent of the all-in-one image.
+
+- **Config** — new [`infra/observability/otel-collector/collector.yaml`](../../infra/observability/otel-collector/collector.yaml), mounted read-only over the image default: `otlp` receivers (:4317 gRPC / :4318 HTTP), `memory_limiter` (256 MiB ceiling, 64 MiB spike, 1 s check interval), `attributes/redaction` (deletes `http.request.body` / `http.response.body` / `prompt*` / `document.*` attributes — defense in depth on top of the S13-03 app-side guarantee; the collector only removes attributes, it never invents them), `batch` (5 s timeout, 8 192 send size, 16 384 max), `health_check` extension on :13133, and one `otlp_grpc` exporter per pipeline to the lgtm all-in-one over the observability network. The deprecated `otlp` exporter alias was replaced with `otlp_grpc` after the 0.165.0 collector logged the deprecation warning.
+- **Compose** — [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) gains the `otel-collector` service (image pinned by multi-arch digest, config volume read-only, ports 4317/4318/13133, healthcheck, `observability`/`full` profiles); the lgtm service no longer host-publishes :4317/:4318 — host OTLP ports are unchanged for the app (`localhost:4318`), they are just owned by the collector now. S13-05/07/08 will stand Prometheus/Loki/Tempo up as dedicated services and swap the exporter endpoints; until then the three pipelines fan out through lgtm's bundled collector.
+- **Validation / healthcheck** — the pinned image is distroless (no shell, no curl), so the compose healthcheck re-validates the mounted config with the collector's own `validate` subcommand; the runtime probe is the `health_check` extension, published on :13133.
+
+### Why
+
+S13-03 wired the app's OTLP exporter but the ingress itself lived inside a digest-pinned all-in-one image — its collector config was not this repo's. The plan makes the Collector the first piece of the split stack (S13-04 → S13-05…S13-08); shipping the standalone collector first, forwarding to the still-lgtm backends, keeps every later backend task a config swap instead of a topology change.
+
+### Verification
+
+Live run, this session, from a clean state (`docker compose --profile observability up -d`, nothing pre-running):
+
+1. `docker compose config --quiet` — exit 0.
+2. `docker run --rm -v <repo>/…/collector.yaml:/etc/otelcol-contrib/config.yaml:ro <pinned image> validate --config=/etc/otelcol-contrib/config.yaml` — exit 0 (this is also the compose healthcheck).
+3. Both services up; `agentflow-otel-collector` healthy (healthcheck passing, health_check extension `http=200`); `agentflow-observability` healthy.
+4. **Acceptance — OTLP accepted and routed to the local backends.** OTLP/JSON payloads with `service.name=agentflow-smoke` posted to `http://localhost:4318`:
+   - `/v1/traces` → 200; Tempo search returns the trace: `traceID 5b8aa5a2d2c872e8321cf3730e32c853, rootServiceName agentflow-smoke, rootTraceName s13-04-smoke-span` (`/api/search?tags=service.name=agentflow-smoke`).
+   - `/v1/metrics` → 200; Prometheus returns the gauge: `agentflow_smoke_metric{service_name="agentflow-smoke", deployment_environment="local", job="agentflow-smoke"} = 42`.
+   - `/v1/logs` → 200; Loki returns the stream: `{service_name="agentflow-smoke", agentflow_operation="smoke.log", deployment_environment="local"}` with the smoke record.
+   All labels are bounded (`service_name` / `deployment_environment` / the closed attribute set) — no IDs.
+5. After the `otlp_grpc` rename: collector log contains zero deprecation warnings; re-sent trace + metric still land in Tempo/Prometheus (fresh payloads, current timestamps — a stale hardcoded smoke timestamp initially produced empty backend queries because it fell outside the search windows; the probes use `date +%s` now).
+
+No Java/Gradle change — `./gradlew check` is not the gate here; the compose/config validation and the live smoke above are the verification.
+
+### Documentation
+
+- `infra/observability/otel-collector/collector.yaml` (new) — the collector config itself, with the boundary contract in the header comments.
+- [`infra/observability/README.md`](../../infra/observability/README.md) — layout, the standalone-collector rationale, endpoints table (incl. :13133), the validation command, the acceptance recipe.
+- [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) — the new service, the lgtm port change and updated comments.
+- Root [`README.md`](../../README.md) — port table names the otel-collector ingress and the health check.
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Collector-only: Prometheus/Grafana/Loki/Tempo as dedicated services (S13-05…S13-08) swap the exporter endpoints; the collector's own metrics scrape is S13-05's surface; the lgtm service keeps no healthcheck (pre-existing, outside this task's scope).

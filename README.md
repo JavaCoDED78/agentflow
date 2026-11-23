@@ -123,7 +123,8 @@ profile for `DEBUG` logging:
 | Keycloak (OIDC) | 8083 | identity |
 | Ollama (local LLM) | 11434 | ai-local |
 | Observability (Grafana) | 3000 | observability |
-| Observability (OTLP gRPC / HTTP) | 4317 / 4318 | observability |
+| Observability (OTLP gRPC / HTTP, otel-collector ingress) | 4317 / 4318 | observability |
+| Observability (collector health check) | 13133 | observability |
 
 Ports are configurable through `POSTGRES_PORT`, `REDIS_PORT`, `GARAGE_S3_API_PORT`,
 `KAFKA_PORT`, `KEYCLOAK_PORT` and `OLLAMA_PORT` in a local `.env` (defaults above).
