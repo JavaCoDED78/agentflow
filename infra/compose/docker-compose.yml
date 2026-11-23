@@ -287,16 +287,22 @@ services:
     profiles: ["ai-local", "full"]
 
   # ---------------------------------------------------------------------------
-  # Observability stack (S01-16): grafana/otel-lgtm bundles the OpenTelemetry
-  # Collector, Prometheus (metrics), Loki (logs), Tempo (traces) and Grafana in a
-  # single, pinned image — the officially recommended backend for local dev/demo.
-  # It accepts OTLP on :4317 (gRPC) / :4318 (HTTP) and fans it out to the three
-  # stores; Grafana (:3000) exposes all three as datasources. The Loki exporter
-  # is absent from the standard contrib collector and Loki exposes no OTLP
-  # ingest, so the all-in-one lgtm image keeps the stack fully working; a
-  # production deployment would run these as separate services (deployment
+  # Observability stack (S01-16, ingress S13-04): grafana/otel-lgtm bundles the
+  # OpenTelemetry Collector, Prometheus (metrics), Loki (logs), Tempo (traces) and
+  # Grafana in a single, pinned image — the officially recommended backend for local
+  # dev/demo. The Loki exporter is absent from the standard contrib collector and
+  # Loki exposes no OTLP ingest, so the all-in-one lgtm image keeps the stack fully
+  # working; a production deployment would run these as separate services (deployment
   # sprint). Data lives on one named volume under /data (Prometheus, Loki,
   # Grafana, Tempo all persist there).
+  #
+  # Since S13-04 the standalone `otel-collector` service below is the OTLP ingress:
+  # the app exports to localhost:4317/:4318 (owned by the collector), the collector
+  # redacts/batches/memory-limits and forwards over the observability network to
+  # this container's bundled collector, which fans the signals out to the three
+  # stores. Grafana (:3000) exposes all three as datasources. The lgtm OTLP ports
+  # are no longer host-published — only the standalone collector accepts OTLP from
+  # the host; S13-05/07/08 will split Prometheus/Loki/Tempo out of lgtm entirely.
   # ---------------------------------------------------------------------------
   observability:
     image: grafana/otel-lgtm@sha256:57b5ab1ca6619beb180174e2fccce04762470750669d043f544b4726d0582d07
@@ -308,13 +314,46 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
     ports:
       - "3000:3000"   # Grafana UI (datasources for metrics/logs/traces)
-      - "4317:4317"   # OTLP/gRPC ingress (application instrumentation)
-      - "4318:4318"   # OTLP/HTTP ingress (application instrumentation)
       - "9090:9090"   # Prometheus direct access (debug)
       - "3100:3100"   # Loki direct access (debug)
       - "3200:3200"   # Tempo direct access (debug)
     volumes:
       - agentflow-observability:/data
+    logging: *shared-logging
+    networks: [observability]
+    profiles: ["observability", "full"]
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector (S13-04): the OTLP ingress of the observability stack,
+  # configured entirely from Git (infra/observability/otel-collector/collector.yaml,
+  # mounted read-only over the image default). Receives OTLP on :4317 (gRPC) /
+  # :4318 (HTTP), enforces the memory limiter / redaction / batch contract and
+  # forwards to the lgtm backends over the observability network. The image is
+  # distroless (no shell), so the healthcheck re-validates the mounted config with
+  # the collector's own `validate` subcommand; the runtime probe is the
+  # health_check extension on :13133 (see the config's extensions section).
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+    container_name: agentflow-otel-collector
+    restart: unless-stopped
+    volumes:
+      # Read-only: the container must never rewrite its own configuration.
+      - ../observability/otel-collector/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"     # OTLP/gRPC ingress (application instrumentation)
+      - "4318:4318"     # OTLP/HTTP ingress (application instrumentation)
+      - "13133:13133"   # health_check extension (smoke scripts / operator probes)
+    healthcheck:
+      # Distroless image: no shell and no curl — the collector binary itself
+      # re-validates the mounted config; a broken config edit fails the check.
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - observability
     logging: *shared-logging
     networks: [observability]
     profiles: ["observability", "full"]
@@ -350,10 +389,11 @@ networks:
   messaging:
     name: agentflow-messaging
     driver: bridge
-  # Observability internal network — isolates the lgtm container. Its collector,
-  # Prometheus, Loki, Tempo and Grafana interconnect inside the single container;
-  # the app sends OTLP to the host-published :4317/:4318 (deployment sprint, when
-  # the app is containerized, can join this network to reach :4317 internally).
+  # Observability internal network — the otel-collector (OTLP ingress) and the lgtm
+  # backends interconnect here; the collector forwards to lgtm's bundled collector on
+  # :4317 over this network. Host-published surfaces: collector :4317/:4318/:13133,
+  # lgtm :3000/:9090/:3100/:3200. When the app is containerized (deployment sprint) it
+  # joins this network and exports to the collector's :4317 internally.
   observability:
     name: agentflow-observability
     driver: bridge
