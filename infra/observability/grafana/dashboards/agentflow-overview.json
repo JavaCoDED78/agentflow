@@ -1,0 +1,162 @@
+{
+  "uid": "agentflow-overview",
+  "title": "AgentFlow / Overview (S13-06 smoke)",
+  "description": "Provisioning smoke dashboard: proves the S13-06 pipeline (datasource + dashboard provider) end to end. Rich dashboards land in S13-14/15. Datasource: AgentFlow Prometheus (uid agentflow-prometheus).",
+  "tags": ["agentflow", "s13-06"],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Application scrape (up)",
+      "description": "up{job=\"agentflow-api\"}: 1 while Prometheus successfully scrapes the application's /actuator/prometheus (bearer token, S13-05). 0/empty while the app is not running locally — expected in local dev.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "always",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+          "expr": "up{job=\"agentflow-api\"}",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Collector scrape (up)",
+      "description": "up{job=\"otel-collector\"}: 1 while the dedicated Prometheus scrapes the collector's own metrics (:8888 telemetry reader, S13-05).",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "always",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+          "expr": "up{job=\"otel-collector\"}",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Collector uptime (seconds)",
+      "description": "otelcol_process_uptime: the collector's own telemetry (bounded component-id labels only).",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+          "expr": "otelcol_process_uptime{job=\"otel-collector\"}",
+          "instant": false,
+          "range": true,
+          "legendFormat": "uptime"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Collector RSS memory (bytes)",
+      "description": "otelcol_process_memory_rss: resident memory of the collector against the 256 MiB memory_limiter ceiling in collector.yaml.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "agentflow-prometheus"},
+          "expr": "otelcol_process_memory_rss{job=\"otel-collector\"}",
+          "instant": false,
+          "range": true,
+          "legendFormat": "rss"
+        }
+      ]
+    }
+  ]
+}

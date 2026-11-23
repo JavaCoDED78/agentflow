@@ -310,6 +310,13 @@ services:
   # never OTLP push). lgtm's bundled Prometheus keeps serving Grafana internally
   # (localhost inside the container) until S13-06/07/08 swap the datasources and
   # the collector exporter endpoints to the dedicated backends.
+  #
+  # Since S13-06 Grafana itself is provisioned from Git
+  # (infra/observability/grafana/, mounted read-only): datasources, the dashboard
+  # provider, dashboards and alert rules load from the repo — including the
+  # dedicated-Prometheus datasource — and a manual UI edit is not a change.
+  # Grafana 13 enforces [paths] permitted_provisioning_paths, so the provisioning
+  # directory is selected AND explicitly permitted via GF_PATHS_* env vars.
   # ---------------------------------------------------------------------------
   observability:
     image: grafana/otel-lgtm@sha256:57b5ab1ca6619beb180174e2fccce04762470750669d043f544b4726d0582d07
@@ -319,12 +326,20 @@ services:
       # Grafana admin password; anonymous access is on by default in lgtm, so
       # this adds a layer of defense-in-depth for the local stack.
       GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      # S13-06: provisioning as code. Grafana 13 restricts provisioning to
+      # [paths] permitted_provisioning_paths, so both the directory and its
+      # permission are pinned explicitly (pipe-separated ini list).
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_PATHS_PERMITTED_PROVISIONING_PATHS: /etc/grafana/provisioning|/etc/grafana/dashboards
     ports:
       - "3000:3000"   # Grafana UI (datasources for metrics/logs/traces)
       - "3100:3100"   # Loki direct access (debug)
       - "3200:3200"   # Tempo direct access (debug)
     volumes:
       - agentflow-observability:/data
+      # Read-only: the container must never rewrite its own provisioning.
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/etc/grafana/dashboards:ro
     logging: *shared-logging
     networks: [observability]
     profiles: ["observability", "full"]

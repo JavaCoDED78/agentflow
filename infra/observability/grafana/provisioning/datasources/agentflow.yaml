@@ -1,0 +1,104 @@
+# AgentFlow Grafana datasources (S13-06) — configuration as code.
+#
+# Every datasource of the local observability stack is declared here, in Git.
+# Two facts of the pinned lgtm image make this file own ALL datasources, not
+# just ours:
+#   - Grafana 13 enforces [paths] permitted_provisioning_paths (default
+#     devenv/dev-dashboards|conf/provisioning), so the provisioning directory
+#     is selected and explicitly permitted through GF_PATHS_* env vars in
+#     infra/compose/docker-compose.yml;
+#   - Grafana only auto-creates the lgtm defaults (Loki/Tempo/Pyroscope/
+#     bundled Prometheus) while NO datasource provisioning exists — the moment
+#     this file declares one datasource, the rest must be declared here too,
+#     or they never appear.
+#
+# UIDs are stable contracts: dashboards and alert rules reference datasources
+# by UID, so a UID rename is a breaking change. The lgtm-internal entries keep
+# serving Grafana until S13-07/08 replace Loki/Tempo with dedicated services —
+# that swap is a URL edit in this file.
+#
+# editable: false everywhere — datasources are provisioned, never UI-edited;
+# a manual UI change is not a change (infra/AGENTS.md).
+
+apiVersion: 1
+
+datasources:
+  # The dedicated, repo-owned Prometheus (S13-05): the canonical scrape of the
+  # application and the otel-collector, reached by container name over the
+  # observability network. timeInterval matches the 15 s scrape interval.
+  - name: AgentFlow Prometheus
+    uid: agentflow-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  # lgtm's bundled Prometheus: still receives the OTLP-carried app metrics via
+  # the S13-04 pipeline until S13-07/08 swap the collector exporter endpoints.
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 60s
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  # lgtm's bundled Loki (S13-07 replaces it with a dedicated service).
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://127.0.0.1:3100
+    isDefault: false
+    editable: false
+    jsonData:
+      derivedFields:
+        - name: trace_id
+          datasourceUid: tempo
+          matcherType: label
+          matcherRegex: trace_id
+          url: "${__value.raw}"
+          urlDisplayLabel: "Trace: ${__value.raw}"
+
+  # lgtm's bundled Tempo (S13-08 replaces it with a dedicated service).
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://127.0.0.1:3200
+    isDefault: false
+    editable: false
+    jsonData:
+      lokiSearch:
+        datasourceUid: loki
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      serviceMap:
+        datasourceUid: prometheus
+      tracesToLogsV2:
+        customQuery: true
+        datasourceUid: loki
+        query: '{${__tags}} | trace_id = "${__trace.traceId}"'
+        tags:
+          - key: service.name
+            value: service_name
+
+  # lgtm's bundled Pyroscope (profiles; unused by AgentFlow but part of the
+  # all-in-one image — declared so the provisioned set matches the stack).
+  - name: Pyroscope
+    uid: pyroscope
+    type: grafana-pyroscope-datasource
+    access: proxy
+    url: http://127.0.0.1:4040
+    isDefault: false
+    editable: false

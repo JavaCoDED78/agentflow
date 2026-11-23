@@ -9,6 +9,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-03 — OTLP tracing exporter](#s13-03-otlp-tracing-exporter)
 - [S13-04 — OTel Collector config as code](#s13-04-otel-collector-config-as-code)
 - [S13-05 — Prometheus as code](#s13-05-prometheus-as-code)
+- [S13-06 — Grafana provisioning as code](#s13-06-grafana-provisioning-as-code)
 
 ---
 
@@ -128,6 +129,46 @@ S13-01 assigned traces to one home (OpenTelemetry → OTLP → Collector → Tem
 ### Scope / follow-up
 
 Traces-only: the Collector, Prometheus, Grafana, Loki and Tempo services (S13-04…S13-08), the workflow/messaging/AI-RAG trace attributes (`agentflow.operation`, `agentflow.step.*`, `agentflow.ai.*` — S13-11…S13-13), the correlation/causation attributes on the outbox/worker hops and the cardinality/privacy check (S13-19) remain scheduled. The kubernetes profile's OTLP endpoint lands with the in-cluster Collector (S15).
+
+## S13-06 — Grafana provisioning as code
+
+### What changed
+
+Grafana (inside the pinned lgtm all-in-one) now boots entirely from Git — datasources, the dashboard provider, dashboards and alert rules are provisioned files, and a manual UI edit is refused by the API, so a change is a Git change or it does not exist.
+
+- **Provisioning configs** — new [`infra/observability/grafana/provisioning/`](../../infra/observability/grafana/provisioning/), mounted read-only at `/etc/grafana/provisioning`: [`datasources/agentflow.yaml`](../../infra/observability/grafana/provisioning/datasources/agentflow.yaml) declares **every** datasource of the stack with stable UIDs — the dedicated `agentflow-prometheus` (`http://prometheus:9090`, the S13-05 store, `timeInterval: 15s` matching the scrape interval) plus exact declarations of the lgtm-internal Prometheus/Loki/Tempo/Pyroscope entries (original UIDs, URLs and the trace-link `jsonData`) that Grafana 13 would otherwise auto-create. Two image facts forced the all-datasources-in-Git shape, both verified on the pinned image: Grafana 13 enforces `[paths] permitted_provisioning_paths` (provisioning from an arbitrary mount is silently rejected until the directory is selected via `GF_PATHS_PROVISIONING` AND permitted via `GF_PATHS_PERMITTED_PROVISIONING_PATHS`), and auto-creation of the lgtm defaults stops the moment any datasource provisioning exists. [`dashboards/agentflow.yaml`](../../infra/observability/grafana/provisioning/dashboards/agentflow.yaml) wires the dashboards directory as the AgentFlow provider (`allowUiUpdates: false`, `disableDeletion: true`); [`alerting/agentflow-alerts.yaml`](../../infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml) declares the alert rules in the stable Grafana 13 shape (instant PromQL → reduce → threshold, no classic_conditions).
+- **Dashboard** — new [`dashboards/agentflow-overview.json`](../../infra/observability/grafana/dashboards/agentflow-overview.json), stable UID `agentflow-overview`: four panels over the dedicated Prometheus (API/collector `up`, collector uptime, collector RSS vs the 256 MiB memory-limiter ceiling). It is the provisioning smoke surface — the rich API/JVM/DB and Workflow/Kafka dashboards land in S13-14/15 and plug into the same provider.
+- **Alert rule + runbook** — `agentflow-scrape-target-down` (uid-stable): `up{job=~"agentflow-api|otel-collector"}` reduce-last, threshold `< 1`, `for: 1m`, `noDataState: Alerting` (a target vanishing from discovery is as alertable as `up == 0`), `severity: warning`, `runbook_url` into the new [`docs/runbooks/observability-scrape-target-down.md`](../../docs/runbooks/observability-scrape-target-down.md) (symptoms, the expected local-dev state, diagnostics, safe actions, recovery criterion — the infra/AGENTS.md contract for alerts).
+- **Compose** — the lgtm service gains the two `GF_PATHS_*` env vars and the read-only mounts of `grafana/provisioning/` and `grafana/dashboards/` ([`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml)); no new service, no port changes.
+
+### Why
+
+S13-05 gave the stack a repo-owned metrics store, but everything Grafana showed still lived inside the digest-pinned lgtm image — its datasources were created by Grafana's auto-connection feature at runtime, invisible to Git and unreviewable. The plan's S13-06 makes the whole Grafana surface configuration as code; declaring all datasources explicitly (rather than mixing provisioning with auto-creation) keeps the file the single source of truth and turns the S13-07/08 backend swaps into URL edits.
+
+### Verification
+
+Live run, this session, from a **wiped Grafana state** (`docker compose --profile observability down -v`, volume dropped, then `up -d`) — the acceptance is exactly this clean-instance scenario:
+
+1. `docker compose config --quiet` — exit 0.
+2. Grafana healthy on :3000; `GET /api/datasources` lists all five datasources from Git, including `agentflow-prometheus → http://prometheus:9090`.
+3. `GET /api/dashboards/uid/agentflow-overview` — the dashboard with 4 panels, `meta.provisioned: true`.
+4. `GET /api/v1/provisioning/alert-rules` — the rule with `for: 1m`, `severity: warning` and the runbook annotation; the evaluation endpoint shows it **firing** for `agentflow-api` (up=0, app not running — expected per the runbook) and Normal for `otel-collector` after the `for` guard elapsed.
+5. UI-only change prohibition proven at the API: `POST /api/dashboards/db` for the provisioned UID → `Cannot save provisioned dashboard`.
+6. `bash scripts/smoke-local.sh --profile observability` — SMOKE TEST: PASS.
+
+No Java/Gradle change — the compose/config validation and the live runs above are the verification.
+
+### Documentation
+
+- `infra/observability/grafana/provisioning/{datasources,dashboards,alerting}/` + `infra/observability/grafana/dashboards/agentflow-overview.json` (new).
+- [`infra/observability/README.md`](../../infra/observability/README.md) — layout rows, the provisioning configuration bullet, the S13-06 acceptance recipe.
+- [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) — env vars, mounts, comments.
+- [`docs/runbooks/observability-scrape-target-down.md`](../../docs/runbooks/observability-scrape-target-down.md) (new).
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Rich dashboards (API/JVM/DB — S13-14, Workflow/Kafka — S13-15) and notification policies/contact points (alert routing, S13-14/15) plug into this provider; S13-07/08 swap the lgtm-internal Loki/Tempo datasource URLs and the collector exporter endpoints to dedicated services. The kubernetes Grafana provisioning (external Grafana, S15) reuses the same file layout.
 
 ## S13-05 — Prometheus as code
 
