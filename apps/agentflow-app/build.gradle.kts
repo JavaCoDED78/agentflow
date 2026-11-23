@@ -50,6 +50,17 @@ dependencies {
     // is BOM-managed by the Spring Boot BOM (it rides the micrometer line), so no version is
     // pinned here and the registry can never diverge from the Boot-managed Micrometer.
     implementation("io.micrometer:micrometer-registry-prometheus")
+    // OpenTelemetry tracing + OTLP exporter (S13-03): the Boot 4 starter pulls the Micrometer
+    // Tracing OTel bridge (micrometer-tracing-bridge-otel), the OTel SDK autoconfiguration
+    // (spring-boot-opentelemetry / spring-boot-micrometer-tracing-opentelemetry) and the
+    // OTLP span exporter (io.opentelemetry:opentelemetry-exporter-otlp) with its proto
+    // bindings. Without the starter's autoconfiguration modules on the classpath nothing reads
+    // management.opentelemetry.tracing.export.otlp.* and no span exporter is ever created.
+    // The exporter posts to management.opentelemetry.tracing.export.otlp.endpoint (or the
+    // common management.opentelemetry.otlp.endpoint); a missing collector never fails a
+    // request — export is asynchronous. Managed by the Spring Boot BOM, so no version is
+    // pinned here.
+    implementation("org.springframework.boot:spring-boot-starter-opentelemetry")
     // OAuth 2.0 Resource Server (S04-03): validates the JWT access token (signature, issuer,
     // audience, expiry) and backs the bearer/JWT security scheme. Managed by the Spring Boot BOM,
     // so no version is pinned here. It is transitive on the Nimbus JOSE library

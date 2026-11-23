@@ -6,6 +6,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 
 - [S13-01 — telemetry conventions](#s13-01-telemetry-conventions)
 - [S13-02 — Micrometer/Actuator metrics](#s13-02--micrometeractuator-metrics)
+- [S13-03 — OTLP tracing exporter](#s13-03-otlp-tracing-exporter)
 
 ---
 
@@ -86,3 +87,42 @@ DB-pool (hikaricp) meters are not asserted: the app boots without a DataSource o
 ### Scope / follow-up
 
 Metrics-only: no OTLP tracing (S13-03), no dashboards (S13-14…S13-16), no Redis/rate-limit meters (S13-22), no Collector/Prometheus/Grafana provisioning (S13-04…S13-08), no NetworkPolicy (S15). The scrape requires a bearer token; the token is the Prometheus server's own — it is infrastructure, not an app secret, and remains out of the repo (S15).
+
+## S13-03 — OTLP tracing exporter
+
+### What changed
+
+Every HTTP request is now exported as an OpenTelemetry span to an OTLP endpoint, so the Sprint 13 pipeline (Collector → Tempo, S13-04/S13-08) has real traces to carry, and the exporter contract is configuration, not code.
+
+- **Dependency** — `org.springframework.boot:spring-boot-starter-opentelemetry` (BOM-managed) is added to `apps/agentflow-app/build.gradle.kts`. The Boot 4 starter is the piece that matters: it pulls the Micrometer Tracing OTel bridge (`micrometer-tracing-bridge-otel`), the OTel SDK autoconfiguration modules (`spring-boot-opentelemetry`, `spring-boot-micrometer-tracing-opentelemetry`) and the OTLP span exporter (`io.opentelemetry:opentelemetry-exporter-otlp`). Without the starter's autoconfiguration modules on the classpath, nothing reads the `management.opentelemetry.tracing.export.otlp.*` properties and no span exporter is ever created.
+- **Sampling** — `management.tracing.sampling.probability: 1.0` in the base profile (Boot's default is 10%, `parent-based-trace-id-ratio`): every request is traced in dev/test, and the kubernetes profile can lower the same property when the volume demands it.
+- **Service attributes** — per the S13-01 standards: `service.name` is the application name (the auto-configured `Resource` maps `spring.application.name`), and the bounded `deployment.environment` comes from `management.opentelemetry.resource-attributes` = `${AGENTFLOW_DEPLOYMENT_ENVIRONMENT:local}` — configuration-fixed, never taken from a request.
+- **Endpoint from configuration** — the exporter settings are plain Boot properties, also mapped from the `OTEL_EXPORTER_OTLP_*` environment variables. The base profile carries no endpoint (Boot's `localhost:4318` default applies, and a missing collector never fails a request — export is asynchronous); the local profile points the common `management.opentelemetry.otlp.endpoint` at `${AGENTFLOW_OTLP_ENDPOINT:http://localhost:4318}` (Boot appends `/v1/traces`) for the S13-04 Collector. The kubernetes profile gets its in-cluster Collector endpoint in the deployment sprint (S15).
+- **No OTLP metrics push** — the starter transitively drags in `micrometer-registry-otlp`, whose push export defaults to ON (posting to `localhost:4318` on a schedule). It is explicitly disabled (`management.otlp.metrics.export.enabled: false`): metrics ship through the Prometheus scrape (S13-02), never through OTLP push.
+- **No raw body in spans** — HTTP instrumentation never captures request/response bodies; the test below pins that behavior over the wire.
+- **Knock-on** — with tracing wired, the MDC `traceId` is now the request's OTel trace id (32 hex), which is exactly the `GlobalExceptionHandler#correlationId()` documented contract ("the current trace id when tracing is wired"); the handler-test regex was widened to accept either shape.
+
+### Why
+
+S13-01 assigned traces to one home (OpenTelemetry → OTLP → Collector → Tempo) and S13-02 gave the stack metrics to scrape; without the exporter there were no traces at all. Wiring the Boot-managed exporter — rather than hand-building an SDK — keeps every version on the Spring Boot BOM (no pins, no drift) and keeps endpoint/sampling/environment in configuration, which is where the plan puts them.
+
+### Verification
+
+`OtlpTracingExportTest` (new, `test` profile, `@SpringBootTest` on a random port) — 2 tests, JUnit-XML-verified (`tests="2"` `failures="0"`, fresh this run). The test drives the **real** OTLP exporter: `@DynamicPropertySource` points `management.opentelemetry.tracing.export.otlp.endpoint` at an in-process JDK `HttpServer` collector and sets compression to `none`, so the captured payloads are the actual protobuf a Collector receives — no exporter seam is mocked; spans are pushed deterministically via `SdkTracerProvider.forceFlush()`.
+
+1. **A request is exported with stable service attributes** — `GET /actuator/health` → `200`; after the flush, an exported span named after the route is present in the payloads (`get /actuator/health` on the wire — Micrometer names HTTP spans with a lowercase method, the observed format), and the auto-configured `Resource` carries `service.name=agentflow-app` and `deployment.environment=test`.
+2. **Spans never carry the raw request body** — a POST to `/api/v1/runs` with a unique marker in the body is exported as a span (its route appears in the payload), and the marker appears in **no** captured OTLP payload — protobuf encodes strings as raw UTF-8, so any leak would survive verbatim.
+
+`GlobalExceptionHandlerTest` — 5 tests, JUnit-XML-verified fresh this run (`failures="0"`); the two `correlation_id` shape assertions now accept the wired-tracing trace id (`[0-9a-f]{32}`) alongside the no-context UUID (`[0-9a-f-]{36}`).
+
+`./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (no module edge: all wiring is Boot auto-configuration, the test lives in the `observability` package and imports only external OTel SDK / JDK types) + formatting (`spotlessCheck`) + OpenAPI contract. `generateLockFiles --write-locks` regenerated `gradle.lockfile` (the OTel line pinned for every classpath configuration).
+
+### Documentation
+
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line.
+- `CHANGELOG.md` (Unreleased / Added).
+- `docs/observability/standards.md` — needs no change: its S13-03 references ("the traces exporter reads its endpoint/environment/sampling from configuration … and never carries a raw request body") describe exactly what is now wired.
+
+### Scope / follow-up
+
+Traces-only: the Collector, Prometheus, Grafana, Loki and Tempo services (S13-04…S13-08), the workflow/messaging/AI-RAG trace attributes (`agentflow.operation`, `agentflow.step.*`, `agentflow.ai.*` — S13-11…S13-13), the correlation/causation attributes on the outbox/worker hops and the cardinality/privacy check (S13-19) remain scheduled. The kubernetes profile's OTLP endpoint lands with the in-cluster Collector (S15).

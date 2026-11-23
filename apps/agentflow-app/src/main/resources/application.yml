@@ -206,6 +206,31 @@ management:
       'spring.data.redis': false
       logback: false
       cache: false
+  # Tracing (S13-03): OpenTelemetry SDK + OTLP exporter, auto-configured by the
+  # spring-boot-starter-opentelemetry starter. Every HTTP request becomes a span; the batch
+  # exporter posts protobuf to the OTLP endpoint asynchronously, so a missing collector never
+  # fails a request. The endpoint itself is profile-supplied (local: AGENTFLOW_OTLP_ENDPOINT);
+  # Boot also maps the OTEL_EXPORTER_OTLP_* environment variables onto the same properties.
+  # Spans never carry raw request/response bodies (S13-01 standards).
+  tracing:
+    sampling:
+      # Sample every request in dev/test (Boot's default is 10% — parent-based-trace-id-ratio);
+      # the kubernetes profile can lower this when the volume demands it.
+      probability: 1.0
+  opentelemetry:
+    resource-attributes:
+      # Service identity on every span (S13-01): service.name is the application name (the
+      # auto-configured Resource maps spring.application.name); deployment.environment is a
+      # bounded, configuration-fixed value (local / test / kubernetes), never taken from a
+      # request. Overridable via AGENTFLOW_DEPLOYMENT_ENVIRONMENT.
+      deployment.environment: ${AGENTFLOW_DEPLOYMENT_ENVIRONMENT:local}
+  otlp:
+    metrics:
+      export:
+        # The starter drags in micrometer-registry-otlp, whose OTLP push export would default
+        # to ON (posting to localhost:4318 on a schedule). Metrics ship through the Prometheus
+        # scrape endpoint (S13-02), never through OTLP push — keep the push exporter off.
+        enabled: false
   health:
     group:
       liveness:
