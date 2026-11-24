@@ -94,6 +94,14 @@
 | `agentflow.knowledgebase.retrieval.chunks.returned.total` | Counter | chunks | none | Fused chunks returned by one hybrid-retrieval call, incremented once when the retrieval concludes (never an invented value). |
 | `agentflow.ingestion.index.failures.total` | Counter | passes | none | One increment per failed indexing pass — a transient provider fault, a permanent (extraction) failure or a dimension-mismatch failure. |
 
+Pre-existing retrieval meters (`S10-16`, instrumented with the hybrid search before the catalogue existed — documented here because the AI/RAG dashboard (S13-16) renders them):
+
+| Metric | Type | Unit / dimension | Labels | Meaning |
+|---|---|---|---|---|
+| `agentflow.knowledgebase.retrieval.hybrid` | Counter | calls | none | Hybrid searches performed — one increment per `search()` call (the two-halves hybrid is one call). |
+| `agentflow.knowledgebase.retrieval.half-results` | Counter | results | none | Raw results produced by the two hybrid retrieval halves (dense + FTS), summed — one increment per raw result per half. |
+| `agentflow.knowledgebase.retrieval.duration` | Timer | seconds | none | Hybrid retrieval latency — one sample per `search()` call. |
+
 ### Conventions
 
 - Bounded labels only: `reason` is the closed `ProviderFailureReason` vocabulary (plus
@@ -163,4 +171,15 @@ The **Workflow/Kafka operational dashboard (S13-15)** consumes this family — `
 - `messaging.outbox.publish.attempts.total{outcome}` — the per-attempt outcome mix; `permanent_failure` / `ambiguous` rates are the incident signals.
 - `messaging.consumer.lag.count` — the ingester's backlog; pairs with `messaging.consumer.processing.failures.total{outcome}` for DLQ storms.
 
-No alert, SLO or SLO-level dashboard is defined in this document — those land with `S13-17`/`S13-18`. (The S13-14 API/JVM/DB and S13-15 Workflow/Kafka dashboards are already provisioned from Git.)
+The **AI/RAG/cost dashboard (S13-16)** consumes the AI/RAG family — `agentflow-ai-rag-cost.json` — with the following first-consumer mapping (the dashboard is provisioned; alert SLOs land with S13-17/S13-18):
+
+- `ai.provider.chat.latency.seconds` / `ai.provider.embedding.latency.seconds` — p95/p99 whole-call latency, one series each; a persistent p99 spike is a degraded provider.
+- `ai.provider.chat.errors.total{reason}` / `ai.provider.embedding.errors.total{reason}` — the **provider-error** signal; one panel per leg, so a fake-provider scenario (rate_limit / timeout / connection / server_error / client_error / unknown / concurrency_limited) is visible without waiting for an alert.
+- `ai.provider.chat.tokens.input.total` / `.tokens.output.total` / `.embedding.tokens.total` — token throughput, one series per source, reported by the provider only.
+- `usage.estimated.cost.usd` — the hourly estimated-cost gauge (increase over 1h); the honest cost line for a budget.
+- `toolexecution.tool.duration.seconds{outcome}` — the **application-side failure** surface (throttled / timed_out / faulted), shown separately from the provider panels.
+- `knowledgebase.retrieval.duration` — hybrid-retrieval p95/p99.
+- `knowledgebase.retrieval.hybrid` vs `knowledgebase.retrieval.chunks.returned.total` — the **empty-retrieval** signal: continuous hybrid calls with zero chunks returned means an empty collection, no close-enough candidate, or a drifted embedding model; no panel is invented to mark it.
+- `ingestion.index.failures.total` — the application-side indexing-failure rate.
+
+No alert, SLO or SLO-level dashboard is defined in this document — those land with `S13-17`/`S13-18`. (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)

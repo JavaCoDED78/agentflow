@@ -1,0 +1,653 @@
+{
+  "uid": "agentflow-ai-rag-cost",
+  "title": "AgentFlow / AI/RAG/Cost (S13-16)",
+  "description": "AI/RAG/cost operational dashboard (S13-16): chat and embedding provider latency (p95/p99) and errors by reason, token usage, estimated cost (USD/h), retrieval latency and hybrid-call vs chunks-returned, tool duration by outcome and ingestion failures — the AI/RAG family of the dedicated Prometheus (uid agentflow-prometheus). Provider errors are shown separately from application-side failures (tool outcomes, ingestion failures). Units labelled on every panel; no identifiers anywhere. Provisioned from Git; UI edits are refused.",
+  "tags": [
+    "agentflow",
+    "s13-16"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "Logs (Loki)",
+      "tooltip": "Explore logs in Loki",
+      "url": "/explore?orgId=1&left=%7B%22datasource%22%3A%20%22loki%22%2C%20%22queries%22%3A%20%5B%7B%22datasource%22%3A%20%7B%22type%22%3A%20%22loki%22%2C%20%22uid%22%3A%20%22loki%22%7D%2C%20%22expr%22%3A%20%22%7Bservice_name%3D%5C%22agentflow-app%5C%22%7D%22%7D%5D%2C%20%22range%22%3A%20%7B%22from%22%3A%20%22now-1h%22%2C%20%22to%22%3A%20%22now%22%7D%7D",
+      "icon": "external link"
+    },
+    {
+      "type": "link",
+      "title": "Traces (Tempo)",
+      "tooltip": "Explore traces in Tempo",
+      "url": "/explore?orgId=1&left=%7B%22datasource%22%3A%20%22tempo%22%2C%20%22queries%22%3A%20%5B%7B%22datasource%22%3A%20%7B%22type%22%3A%20%22tempo%22%2C%20%22uid%22%3A%20%22tempo%22%7D%2C%20%22expr%22%3A%20%22%7Bservice.name%3D%5C%22agentflow-app%5C%22%7D%22%7D%5D%2C%20%22range%22%3A%20%7B%22from%22%3A%20%22now-1h%22%2C%20%22to%22%3A%20%22now%22%7D%7D",
+      "icon": "external link"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "description": "AI/RAG/cost operational dashboard (S13-16).",
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {},
+      "mode": "markdown",
+      "content": "# AI / RAG / Cost — operational (S13-16)\n\nEvery panel is a bounded `agentflow.*` meter over the dedicated Prometheus (`agentflow-prometheus`, the S13-05 store); no identifiers, no payloads, no prompts. **Provider errors (chat / embedding) are shown separately from application-side failures (tool outcomes, ingestion failures)** so a provider/API problem never hides behind an application validation problem. **Empty retrieval** shows up as a continuous hybrid-call rate with zero chunks returned — no series is invented to mark it. The scrape requires the S13-02 bearer token; while the app is down or the token expired, panels are honestly empty. Logs and traces are reachable via the links (top right)."
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Chat provider latency (p95 / p99, seconds)",
+      "description": "Whole provider chat call (retry loop), one sample per call. A persistent p99 spike is a degraded provider.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(agentflow_ai_provider_chat_latency_seconds_bucket[5m])) by (le))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(agentflow_ai_provider_chat_latency_seconds_bucket[5m])) by (le))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Embedding provider latency (p95 / p99, seconds)",
+      "description": "Whole provider embedding call (retry loop), one sample per call. Same opt-in pattern as the workflow timers.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(agentflow_ai_provider_embedding_latency_seconds_bucket[5m])) by (le))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(agentflow_ai_provider_embedding_latency_seconds_bucket[5m])) by (le))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Chat provider errors (rate/s, by reason)",
+      "description": "Per-attempt chat provider failures, one increment per failed attempt. Rate-limit / timeout / connection / server_error / client_error / unknown / concurrency_limited are the bounded vocabulary (a fake-provider scenario surfaces here).",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum by (reason) (rate(agentflow_ai_provider_chat_errors_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Embedding provider errors (rate/s, by reason)",
+      "description": "Per-attempt embedding provider failures, one increment per failed attempt. The same bounded reason vocabulary as chat.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum by (reason) (rate(agentflow_ai_provider_embedding_errors_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Token usage (rate/s)",
+      "description": "Input / output chat tokens and embedding tokens the provider reports, one increment per successful call (never an invented value).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum(rate(agentflow_ai_provider_chat_tokens_input_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "chat input"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum(rate(agentflow_ai_provider_chat_tokens_output_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "chat output"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum(rate(agentflow_ai_provider_embedding_tokens_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "embedding"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Estimated cost (USD, last hour)",
+      "description": "The estimated cost a usage record carries, summed over the last hour. A zero/absent cost records nothing.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "usd",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 30,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "increase(agentflow_usage_estimated_cost_usd_total[1h])",
+          "instant": false,
+          "range": true,
+          "legendFormat": "estimated cost"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Retrieval latency (p95 / p99, seconds)",
+      "description": "Hybrid retrieval latency, one sample per call. A persistent p99 spike means the embedding provider or the search is slow.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(agentflow_knowledgebase_retrieval_duration_seconds_bucket[5m])) by (le))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(agentflow_knowledgebase_retrieval_duration_seconds_bucket[5m])) by (le))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Retrieval: hybrid calls vs chunks returned (rate/s)",
+      "description": "Two counters that make an empty retrieval visible: continuous hybrid calls with zero chunks returned — the collection is empty, nothing is close enough, or the embedding model drifted. No invented panel.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 30,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum(rate(agentflow_knowledgebase_retrieval_hybrid_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "hybrid calls"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "sum(rate(agentflow_knowledgebase_retrieval_chunks_returned_total[5m]))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "chunks returned"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Tool duration (p95, seconds, by outcome)",
+      "description": "Tool calls by the bounded outcome vocabulary (succeeded / throttled / timed_out / faulted). throttled / timed_out / faulted are the application-side failure surface — distinct from the provider panels above.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(agentflow_toolexecution_tool_duration_seconds_bucket[5m])))",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Ingestion failures (rate/s)",
+      "description": "Indexing passes that failed (transient provider fault, permanent extraction failure, or dimension mismatch at assembly). Application-side failure surface.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "agentflow-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 30,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "agentflow-prometheus"
+          },
+          "expr": "rate(agentflow_ingestion_index_failures_total[5m])",
+          "instant": false,
+          "range": true,
+          "legendFormat": ""
+        }
+      ]
+    }
+  ]
+}

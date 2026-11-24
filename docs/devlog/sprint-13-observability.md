@@ -19,6 +19,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-13 — AI/RAG metrics instrumentation](#s13-13-airag-metrics-instrumentation)
 - [S13-14 — API/JVM/DB dashboard](#s13-14-apijvmdb-dashboard)
 - [S13-15 — Workflow/Kafka dashboard](#s13-15-workflowkafka-dashboard)
+- [S13-16 — AI/RAG/cost dashboard](#s13-16-airagcost-dashboard)
 
 ---
 
@@ -262,6 +263,49 @@ Live, this session, against the local stack (observability profile up; the app i
 
 - [`infra/observability/README.md`](../../infra/observability/README.md) — dashboards list mention.
 - [`docs/observability/metrics.md`](../observability/metrics.md) — the hooks section updated (the dashboard now exists).
+- `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
+
+## S13-16 — AI/RAG/cost dashboard
+
+### What changed
+
+The Grafana provisioning provider (S13-06) plugs into the third rich dashboard: the **AI/RAG/cost** operational dashboard, rendered entirely from the dedicated Prometheus (the S13-05 store, `agentflow-prometheus` datasource), showing chat and embedding provider latency (p95/p99), provider errors by reason, token usage, estimated cost (USD/h), retrieval latency and hybrid-call vs chunks-returned, tool duration by outcome and ingestion failures — plus links into Loki (logs) and Tempo (traces).
+
+**Histogram opt-in for the AI/RAG timers** — `application.yml` gains the same `percentiles-histogram` opt-in S13-14/S13-15 used, applied to the four AI/RAG timers: `agentflow.ai.provider.chat.latency.seconds`, `agentflow.ai.provider.embedding.latency.seconds`, `agentflow.toolexecution.tool.duration.seconds` and `agentflow.knowledgebase.retrieval.duration`. Boot's default timer has no bucket series, so `histogram_quantile` had nothing to render. The buckets carry only the existing bounded tags (no model, no id).
+
+**Dashboard** — new [`infra/observability/grafana/dashboards/agentflow-ai-rag-cost.json`](../../infra/observability/grafana/dashboards/agentflow-ai-rag-cost.json), stable UID `agentflow-ai-rag-cost`, `allowUiUpdates: false` provider: 11 panels (a header + 10 operational panels), all pointing at `agentflow-prometheus`, units labelled in the titles and the field config. It is provisioned by the same S13-06 provider (`updateIntervalSeconds: 30`), so the acceptance — dashboard auto-loaded — holds on a clean instance. The links (Loki/Tempo Explore) are part of the dashboard contract, not a manual UI setup.
+
+**Provider errors vs application-side failures — kept separate.** The plan (S13-16) names both surfaces and the dashboard shows them as two distinct families of panels: the chat/embedding **provider-error** panels (`agentflow_ai_provider_chat_errors_total{reason}` / `agentflow_ai_provider_embedding_errors_total{reason}` — the fake-provider scenario, rate_limit / timeout / connection / server_error / client_error / unknown / concurrency_limited), and the application-side panels (tool duration by outcome, `throttled` / `timed_out` / `faulted`; ingestion failures; retrieval hybrid-call vs chunks-returned). A provider/API problem can never hide behind an application validation problem.
+
+**Empty retrieval — no invented panel.** `retrieval.hybrid` vs `retrieval.chunks.returned.total` are two series on one panel: continuous hybrid calls with zero chunks returned is the empty-retrieval signal, and no extra metric or label is invented to mark it.
+
+**Pre-existing retrieval meters documented.** `agentflow.knowledgebase.retrieval.hybrid`, `.half-results` and `.duration` were instrumented in S10-16 and were never in the catalogue (the S13-13 family documented only chunks-returned). They are now in [`docs/observability/metrics.md`](../observability/metrics.md) — the same meters the dashboard renders.
+
+### Why
+
+The plan (S13-16) names the AI/RAG/cost dashboard: provider errors/latency, tokens/cost estimate, retrieval latency and ingestion status, with provider errors shown separately from application validation errors. The metrics were instrumented in S13-13 (provider wrappers, tool executor, retrieval chunks, usage recorder, ingestion service) but nothing showed them — this is the surface that lets an operator see a fake-provider scenario and an empty retrieval without peeking at the database or the code.
+
+### Verification
+
+Live, this session, against the local stack (observability profile up; the app is the API role):
+
+1. Dashboard provisioned: `GET localhost:3000/api/dashboards/uid/agentflow-ai-rag-cost` → `meta.provisioned: true`, `provisionedExternalId: agentflow-ai-rag-cost.json`, `panels: 11`.
+2. All 16 panel queries execute against the dedicated Prometheus (`/api/v1/query_range`, 6h window) — `status: success`, 0 failures.
+3. The histogram opt-in is in place (`application.yml`) but is **not** verified against a live scrape: the live scrape is currently down (`up{job="agentflow-api"} = 0`) — the app is running on port 8090 while the Git-configured scrape target is `host.docker.internal:8080` (the app is started with an explicit `--server.port=8090`, a local drift, not a repo defect — the Git config matches the default local flow). The bucket series appear once the app is scraped on the configured target.
+4. `./gradlew :apps:agentflow-app:check` — BUILD SUCCESSFUL.
+
+**Acceptance note (honest):** the "fake provider" and "empty retrieval" scenarios are not exercised live here — the local API role emits no AI/RAG meters, so the panels are honestly empty (zero series). The panels render the real meters whenever the app serves traffic: a fake-provider scenario moves the chat/embedding-error panels; an empty retrieval shows hybrid calls continuing with chunks flatlining at zero.
+
+### Scope / follow-up
+
+- A fake-provider drill (inject a provider latency/error spike, watch the error/latency panels move) is the S15 deployment-sprint follow-up, together with the alert rules (S13-17) that consume the same metrics.
+- The dashboard does not add new meters, alerts or runbooks — S13-17 owns alerts; the dashboard is the operator surface.
+- The `agentflow-overview.json`, `agentflow-api-jvm-db.json` and `agentflow-workflow-kafka.json` dashboards are unchanged.
+
+### Documentation
+
+- [`infra/observability/README.md`](../../infra/observability/README.md) — dashboards list mention.
+- [`docs/observability/metrics.md`](../observability/metrics.md) — the AI/RAG family (pre-existing S10-16 retrieval meters documented) and the S13-16 hooks section.
 - `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
 
 ## S13-01 — telemetry conventions

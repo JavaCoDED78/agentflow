@@ -211,11 +211,18 @@ management:
     # Default bucket boundaries; the buckets carry only the existing bounded tags.
     # S13-15: the same opt-in for the workflow timers, so the Workflow/Kafka
     # dashboard can render p95/p99 run and step durations.
+    # S13-16: the same opt-in for the AI/RAG timers, so the AI/RAG/cost
+    # dashboard can render p95/p99 provider latency, tool duration and
+    # retrieval latency.
     distribution:
       percentiles-histogram:
         http.server.requests: true
         agentflow.workflowexecution.run.duration.seconds: true
         agentflow.workflowexecution.step.duration.seconds: true
+        agentflow.ai.provider.chat.latency.seconds: true
+        agentflow.ai.provider.embedding.latency.seconds: true
+        agentflow.toolexecution.tool.duration.seconds: true
+        agentflow.knowledgebase.retrieval.duration: true
   # Tracing (S13-03): OpenTelemetry SDK + OTLP exporter, auto-configured by the
   # spring-boot-starter-opentelemetry starter. Every HTTP request becomes a span; the batch
   # exporter posts protobuf to the OTLP endpoint asynchronously, so a missing collector never
