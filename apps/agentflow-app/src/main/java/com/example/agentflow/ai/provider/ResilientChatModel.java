@@ -5,8 +5,16 @@ import com.example.agentflow.ai.application.ChatRequest;
 import com.example.agentflow.ai.application.ChatResponse;
 import com.example.agentflow.ai.application.ProviderFailureReason;
 import com.example.agentflow.ai.application.ProviderResiliencePolicy;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.SplittableRandom;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -72,6 +80,23 @@ public class ResilientChatModel implements ChatModelPort {
 
   private static final Logger log = LoggerFactory.getLogger(ResilientChatModel.class);
 
+  /** Latency histogram for one provider call (the whole retry loop), S13-13. */
+  private static final String LATENCY_METRIC = "agentflow.ai.provider.chat.latency.seconds";
+
+  /** Per-attempt failure counter, S13-13; bounded {@code reason} label. */
+  private static final String ERRORS_METRIC = "agentflow.ai.provider.chat.errors.total";
+
+  /** Input token counter, S13-13. */
+  private static final String INPUT_TOKENS_METRIC = "agentflow.ai.provider.chat.tokens.input.total";
+
+  /** Output token counter, S13-13. */
+  private static final String OUTPUT_TOKENS_METRIC =
+      "agentflow.ai.provider.chat.tokens.output.total";
+
+  /** Bounded span attribute naming the model the request targeted (never a prompt/content). */
+  private static final AttributeKey<String> MODEL_ATTRIBUTE =
+      AttributeKey.stringKey("agentflow.ai.model");
+
   private final ChatModelPort delegate;
   private final ProviderResiliencePolicy policy;
   private final Function<Throwable, ProviderFailureReason> classifier;
@@ -81,8 +106,12 @@ public class ResilientChatModel implements ChatModelPort {
   private final Consumer<Long> sleeper;
   private final ExecutorService callExecutor;
   private final Semaphore semaphore;
+  private final MeterRegistry meterRegistry;
+  private final Tracer tracer;
 
   /**
+   * Back-compat constructor without observability (test seams that never register a registry).
+   *
    * @param delegate the wrapped provider port (non-null)
    * @param policy the bounded backoff descriptor (validated by {@link ProviderResiliencePolicy})
    * @param classifier the exception-to-reason classifier (non-null)
@@ -101,6 +130,44 @@ public class ResilientChatModel implements ChatModelPort {
       Supplier<Double> jitter,
       Consumer<Long> sleeper,
       ExecutorService callExecutor) {
+    this(
+        delegate,
+        policy,
+        classifier,
+        overallTimeout,
+        maxParallelCalls,
+        jitter,
+        sleeper,
+        callExecutor,
+        null,
+        null);
+  }
+
+  /**
+   * Full constructor with the S13-13 meters and an optional provider-call span.
+   *
+   * @param delegate the wrapped provider port (non-null)
+   * @param policy the bounded backoff descriptor (validated by {@link ProviderResiliencePolicy})
+   * @param classifier the exception-to-reason classifier (non-null)
+   * @param overallTimeout the wall-clock bound for a single attempt (non-negative)
+   * @param maxParallelCalls the concurrency cap (at least 1)
+   * @param jitter the jitter source in {@code [0, 1)} (may be null → no jitter)
+   * @param sleeper the pause-between-retries function (non-null)
+   * @param callExecutor the executor running the bound attempt (non-null)
+   * @param meterRegistry the registry the S13-13 meters register on; may be {@code null}
+   * @param tracer the tracer for the provider-call span; may be {@code null}
+   */
+  public ResilientChatModel(
+      ChatModelPort delegate,
+      ProviderResiliencePolicy policy,
+      Function<Throwable, ProviderFailureReason> classifier,
+      Duration overallTimeout,
+      int maxParallelCalls,
+      Supplier<Double> jitter,
+      Consumer<Long> sleeper,
+      ExecutorService callExecutor,
+      MeterRegistry meterRegistry,
+      Tracer tracer) {
     this.delegate = requireNonNull(delegate, "delegate");
     this.policy = requireNonNull(policy, "policy");
     this.classifier = requireNonNull(classifier, "classifier");
@@ -117,6 +184,8 @@ public class ResilientChatModel implements ChatModelPort {
     this.sleeper = requireNonNull(sleeper, "sleeper");
     this.callExecutor = requireNonNull(callExecutor, "callExecutor");
     this.semaphore = new Semaphore(maxParallelCalls);
+    this.meterRegistry = meterRegistry;
+    this.tracer = tracer;
   }
 
   /**
@@ -136,6 +205,31 @@ public class ResilientChatModel implements ChatModelPort {
       Function<Throwable, ProviderFailureReason> classifier,
       Duration overallTimeout,
       int maxParallelCalls) {
+    return of(delegate, policy, classifier, overallTimeout, maxParallelCalls, null, null);
+  }
+
+  /**
+   * Production factory with observability (S13-13): same defaults plus the S13-13 meters and an
+   * optional provider-call span. Pass a {@code null} registry or tracer to disable observability
+   * entirely (test seams).
+   *
+   * @param delegate the wrapped provider port (non-null)
+   * @param policy the bounded backoff descriptor
+   * @param classifier the exception-to-reason classifier
+   * @param overallTimeout the wall-clock bound for a single attempt
+   * @param maxParallelCalls the concurrency cap (at least 1)
+   * @param meterRegistry the registry the S13-13 meters register on; may be {@code null}
+   * @param tracer the tracer for the provider-call span; may be {@code null}
+   * @return a resilient port using the shared production seams
+   */
+  public static ResilientChatModel of(
+      ChatModelPort delegate,
+      ProviderResiliencePolicy policy,
+      Function<Throwable, ProviderFailureReason> classifier,
+      Duration overallTimeout,
+      int maxParallelCalls,
+      MeterRegistry meterRegistry,
+      Tracer tracer) {
     return new ResilientChatModel(
         delegate,
         policy,
@@ -144,7 +238,9 @@ public class ResilientChatModel implements ChatModelPort {
         maxParallelCalls,
         SplittableJitter.DEFAULT,
         ResilientChatModel::defaultSleep,
-        Executors.newCachedThreadPool(daemonFactory()));
+        Executors.newCachedThreadPool(daemonFactory()),
+        meterRegistry,
+        tracer);
   }
 
   private static <T> T requireNonNull(T value, String name) {
@@ -191,12 +287,35 @@ public class ResilientChatModel implements ChatModelPort {
    */
   @Override
   public ChatResponse chat(ChatRequest request) {
+    Span span = startSpan(request);
+    long startNanos = System.nanoTime();
+    boolean failed = false;
+    try {
+      ChatResponse response = retryLoop(request);
+      recordTokens(response);
+      return response;
+    } catch (RuntimeException | Error e) {
+      failed = true;
+      throw e;
+    } finally {
+      recordLatency(startNanos);
+      endSpan(span, failed);
+    }
+  }
+
+  /**
+   * The bounded retry loop: one bounded attempt suite per configured max attempts. Wrapped by
+   * {@link #chat(ChatRequest)} so the S13-13 meters and span see a single operation, not each
+   * attempt.
+   */
+  private ChatResponse retryLoop(ChatRequest request) {
     RuntimeException lastError = null;
     for (int used = 1; used <= policy.maxAttempts(); used++) {
       try {
         return performCallWithOverallTimeout(request);
       } catch (RuntimeException e) {
         lastError = e;
+        recordFailure(e);
         boolean retryable =
             e instanceof ProviderConcurrencyLimitedException || classifier.apply(e).isRetryable();
         if (!retryable || !policy.isRetryAllowed(used)) {
@@ -217,6 +336,107 @@ public class ResilientChatModel implements ChatModelPort {
     throw lastError != null
         ? lastError
         : new IllegalStateException("resilient chat call exhausted without a result");
+  }
+
+  /**
+   * Start the provider-call span (S13-13): a closed operation name, a single bounded model
+   * attribute, and no payload/content. {@code null} when tracing is disabled.
+   */
+  private Span startSpan(ChatRequest request) {
+    if (tracer == null) {
+      return null;
+    }
+    try {
+      return tracer
+          .spanBuilder("ResilientChatModel#chat")
+          .setAttribute(MODEL_ATTRIBUTE, request.model())
+          .startSpan();
+    } catch (RuntimeException | Error ignored) {
+      return null;
+    }
+  }
+
+  /** End the span and, on a failed call, mark it an error; metering never propagates. */
+  private void endSpan(Span span, boolean failed) {
+    if (span == null) {
+      return;
+    }
+    try {
+      if (failed) {
+        span.setStatus(StatusCode.ERROR);
+      }
+      span.end();
+    } catch (RuntimeException | Error ignored) {
+      // Span finalisation must never fail a provider call (observability, not business state).
+    }
+  }
+
+  /**
+   * Record one failed attempt's failure in the S13-13 errors counter (bounded {@code reason} label:
+   * the classified failure reason, or {@code concurrency_limited} for the throttle fault). Never
+   * fails the call.
+   */
+  private void recordFailure(RuntimeException e) {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      String reason =
+          e instanceof ProviderConcurrencyLimitedException
+              ? "concurrency_limited"
+              : classifier.apply(e).name().toLowerCase(Locale.ROOT);
+      Counter.builder(ERRORS_METRIC)
+          .tag("reason", reason)
+          .description("Provider chat attempts failed (S13-13); bounded reason label")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a provider call.
+    }
+  }
+
+  /**
+   * Record the tokens the provider reported for a successful response (never an invented value).
+   */
+  private void recordTokens(ChatResponse response) {
+    if (meterRegistry == null || response == null || response.usage() == null) {
+      return;
+    }
+    try {
+      long inputTokens = response.usage().inputTokens();
+      long outputTokens = response.usage().outputTokens();
+      if (inputTokens > 0) {
+        Counter.builder(INPUT_TOKENS_METRIC)
+            .description("Provider chat input tokens (S13-13)")
+            .register(meterRegistry)
+            .increment(inputTokens);
+      }
+      if (outputTokens > 0) {
+        Counter.builder(OUTPUT_TOKENS_METRIC)
+            .description("Provider chat output tokens (S13-13)")
+            .register(meterRegistry)
+            .increment(outputTokens);
+      }
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a provider call.
+    }
+  }
+
+  /**
+   * Record the whole-call latency sample (the retry loop, not each attempt). Never fails the call.
+   */
+  private void recordLatency(long startNanos) {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      Timer.builder(LATENCY_METRIC)
+          .description("Provider chat call latency in seconds (S13-13)")
+          .register(meterRegistry)
+          .record(Math.max(0L, System.nanoTime() - startNanos), TimeUnit.NANOSECONDS);
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a provider call.
+    }
   }
 
   /**

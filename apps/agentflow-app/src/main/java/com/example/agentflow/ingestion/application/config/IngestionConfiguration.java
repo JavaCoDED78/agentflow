@@ -11,6 +11,7 @@ import com.example.agentflow.knowledgebase.application.DocumentPayloadStore;
 import com.example.agentflow.knowledgebase.application.DocumentQueryService;
 import com.example.agentflow.knowledgebase.application.DocumentTransitionService;
 import com.example.agentflow.messaging.application.OutboxService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,6 +50,9 @@ public class IngestionConfiguration {
    * @param chunker the deterministic chunker
    * @param embeddingGenerationService the batching embed step (S10-12)
    * @param outboxService the transactional-outbox appender for the {@code document.indexed} event
+   * @param meterRegistryProvider the provider of the {@link MeterRegistry} the ingestion failure
+   *     counter is registered on; empty when no registry is wired, in which case metering is a
+   *     silent no-op
    * @return the indexing service bound from {@code agentflow.ingestion.indexing.*}
    */
   @Bean
@@ -61,7 +65,8 @@ public class IngestionConfiguration {
       DocumentParser documentParser,
       Chunker chunker,
       EmbeddingGenerationService embeddingGenerationService,
-      OutboxService outboxService) {
+      OutboxService outboxService,
+      ObjectProvider<MeterRegistry> meterRegistryProvider) {
     RedeliveryPolicy redeliveryPolicy =
         RedeliveryPolicy.fromConfig(properties.getIngestion().getIndexing().getRedeliveryPolicy());
     return new IngestionService(
@@ -73,6 +78,7 @@ public class IngestionConfiguration {
         chunker,
         embeddingGenerationService,
         outboxService,
-        redeliveryPolicy);
+        redeliveryPolicy,
+        meterRegistryProvider.getIfAvailable());
   }
 }

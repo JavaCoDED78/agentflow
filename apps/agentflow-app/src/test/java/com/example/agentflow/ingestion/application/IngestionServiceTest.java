@@ -33,6 +33,7 @@ import com.example.agentflow.knowledgebase.application.DocumentTransitionService
 import com.example.agentflow.knowledgebase.application.DocumentView;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -365,5 +366,80 @@ class IngestionServiceTest {
     verify(transitionService, never()).markIndexed(any(), any(), anyInt(), anyString());
     verify(transitionService, never()).markFailed(any(), any(), any(), any());
     verify(outboxService, never()).enqueue(any());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // S13-13 failures counter
+  // ---------------------------------------------------------------------------------------------
+
+  /** A transient provider fault propagates and increments the S13-13 failures counter. */
+  @Test
+  void a_transient_provider_fault_records_the_failures_counter() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    when(queryService.findForIndexing(TENANT, DOCUMENT)).thenReturn(Optional.of(view("QUEUED")));
+    when(transitionService.claimForIndexing(TENANT, DOCUMENT, false)).thenReturn(true);
+    when(payloadStore.fetch(TENANT, DOCUMENT))
+        .thenReturn("hello world from the test document".getBytes(StandardCharsets.UTF_8));
+    when(parser.parse(any(), any(), any()))
+        .thenReturn(
+            ExtractionResult.of(
+                1, "hello world from the test document", Map.of(), false, "tika:test"));
+    EmbeddingPort down =
+        request -> {
+          throw new RuntimeException("provider unavailable");
+        };
+    IngestionService service =
+        new IngestionService(
+            queryService,
+            transitionService,
+            chunkIndexingService,
+            payloadStore,
+            parser,
+            new Chunker(new ChunkingConfig(Strategy.CHARACTER_BOUNDARY, 500, 50)),
+            new EmbeddingGenerationService(down, 32),
+            outboxService,
+            RedeliveryPolicy.SKIP,
+            registry);
+
+    assertThatThrownBy(
+            () -> service.index(new IngestionEventKey(TENANT, DOCUMENT), INGESTION_EVENT))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("provider unavailable");
+
+    assertThat(registry.find(IngestionService.FAILURES_METRIC).counter().count()).isEqualTo(1.0);
+  }
+
+  /**
+   * A permanent (extraction) failure records the counter too — it is a failed pass, not a no-op.
+   */
+  @Test
+  void a_permanent_extraction_failure_records_the_failures_counter() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    when(queryService.findForIndexing(TENANT, DOCUMENT)).thenReturn(Optional.of(view("QUEUED")));
+    when(transitionService.claimForIndexing(TENANT, DOCUMENT, false)).thenReturn(true);
+    when(payloadStore.fetch(TENANT, DOCUMENT))
+        .thenReturn("hello world from the test document".getBytes(StandardCharsets.UTF_8));
+    when(parser.parse(any(), any(), any()))
+        .thenReturn(
+            ExtractionResult.failed(
+                new ExtractionError(ExtractionError.Code.CORRUPT, "bad file"), "tika:test"));
+    IngestionService service =
+        new IngestionService(
+            queryService,
+            transitionService,
+            chunkIndexingService,
+            payloadStore,
+            parser,
+            new Chunker(new ChunkingConfig(Strategy.CHARACTER_BOUNDARY, 500, 50)),
+            new EmbeddingGenerationService(embeddingPort, 32),
+            outboxService,
+            RedeliveryPolicy.SKIP,
+            registry);
+
+    IngestionStatusDto result =
+        service.index(new IngestionEventKey(TENANT, DOCUMENT), INGESTION_EVENT);
+
+    assertThat(result.status()).isEqualTo("FAILED");
+    assertThat(registry.find(IngestionService.FAILURES_METRIC).counter().count()).isEqualTo(1.0);
   }
 }

@@ -16,6 +16,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-10 — trace context over Kafka](#s13-10-trace-context-over-kafka)
 - [S13-11 — workflow metrics instrumentation](#s13-11-workflow-metrics-instrumentation)
 - [S13-12 — messaging metrics instrumentation](#s13-12-messaging-metrics-instrumentation)
+- [S13-13 — AI/RAG metrics instrumentation](#s13-13-airag-metrics-instrumentation)
 
 ---
 
@@ -143,6 +144,44 @@ Sprint 13's metric families must exist before the dashboards land — the outbox
 ### Documentation
 
 - [`docs/observability/metrics.md`](../observability/metrics.md) — the messaging family added to the catalogue (names, types, units, labels, the conventions and the downstream hooks).
+- `docs/devlog/sprint-13-observability.md` (this section); `CHANGELOG.md` (this entry).
+
+## S13-13 — AI/RAG metrics instrumentation
+
+### What changed
+
+The `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families of Sprint 13 metrics are now instrumented — the provider-call latency, errors, tokens and estimated cost, the tool-duration and chunks-returned, and the ingestion-failure metrics the AI/RAG dashboards (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18) build on. Every metric is one fact with a bounded label, no identifier anywhere, and metering never fails a business operation.
+
+**`ResilientChatModel`** (`ai.provider`, extended in place) takes an optional `MeterRegistry` + `Tracer` (threaded through the 11-arg full constructor, 9-arg delegate — the previous 10-arg 9-arg delegates keep the test seams unchanged). After every attempt it records `agentflow.ai.provider.chat.latency.seconds` (timer, the whole retry loop — one sample per call, on success and on fault) and `agentflow.ai.provider.chat.errors.total{reason}` (counter, on failure only — a permanent failure is recorded once, a retryable one per attempt); on a successful response it also records `agentflow.ai.provider.chat.tokens.input.total` / `.tokens.output.total` (counters, only when the provider reports the counts — never an invented value). When a `Tracer` is wired it opens a closed `ResilientChatModel#chat` span (`agentflow.ai.model` = the target model id, no prompt/content/tenant), closed in a `finally`.
+
+**`ResilientEmbeddingModel`** (`ai.provider`, extended in place) takes the same optional `MeterRegistry` + `Tracer` (threaded through the 11-arg full constructor, 9-arg delegate). Same rules: `agentflow.ai.provider.embedding.latency.seconds` (timer), `agentflow.ai.provider.embedding.errors.total{reason}` (counter), `agentflow.ai.provider.embedding.tokens.total` (counter), and a closed `ResilientEmbeddingModel#embed` span on success/fault.
+
+**`UsageMeteringService`** (`usage.application`, extended in place) takes an optional `MeterRegistry` (resolved in the `record(...)` path, never in the constructor — the constructor stays DB-free). After a successful record it increments `agentflow.usage.estimated.cost.usd` (counter, the `estimatedCost` the record carries — never an invented value; a zero/absent cost records nothing).
+
+**`BoundedToolExecutor`** (`toolexecution.application`, extended in place) takes an optional `MeterRegistry` (4-arg full constructor → 1-arg delegate). A `agentflow.toolexecution.tool.duration.seconds{outcome}` timer is recorded in a `finally` after every concluded call (success, throttle, timeout or fault), tagged with the bounded `ToolInvocationOutcome` vocabulary.
+
+**`RetrievalService`** (`knowledgebase.application`, extended in place) takes an optional `MeterRegistry` (threaded through the 3-arg full constructor, 2-arg delegate). `agentflow.knowledgebase.retrieval.chunks.returned.total` is incremented at conclusion of a hybrid retrieval (the fused chunk count, never an invented value). `usage` and `knowledgebase` keep the same contract shape: a null registry is a silent no-op.
+
+**`IngestionService`** (`ingestion.application`, extended in place) takes an optional `MeterRegistry` (4-arg full constructor, 2-arg delegate). When indexing is never launched (transient provider fault, permanent extraction failure, or a dimension mismatch at the assembly step) it increments `agentflow.ingestion.index.failures.total` — one increment per failed indexing pass.
+
+Metering everywhere is wrapped and debug-logged; a null registry is a silent no-op. The previous constructors are unchanged (the 9-arg/3-arg delegates keep the test seams).
+
+### Why
+
+S13-11/S13-12 shipped the workflow-execution and messaging families; the AI/RAG half was the missing dashboards/alerts surface. The plan (S13-13) names exactly the AI/RAG surfaces: provider-call latency, errors, tokens, estimated cost, tool duration, retrieval chunks returned and ingestion failures. Nothing here publishes a number the code does not have — every counter is incremented only on a successful fact or a real fault, never on a null/zero value, and no prompt/document text, tenant, run, user or document id is ever recorded.
+
+### Verification
+
+`./gradlew :apps:agentflow-app:test --tests 'ResilientProviderObservabilityTest' --tests 'ResilientChatModelTest' --tests 'ResilientEmbeddingModelTest' --tests 'BoundedToolExecutorTest' --tests 'RetrievalServiceTest' --tests 'UsageMeteringServiceTest' --tests 'IngestionServiceTest'` — BUILD SUCCESSFUL, 0 failures, 0 errors. Fresh JUnit XML verified: `ResilientProviderObservabilityTest` (6 — the four chat meters, the two embedding meters, the estimated-cost counter, the token counters, the tool-duration tag and the ingestion failure counter, all on a throwaway registry; plus two span cases with a real SDK tracer); `BoundedToolExecutorTest` (+2 — the timer tagged `succeeded`/`timeout`); `RetrievalServiceTest` (+1 — the chunks-returned counter = 1.0); `UsageMeteringServiceTest` (+2 — the cost counter on a successful record, zero/null-cost no-op); `IngestionServiceTest` (+2 — transient failure and permanent extraction failure increment the counter). `./gradlew :apps:agentflow-app:test` (whole unit suite) — BUILD SUCCESSFUL.
+
+### Scope / follow-up
+
+- No dashboard, alert or SLO is defined here (S13-17/18); `docs/observability/metrics.md` carries the new family.
+- The production embedding-port wiring is unchanged — S13-13 instruments the existing `ResilientEmbeddingModel` (used in tests and the opt-in production path); the production embedding-port bean remains owned by the caller that builds the `EmbeddingPort`.
+
+### Documentation
+
+- [`docs/observability/metrics.md`](../observability/metrics.md) — the AI/RAG family added (names, types, units, labels, conventions and the downstream hooks).
 - `docs/devlog/sprint-13-observability.md` (this section); `CHANGELOG.md` (this entry).
 
 ## S13-01 — telemetry conventions

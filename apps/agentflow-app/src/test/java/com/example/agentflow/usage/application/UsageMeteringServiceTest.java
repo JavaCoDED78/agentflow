@@ -8,6 +8,8 @@ import com.example.agentflow.usage.domain.Measurement;
 import com.example.agentflow.usage.domain.UsageRecordDto;
 import com.example.agentflow.usage.domain.UsageType;
 import com.example.agentflow.usage.persistence.UsageRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.math.BigDecimal;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -53,6 +55,58 @@ class UsageMeteringServiceTest {
         assertThrows(IllegalStateException.class, () -> noDb.record(validModelRecord()));
 
     assertThat(ex).hasMessageContaining("no database connection is configured");
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // S13-13 estimated-cost counter
+  // ---------------------------------------------------------------------------------------------
+
+  /** A record carrying an estimated cost increments the S13-13 estimated-cost counter. */
+  @Test
+  void record_records_the_estimated_cost_counter_when_the_record_carries_a_cost() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    UsageMeteringService costService = new UsageMeteringService(repository, registry);
+
+    UsageRecordDto record = withEstimatedCost(validModelRecord(), new BigDecimal("0.02"));
+    costService.record(record);
+
+    assertThat(registry.find(UsageMeteringService.COST_METRIC).counter().count()).isEqualTo(0.02);
+  }
+
+  /** A record without an estimated cost records nothing — never an invented value. */
+  @Test
+  void record_records_nothing_when_the_record_carries_no_estimated_cost() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    UsageMeteringService costService = new UsageMeteringService(repository, registry);
+
+    costService.record(validModelRecord());
+
+    assertThat(registry.find(UsageMeteringService.COST_METRIC).meters()).isEmpty();
+  }
+
+  private static UsageRecordDto withEstimatedCost(UsageRecordDto base, BigDecimal cost) {
+    return new UsageRecordDto(
+        base.id(),
+        base.tenantId(),
+        base.runId(),
+        base.stepRunId(),
+        base.attempt(),
+        base.usageType(),
+        base.measurement(),
+        base.provider(),
+        base.model(),
+        base.toolName(),
+        base.toolVersion(),
+        base.inputTokens(),
+        base.outputTokens(),
+        cost,
+        base.providerCost(),
+        base.unit(),
+        base.currency(),
+        base.providerRequestId(),
+        base.providerMetadata(),
+        base.priceVersion(),
+        base.pricingRevision());
   }
 
   private static UsageRecordDto validModelRecord() {

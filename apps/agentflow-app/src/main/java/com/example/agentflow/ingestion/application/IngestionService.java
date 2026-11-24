@@ -16,6 +16,8 @@ import com.example.agentflow.knowledgebase.application.DocumentView;
 import com.example.agentflow.messaging.application.CorrelationHeaders;
 import com.example.agentflow.messaging.application.OutboxService;
 import com.example.agentflow.messaging.domain.OutboxEvent;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -90,6 +92,9 @@ public final class IngestionService {
   /** The safe, machine-readable failure code for an embedding-dimensionality mismatch. */
   private static final String ERROR_DIMENSION_MISMATCH = "EMBEDDING_DIMENSION_MISMATCH";
 
+  /** Failure counter for the indexing pass (S13-13); one increment per failed pass. */
+  static final String FAILURES_METRIC = "agentflow.ingestion.index.failures.total";
+
   private final DocumentQueryService documentQueryService;
   private final DocumentTransitionService documentTransitionService;
   private final ChunkIndexingService chunkIndexingService;
@@ -99,6 +104,8 @@ public final class IngestionService {
   private final EmbeddingGenerationService embeddingGenerationService;
   private final OutboxService outboxService;
   private final RedeliveryPolicy redeliveryPolicy;
+
+  private final MeterRegistry meterRegistry;
 
   /**
    * @param documentQueryService the tenant-scoped document read path ({@code knowledgebase})
@@ -124,6 +131,46 @@ public final class IngestionService {
       EmbeddingGenerationService embeddingGenerationService,
       OutboxService outboxService,
       RedeliveryPolicy redeliveryPolicy) {
+    this(
+        documentQueryService,
+        documentTransitionService,
+        chunkIndexingService,
+        payloadStore,
+        documentParser,
+        chunker,
+        embeddingGenerationService,
+        outboxService,
+        redeliveryPolicy,
+        null);
+  }
+
+  /**
+   * @param documentQueryService the tenant-scoped document read path ({@code knowledgebase})
+   * @param documentTransitionService the single writer of {@code documents.status} ({@code
+   *     knowledgebase})
+   * @param chunkIndexingService the idempotent chunk write path ({@code knowledgebase})
+   * @param payloadStore the object-storage read port; {@code null} when no Garage client is wired
+   *     (opt-in, {@code ADR-014}) — {@link #index} then fails loudly at call time instead of the
+   *     application failing to boot (S01-02, the {@code PlannerService} idiom)
+   * @param documentParser the extraction port (Tika/PDFBox)
+   * @param chunker the deterministic chunker
+   * @param embeddingGenerationService the batching embed step (S10-12)
+   * @param outboxService the transactional-outbox appender for the {@code document.indexed} event
+   * @param redeliveryPolicy what a redelivered event does with an already-indexed document
+   * @param meterRegistry the registry the S13-13 failures counter registers on; may be {@code null}
+   *     (the metering is skipped entirely)
+   */
+  public IngestionService(
+      DocumentQueryService documentQueryService,
+      DocumentTransitionService documentTransitionService,
+      ChunkIndexingService chunkIndexingService,
+      DocumentPayloadStore payloadStore,
+      DocumentParser documentParser,
+      Chunker chunker,
+      EmbeddingGenerationService embeddingGenerationService,
+      OutboxService outboxService,
+      RedeliveryPolicy redeliveryPolicy,
+      MeterRegistry meterRegistry) {
     this.documentQueryService = documentQueryService;
     this.documentTransitionService = documentTransitionService;
     this.chunkIndexingService = chunkIndexingService;
@@ -133,6 +180,7 @@ public final class IngestionService {
     this.embeddingGenerationService = embeddingGenerationService;
     this.outboxService = outboxService;
     this.redeliveryPolicy = redeliveryPolicy;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -151,6 +199,19 @@ public final class IngestionService {
    *     policy (bounded retry, then hold); nothing is marked processed on this path
    */
   public IngestionStatusDto index(IngestionEventKey key, UUID ingestionEventId) {
+    try {
+      return doIndex(key, ingestionEventId);
+    } catch (RuntimeException e) {
+      recordFailure();
+      throw e;
+    }
+  }
+
+  /**
+   * The indexing pass proper. Wrapped by {@link #index} so a failure anywhere in the pass
+   * increments the S13-13 failure counter.
+   */
+  private IngestionStatusDto doIndex(IngestionEventKey key, UUID ingestionEventId) {
     DocumentView document =
         documentQueryService
             .findForIndexing(key.tenantId(), key.documentId())
@@ -251,11 +312,30 @@ public final class IngestionService {
   }
 
   /**
+   * Record one failed indexing pass in the S13-13 failures counter (no labels, no identifiers).
+   * Metering never fails the pass.
+   */
+  private void recordFailure() {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      Counter.builder(FAILURES_METRIC)
+          .description("Failed ingestion indexing passes (S13-13); one increment per pass")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail an indexing pass.
+    }
+  }
+
+  /**
    * Record a permanent failure on the document (S10-08 safe code + redacted summary) and return the
    * failed outcome. The failure is a normal, durable outcome: the event is handled, not retried.
    */
   private IngestionStatusDto fail(
       IngestionEventKey key, DocumentView document, String errorCode, String errorSummary) {
+    recordFailure();
     documentTransitionService.markFailed(key.tenantId(), key.documentId(), errorCode, errorSummary);
     return new IngestionStatusDto(
         document.documentId(), STATUS_FAILED_RESULT, document.pipelineVersion());

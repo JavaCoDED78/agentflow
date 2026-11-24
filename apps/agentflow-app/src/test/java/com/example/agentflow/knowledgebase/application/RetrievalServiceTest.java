@@ -569,6 +569,9 @@ class RetrievalServiceTest {
     assertThat(hybridMeters.get(0).getId().getTags()).isEmpty();
     assertThat(registry.find(RetrievalService.METRIC_HALF_RESULTS).meters()).isNotEmpty();
     assertThat(registry.find(RetrievalService.METRIC_DURATION).meters()).isNotEmpty();
+    // S13-13: the chunks-returned counter is incremented by the fused chunk count
+    assertThat(registry.find(RetrievalService.METRIC_CHUNKS_RETURNED).counter().count())
+        .isEqualTo(1.0);
   }
 
   // --- no-evidence policy (S10-18) ------------------------------------------------------------

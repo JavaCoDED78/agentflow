@@ -83,6 +83,9 @@ public class RetrievalService {
   /** Hybrid-search latency timer, in seconds. */
   static final String METRIC_DURATION = "agentflow.knowledgebase.retrieval.duration";
 
+  static final String METRIC_CHUNKS_RETURNED =
+      "agentflow.knowledgebase.retrieval.chunks.returned.total";
+
   private final DocumentChunkRepository chunkRepository;
   private final KnowledgeBaseRepository knowledgeBaseRepository;
   private final EmbeddingPort embeddingPort;
@@ -92,6 +95,7 @@ public class RetrievalService {
   private final MeterRegistry meterRegistry;
   private final Counter hybridCalls;
   private final Counter halfResults;
+  private final Counter chunksReturned;
   private final Timer duration;
 
   /**
@@ -162,6 +166,12 @@ public class RetrievalService {
     this.duration =
         Timer.builder(METRIC_DURATION)
             .description("Hybrid retrieval latency, seconds")
+            .register(this.meterRegistry);
+    this.chunksReturned =
+        Counter.builder(METRIC_CHUNKS_RETURNED)
+            .description(
+                "Chunks returned by hybrid retrieval (S13-13); one increment per fused chunk, "
+                    + "carries no document text or tenant")
             .register(this.meterRegistry);
   }
 
@@ -355,7 +365,7 @@ public class RetrievalService {
     int vectorCount = vectorResult.chunks().size();
     int lexicalCount = lexicalResult.chunks().size();
     SearchResult result = fuse(vectorResult, lexicalResult);
-    recordMetrics(vectorCount, lexicalCount, startedNanos);
+    recordMetrics(vectorCount, lexicalCount, result.chunks().size(), startedNanos);
     return result;
   }
 
@@ -498,10 +508,12 @@ public class RetrievalService {
    * Record the hybrid retrieval latency and the half result counts on the no-label meters
    * (invariant 9).
    */
-  private void recordMetrics(int vectorCount, int lexicalCount, long startedNanos) {
+  private void recordMetrics(
+      int vectorCount, int lexicalCount, int fusedChunks, long startedNanos) {
     duration.record(java.time.Duration.ofNanos(System.nanoTime() - startedNanos));
     hybridCalls.increment();
     halfResults.increment(vectorCount + lexicalCount);
+    this.chunksReturned.increment(fusedChunks);
   }
 
   public int defaultTopK() {

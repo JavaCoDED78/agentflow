@@ -2,6 +2,7 @@ package com.example.agentflow.config;
 
 import com.example.agentflow.toolexecution.application.BoundedToolExecutor;
 import com.example.agentflow.toolexecution.application.ToolInvocationListener;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.springframework.beans.factory.ObjectProvider;
@@ -50,6 +51,8 @@ public class ToolExecutionConfiguration {
    * @param properties the validated tool-executor configuration
    * @param history the invocation-history seam (S08-13); absent in sliced contexts, where the
    *     executor reports to {@link ToolInvocationListener#NONE}
+   * @param meterRegistryProvider the provider of the {@link MeterRegistry} the duration timer is
+   *     registered on; absent in sliced contexts, in which case metering is a silent no-op
    * @return the bounded executor the {@code TOOL_CALL} {@code StepHandler} drives calls through
    *     (wired in S08-12)
    */
@@ -57,12 +60,15 @@ public class ToolExecutionConfiguration {
   public BoundedToolExecutor boundedToolExecutor(
       ExecutorService pool,
       AgentFlowProperties properties,
-      ObjectProvider<ToolInvocationListener> history) {
+      ObjectProvider<ToolInvocationListener> history,
+      ObjectProvider<MeterRegistry> meterRegistryProvider) {
     AgentFlowProperties.Tools.Executor executor = properties.getTools().getExecutor();
     return new BoundedToolExecutor(
         pool,
         executor.getGlobalMaxConcurrency(),
         executor.getPerTenantMaxConcurrency(),
-        history.getIfAvailable(() -> ToolInvocationListener.NONE));
+        history.getIfAvailable(() -> ToolInvocationListener.NONE),
+        System::nanoTime,
+        meterRegistryProvider.getIfAvailable());
   }
 }

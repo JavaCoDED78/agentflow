@@ -11,6 +11,7 @@ import com.example.agentflow.toolexecution.domain.ToolDescriptor;
 import com.example.agentflow.toolexecution.domain.ToolExecutionContext;
 import com.example.agentflow.toolexecution.domain.ToolInvocationOutcome;
 import com.example.agentflow.toolexecution.domain.ToolInvocationRecord;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -546,6 +547,63 @@ class BoundedToolExecutorTest {
   // ---------------------------------------------------------------------------------------------
   // helpers
   // ---------------------------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------------------------
+  // S13-13 duration timer
+  // ---------------------------------------------------------------------------------------------
+
+  /** A concluded call records one duration sample on the S13-13 meter, tagged by outcome. */
+  @Test
+  void a_concluded_call_records_the_duration_timer_tagged_with_the_outcome() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    BoundedToolExecutor executor =
+        new BoundedToolExecutor(
+            pool, 2, 1, ToolInvocationListener.NONE, System::nanoTime, registry);
+
+    executor.execute(context(TENANT_A), descriptor(GENEROUS_TIMEOUT), () -> "metered");
+
+    assertThat(
+            registry
+                .find(BoundedToolExecutor.TOOL_DURATION_METRIC)
+                .tag("outcome", "succeeded")
+                .timer())
+        .isNotNull();
+    assertThat(
+            registry
+                .find(BoundedToolExecutor.TOOL_DURATION_METRIC)
+                .tag("outcome", "succeeded")
+                .timer()
+                .count())
+        .isEqualTo(1L);
+  }
+
+  /**
+   * A failed call records the timer too (the outcome is the failing one), never an invented value.
+   */
+  @Test
+  void a_failing_call_records_the_duration_timer_with_the_failing_outcome() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    BoundedToolExecutor executor =
+        new BoundedToolExecutor(
+            pool, 2, 1, ToolInvocationListener.NONE, System::nanoTime, registry);
+
+    assertThatThrownBy(
+            () ->
+                executor.execute(
+                    context(TENANT_A),
+                    descriptor(GENEROUS_TIMEOUT),
+                    () -> {
+                      throw new RuntimeException("tool fault");
+                    }))
+        .isInstanceOf(RuntimeException.class);
+
+    assertThat(
+            registry
+                .find(BoundedToolExecutor.TOOL_DURATION_METRIC)
+                .tag("outcome", "faulted")
+                .timer())
+        .isNotNull();
+  }
 
   /** In-memory listener capturing every reported record, for the S08-13 history assertions. */
   private static final class RecordingHistory implements ToolInvocationListener {
