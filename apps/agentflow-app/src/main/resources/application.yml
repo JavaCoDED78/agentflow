@@ -206,6 +206,12 @@ management:
       'spring.data.redis': false
       logback: false
       cache: false
+    # S13-14: percentile histograms for the HTTP server timer, so the API/JVM/DB
+    # dashboard can render p95 latency (histogram_quantile over the bucket series).
+    # Default bucket boundaries; the buckets carry only the existing bounded tags.
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
   # Tracing (S13-03): OpenTelemetry SDK + OTLP exporter, auto-configured by the
   # spring-boot-starter-opentelemetry starter. Every HTTP request becomes a span; the batch
   # exporter posts protobuf to the OTLP endpoint asynchronously, so a missing collector never

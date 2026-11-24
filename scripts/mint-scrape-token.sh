@@ -23,9 +23,9 @@
 #   bash scripts/mint-scrape-token.sh --watch 120    # refresh every 120 s
 #
 # WARNING: the script overwrites infra/observability/prometheus/scrape/token,
-# which is TRACKED by Git. The committed placeholder is not a valid token; a
-# real token must NEVER be committed. When you are done, restore the
-# placeholder with: git checkout -- infra/observability/prometheus/scrape/token
+# which is GIT-IGNORED (removed from the tree in S13-14): a fresh checkout does
+# not contain it and never should. The file is created/updated on every mint;
+# never commit it. Do not add it back to the repository.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

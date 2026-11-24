@@ -17,6 +17,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-11 — workflow metrics instrumentation](#s13-11-workflow-metrics-instrumentation)
 - [S13-12 — messaging metrics instrumentation](#s13-12-messaging-metrics-instrumentation)
 - [S13-13 — AI/RAG metrics instrumentation](#s13-13-airag-metrics-instrumentation)
+- [S13-14 — API/JVM/DB dashboard](#s13-14-apijvmdb-dashboard)
 
 ---
 
@@ -183,6 +184,45 @@ S13-11/S13-12 shipped the workflow-execution and messaging families; the AI/RAG 
 
 - [`docs/observability/metrics.md`](../observability/metrics.md) — the AI/RAG family added (names, types, units, labels, conventions and the downstream hooks).
 - `docs/devlog/sprint-13-observability.md` (this section); `CHANGELOG.md` (this entry).
+
+## S13-14 — API/JVM/DB dashboard
+
+### What changed
+
+The Grafana provisioning provider (S13-06) plugs into a real, operator-facing dashboard: the **API/JVM/DB** dashboard, rendered entirely from the dedicated Prometheus (the S13-05 store, `agentflow-prometheus` datasource), showing request rate and 5xx errors, p95 and average latency, heap/GC, CPU, threads live/peak, and the DB pool saturation (utilization, active/max, pending, timeouts).
+
+**Wiring the DB pool meters** — [`HikariDataSourceMetricsConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/HikariDataSourceMetricsConfiguration.java). Spring Boot 4.x registers the generic `jdbc.connections.*` gauges from the pool metadata provider, but it deliberately does NOT wire the HikariCP connection-level meters — the `hikaricp.connections.*` gauges (active/idle/max/min/pending) and the acquire/usage/creation timers live in HikariCP's own `MicrometerMetricsTracker`, and are opt-in. Without this class the DB-pool panels would have had no series. The class is `@ConditionalOnBean(HikariDataSource.class)` (so the DB-less skeleton boots unchanged) and hands the app's `MeterRegistry` to the one pool Boot builds — `dataSource.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(registry))` — so the meters appear from the first real scrape. No new dependency: `micrometer-registry` and `HikariCP` are already on the classpath.
+
+**p95 latency needs buckets** — `management.metrics.distribution.percentiles-histogram: http.server.requests: true` in `application.yml`. Boot's default is a sum-and-count timer (no bucket series), which cannot render `histogram_quantile`. Percentile histograms (the default boundary set, ~10 buckets) are emitted for the HTTP server timer only, carrying only the existing bounded tags.
+
+**Dashboard** — new [`infra/observability/grafana/dashboards/agentflow-api-jvm-db.json`](../../infra/observability/grafana/dashboards/agentflow-api-jvm-db.json), stable UID `agentflow-api-jvm-db`, `allowUiUpdates: false` provider: 12 panels, all pointing at `agentflow-prometheus`, units labelled in the titles and the field config. It is provisioned by the same S13-06 provider (`updateIntervalSeconds: 30`), so the acceptance — dashboard auto-loaded — holds on a clean instance.
+
+**Scrape token hygiene** — the token file mounted by Prometheus (`infra/observability/prometheus/scrape/token`) was committed as a placeholder in S13-05; a real token was never committed, but the file itself was still tracked, so a `git add -A` would stage a live token. It is now untracked and gitignored (`.gitignore`), the mint script's warning comment now reflects the gitignored workflow, and `scripts/mint-scrape-token.sh` stays the only producer of the file.
+
+### Why
+
+S13-02/S13-05 made metrics scrapeable but nothing showed them; the plan (S13-14) names the dashboard and the metrics behind it. Boot does not wire the HikariCP tracker or percentile histograms by default — both had to be opted in for the dashboard to be a real surface rather than a placeholder page. The committed-token-in-Git trap was fixed while verifying the scrape: the file is now produced and consumed locally only.
+
+### Verification
+
+Live, this session, against the app running in the background:
+
+1. Dashboard provisioned: `GET localhost:3000/api/dashboards/uid/agentflow-api-jvm-db` → `meta.provisioned: true`, `provisionedExternalId: agentflow-api-jvm-db.json`.
+2. All 15 dashboard queries execute against the dedicated Prometheus (`/api/v1/query` / `/api/v1/query_range`) and return series — verified panel by panel: request rate 0.067 req/s, 5xx error rate 0 series, p95 latency 0.033 s, average latency 0.031 s, heap 100 MB, heap-vs-max 1.2 %, GC 0/min, CPU 0.07 %, threads 61 live / 70 peak, DB pool 0 active / 10 max / 10 idle / 0 pending / 0 timeouts.
+3. App scrape: `up{job="agentflow-api"} = 1` after minting a fresh token (`bash scripts/mint-scrape-token.sh`); the `hikaricp_connections.*` series are present in the scrape (16 lines — active/idle/max/min/pending gauges plus the acquire/usage/creation timers).
+4. `./gradlew :apps:agentflow-app:test --tests "com.example.agentflow.config.HikariDataSourceMetricsConfigurationTest" --rerun-tasks` — BUILD SUCCESSFUL, JUnit XML `tests="2" failures="0" errors="0"`.
+
+### Scope / follow-up
+
+- DB-pool panels show real data only once the app borrows a connection (any authenticated API request); a zero-traffic local boot keeps the idle/max series but never active/usage. That is the honest state of a dev boot and matches the plan — the panels are real, not aspirational.
+- The histogram boundaries are the Boot defaults; S13-15 (Workflow/Kafka) and S13-19 (cardinality) own any tighter tuning.
+- The `agentflow-overview.json` smoke dashboard is unchanged.
+
+### Documentation
+
+- [`infra/observability/README.md`](../../infra/observability/README.md) — scrape-token workflow (gitignored, not committed).
+- [`docs/observability/metrics.md`](../observability/metrics.md) — the HikariCP pool family added.
+- `CHANGELOG.md` (this entry).
 
 ## S13-01 — telemetry conventions
 
@@ -438,7 +478,7 @@ The local observability stack gains a dedicated, repo-owned Prometheus — the m
 
 - **Config** — new [`infra/observability/prometheus/prometheus.yml`](../../infra/observability/prometheus/prometheus.yml), mounted read-only: 15 s scrape/evaluation intervals, `external_labels.environment: local` (bounded, configuration-fixed) and two jobs — `agentflow-api` (the application's `/actuator/prometheus`, S13-02 contract; the endpoint sits behind the default-deny secured chain, so the job carries a bearer token from `/etc/prometheus/scrape/token`) and `otel-collector` (the Collector's own metrics, exposed by a new `prometheus` telemetry reader on :8888 in [`collector.yaml`](../../infra/observability/otel-collector/collector.yaml) — `detailed` level, bounded component-id labels, internal network only).
 - **Compose** — [`infra/compose/docker-compose.yml`](../../infra/compose/docker-compose.yml) gains the `prometheus` service: image pinned by multi-arch index digest (`prom/prometheus:v3.6.0` → `sha256:76947e…`), versioned retention as command flags (`--storage.tsdb.retention.time=7d`, `--storage.tsdb.retention.size=2GB` — Prometheus keeps retention a startup flag, not a config key), TSDB on the `agentflow-prometheus` named volume, healthcheck via the image's busybox `wget` against `/-/healthy`, a `host-gateway` alias so the host-running app resolves on every engine. Per the S13-04 port-precedent (the collector took over the host OTLP ports), the dedicated service now owns host :9090 and lgtm's bundled Prometheus stops being host-published — Grafana keeps using it internally until S13-06/07/08 swap datasources and collector exporters.
-- **Scrape token** — [`scripts/mint-scrape-token.sh`](../../scripts/mint-scrape-token.sh) mints a short-lived JWT (Client Credentials, `agentflow-service` m2m client, same local-only secret default as the Keycloak service) and rewrites the mounted token file; Prometheus re-reads `bearer_token_file` before every scrape (verified on the pinned image with a header-echo probe), so the 300 s Keycloak token TTL only needs a file refresh — `--watch` loops at 240 s. The committed [`scrape/token`](../../infra/observability/prometheus/scrape/token) is a clearly-marked placeholder, not a valid token; a real token is never committed.
+- **Scrape token** — [`scripts/mint-scrape-token.sh`](../../scripts/mint-scrape-token.sh) mints a short-lived JWT (Client Credentials, `agentflow-service` m2m client, same local-only secret default as the Keycloak service) and rewrites the mounted token file; Prometheus re-reads `bearer_token_file` before every scrape (verified on the pinned image with a header-echo probe), so the 300 s Keycloak token TTL only needs a file refresh — `--watch` loops at 240 s. The [`scrape/token`](../../infra/observability/prometheus/scrape/token) file is produced and consumed locally only (S13-14 — gitignored, never committed; the committed placeholder was removed).
 - **Smoke** — `scripts/smoke-local.sh` now expects `agentflow-otel-collector` and `agentflow-prometheus` in the `observability`/`full` profiles (the collector expectation was missing since S13-04).
 
 ### Why

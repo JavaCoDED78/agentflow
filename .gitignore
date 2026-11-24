@@ -46,3 +46,4 @@ docker-compose*.override.yml
 *.swp
 *~
 .fleet/
+infra/observability/prometheus/scrape/token
