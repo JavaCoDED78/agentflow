@@ -4,8 +4,9 @@
   unit-suffixed names, bounded state labels, no identifiers in labels (invariant 9), no tenant/run/user ids
   anywhere (invariant 9). Every metric here registers on `io.micrometer.core.instrument.MeterRegistry`
   (the shared Prometheus registry in the app), never a hand-rolled global.
-- **Scope:** the `workflowexecution` family (`S13-11`), the `messaging` family (`S13-12`) and the
-  `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families (`S13-13`).
+- **Scope:** the `workflowexecution` family (`S13-11`), the `messaging` family (`S13-12`), the
+  `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families (`S13-13`) and the
+  Boot-native HTTP/JVM/DB-pool meters (`S13-14` — the dashboard's data source).
 
 ---
 
@@ -112,6 +113,41 @@
   open a closed `ResilientChatModel#chat` / `ResilientEmbeddingModel#embed` span with a single
   `agentflow.ai.model` attribute (the target model id). No prompt, no content, no tenant, no
   identifier. The span is closed in `finally`; a failed call marks the span an error.
+
+## HTTP/JVM/DB-pool metrics (`S13-14`)
+
+- **Owner:** `config` (`com.example.agentflow.config`) — the Boot-native meters the API/JVM/DB
+  dashboard renders. These are NOT `agentflow.*` custom metrics: they are the standard Boot/Actuator /
+  HikariCP meters, wired by Boot's auto-configuration plus the one explicit wiring class.
+
+| Metric | Type | Unit / dimension | Labels | Meaning |
+|---|---|---|---|---|
+| `http.server.requests` (Prometheus: `http_server_requests_seconds`) | Timer | seconds | bounded tags (status, method, path, application) | Every HTTP request; `management.metrics.distribution.percentiles-histogram: http.server.requests: true` emits the bucket series so the dashboard can render `histogram_quantile(0.95, …)`. |
+| `jvm.memory.used` / `jvm.memory.max` (Prometheus: `jvm_memory_used_bytes` / `jvm_memory_max_bytes`) | Gauge | bytes | `area` (bounded: heap/nonheap) | JVM heap used/max — the heap panels. |
+| `jvm.gc.pause` (Prometheus: `jvm_gc_pause_seconds`) | Timer | seconds | bounded tags | GC pause time; the dashboard samples the count rate. |
+| `process.cpu.usage` (Prometheus: `process_cpu_usage`) | Gauge | fraction (0..1) | none | Process CPU usage (the dashboard renders it as a percent). |
+| `jvm.threads.live` / `jvm.threads.peak` (Prometheus: `jvm_threads_live_threads` / `jvm_threads_peak_threads`) | Gauge | threads | none | Live/peak thread counts (the dashboard renders both). |
+| `hikaricp.connections` (Prometheus: `hikaricp_connections`) | Gauge | count | `pool` | Connections held by the pool (the dashboard renders active/idle/max/min/pending/timeouts). |
+| `hikaricp.connections.acquire` / `.usage` / `.creation` (Prometheus: `hikaricp_connections_acquire_seconds` / `_usage_seconds` / `_creation_seconds`) | Timer | seconds | `pool` | Acquisition/usage/creation timers — wired explicitly (see below). |
+
+### Why explicit wiring
+
+Boot 4.x registers the generic `jdbc.connections.*` gauges from the pool metadata provider but
+deliberately does **not** wire the HikariCP connection-level meters — they live in HikariCP's own
+`MicrometerMetricsTracker`, which is opt-in. [`HikariDataSourceMetricsConfiguration`](../../apps/agentflow-app/src/main/java/com/example/agentflow/config/HikariDataSourceMetricsConfiguration.java)
+hands the app's `MeterRegistry` to the one `HikariDataSource` Boot builds:
+`dataSource.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(registry))`. The class is
+`@ConditionalOnBean(HikariDataSource.class)` (the DB-less skeleton boots unchanged) and registers no
+custom tag beyond the pool name — bounded, static, never an identifier.
+
+### Conventions
+
+- No identifier is recorded: the `application` tag (the app name) is the only service-level tag, and
+  the pool tag is the single static pool name. Tenant/run/user/document ids never appear.
+- The histogram boundaries for `http.server.requests` are the Boot defaults; S13-19 owns any tighter
+  tuning.
+- The DB pool panels show real data once the app borrows a connection (any authenticated API request);
+  a zero-traffic boot keeps the idle/max series only. That is honest, not a defect.
 
 ## Dashboard / alert hooks (downstream, not yet defined)
 

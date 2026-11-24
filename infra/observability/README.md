@@ -43,14 +43,14 @@ Since S13-04 the **standalone contrib collector is the OTLP ingress**: the appli
 
 ## Scraping the application
 
-`/actuator/prometheus` sits behind the default-deny secured chain (S13-02): a scrape must carry a bearer token. The token file is mounted at `/etc/prometheus/scrape/token` — a committed, clearly-marked **placeholder** by default (not a valid token; the `agentflow-api` target is DOWN/401 until a real one is provisioned), never a real token in Git. Mint a real one with the machine-to-machine client (S04-02):
+`/actuator/prometheus` sits behind the default-deny secured chain (S13-02): a scrape must carry a bearer token. The token file is mounted at `/etc/prometheus/scrape/token` and is **git-ignored** (untracked since S13-14) — it is produced and consumed locally only, never committed. Mint a real one with the machine-to-machine client (S04-02):
 
 ```bash
 bash scripts/mint-scrape-token.sh            # one token (~5 min of scraping)
 bash scripts/mint-scrape-token.sh --watch    # refresh every 240 s for a session
 ```
 
-Keycloak signs local access tokens for 300 s; Prometheus re-reads the token file before every scrape (verified on the pinned image), so the script only rewrites the file — no Prometheus reload or restart. After minting, `agentflow-api` comes UP on the next 15 s scrape. **Never commit the file with a real token**; restore the placeholder with `git checkout -- infra/observability/prometheus/scrape/token` when done.
+Keycloak signs local access tokens for 300 s; Prometheus re-reads the token file before every scrape (verified on the pinned image), so the script only rewrites the file — no Prometheus reload or restart. After minting, `agentflow-api` comes UP on the next 15 s scrape. **Never commit the file with a real token** — it is git-ignored, and a fresh checkout never contains it; the mint script creates it on demand.
 
 ## Verification (S13-04 backend smoke, S13-05/06/07 acceptance)
 
