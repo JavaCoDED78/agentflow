@@ -19,7 +19,12 @@ import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +41,7 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -68,6 +74,18 @@ public class WorkflowWorker implements DisposableBean {
    */
   private static final String HUMAN_APPROVAL = "HUMAN_APPROVAL";
 
+  /**
+   * The step-duration timer (S13-11): one sample per handler invocation, in seconds. No labels —
+   * high-cardinality ids never live in metric labels (invariant 9).
+   */
+  static final String STEP_DURATION_METRIC = "agentflow.workflowexecution.step.duration.seconds";
+
+  /**
+   * The step-retry counter (S13-11): one increment per step actually moved to RETRY_WAIT. No
+   * labels.
+   */
+  static final String STEP_RETRY_METRIC = "agentflow.workflowexecution.step.retry.total";
+
   private static final Logger log = LoggerFactory.getLogger(WorkflowWorker.class);
 
   private final WorkflowRunRepository runRepository;
@@ -92,6 +110,15 @@ public class WorkflowWorker implements DisposableBean {
    * instant advances to exercise the wall-clock breach deterministically.
    */
   private final Clock clock;
+
+  /** The meter registry the S13-11 step meters register on (throwaway when unwired). */
+  private final MeterRegistry meterRegistry;
+
+  /** The S13-11 step-duration timer; no labels. */
+  private final Timer stepDuration;
+
+  /** The S13-11 step-retry counter; no labels. */
+  private final Counter stepRetries;
 
   /**
    * The per-run hard execution limits (S11-13), read once from the configuration (or the defaults
@@ -182,6 +209,42 @@ public class WorkflowWorker implements DisposableBean {
       List<StepHandler> handlers,
       AgentFlowProperties properties,
       Clock clock) {
+    this(
+        runRepository,
+        stepRepository,
+        versionService,
+        leaseService,
+        heartbeat,
+        transitionService,
+        checkpointAdapter,
+        approvalRepository,
+        handlers,
+        properties,
+        clock,
+        null);
+  }
+
+  /**
+   * Full constructor: also injects the {@link MeterRegistry} the S13-11 step meters register on. A
+   * {@code null} registry means "no shared registry" and the meters live on a throwaway one (no
+   * observability surface).
+   *
+   * @param meterRegistry the registry the step meters register on; may be {@code null}
+   */
+  @Autowired
+  public WorkflowWorker(
+      WorkflowRunRepository runRepository,
+      WorkflowStepRunRepository stepRepository,
+      WorkflowVersionService versionService,
+      RunLeaseService leaseService,
+      RunHeartbeatService heartbeat,
+      RunStateMachineService transitionService,
+      CheckpointAdapter checkpointAdapter,
+      ApprovalRepository approvalRepository,
+      List<StepHandler> handlers,
+      AgentFlowProperties properties,
+      @Autowired(required = false) Clock clock,
+      MeterRegistry meterRegistry) {
     this.runRepository = runRepository;
     this.stepRepository = stepRepository;
     this.versionService = versionService;
@@ -193,7 +256,7 @@ public class WorkflowWorker implements DisposableBean {
     this.handlers = handlers;
     this.actor = resolveActor(properties);
     this.properties = properties;
-    this.clock = clock;
+    this.clock = clock == null ? Clock.systemUTC() : clock;
     // A DB-less skeleton may leave the execution config unset; the defaults keep the loop stopping
     // the run on a limit, never silently ignoring one (S11-13).
     AgentFlowProperties.Execution execution = properties.getExecution();
@@ -205,6 +268,15 @@ public class WorkflowWorker implements DisposableBean {
         heartbeat == null
             ? null
             : Executors.newSingleThreadScheduledExecutor(heartbeatThreadFactory());
+    this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
+    this.stepDuration =
+        Timer.builder(STEP_DURATION_METRIC)
+            .description("Step handler duration in seconds (S13-11); no labels")
+            .register(this.meterRegistry);
+    this.stepRetries =
+        Counter.builder(STEP_RETRY_METRIC)
+            .description("Steps moved to RETRY_WAIT (S13-11); no labels")
+            .register(this.meterRegistry);
   }
 
   private static RunExecutionLimits toLimits(AgentFlowProperties.Execution execution) {
@@ -551,6 +623,7 @@ public class WorkflowWorker implements DisposableBean {
     // transaction (see the class Javadoc); the step's own fenced writes still fence through this
     // worker's {@code lease_epoch}. The task is cancelled the instant the step concludes.
     ScheduledFuture<?> leaseHeartbeat = startHeartbeat(tenantId, runId, owner, leaseEpoch);
+    Instant stepStartedAt = clock.instant();
     try {
       // S08-12: resolve the node's input wiring against the completed predecessors' persisted
       // outputs BEFORE the handler (and any tool) is invoked. An unresolvable wiring — an unknown
@@ -608,6 +681,10 @@ public class WorkflowWorker implements DisposableBean {
         failRunDueToLimit(tenantId, runId, stepKey, limitEx);
         throw limitEx;
       }
+      if (next == WorkflowStepState.RETRY_WAIT) {
+        // S13-11: one increment per step actually moved to RETRY_WAIT.
+        stepRetries.increment();
+      }
       transitionStepError(
           tenantId,
           runId,
@@ -617,6 +694,8 @@ public class WorkflowWorker implements DisposableBean {
           failureInfo.safeReason(),
           "step." + next.name().toLowerCase(Locale.ROOT));
     } finally {
+      // S13-11: record the step-handler duration (one sample per handler invocation).
+      stepDuration.record(Duration.between(stepStartedAt, clock.instant()));
       // The step has concluded: stop extending the lease. A run that released it (terminal,
       // approval
       // pause, cancelled) matches zero rows on the next heartbeat anyway; reconcile (pollOnce)

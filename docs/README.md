@@ -85,7 +85,7 @@ docs/
 │   ├── README.md                      ← Planner baseline eval cases (S09-14)
 │   └── rag/                           README.md ← how the RAG eval works (S10-20); corpus.md ← the fixed sample documents, questions and reference pages/chunks (S10-20)
 ├── runbooks/                          ← operational runbooks: workflow-recovery.md (S07-17); local-auth.md (S04-14); dlq-redrive.md (S12-12); redis-outage.md (S12-21)
-├── observability/                     standards.md (S13-01) ← telemetry conventions; metric catalogue, SLOs ⚠ planned (S13)
+├── observability/                     standards.md (S13-01) ← telemetry conventions; metrics.md (S13-11) ← workflow-execution metric catalogue; dashboards/SLOs ⚠ planned (S13)
 └── load-tests/                        ⚠ planned — k6 scenarios, reports, environment description
 ```
 
@@ -120,7 +120,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Workflow DSL & examples | `docs/workflows/` | `docs/workflows/dsl-v1.md` (S05-17) |
 | Tools | `docs/tools/` | `README.md` authoring guide (S08-15) |
 | AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/evaluation/README.md` (S09-14 Planner baseline eval cases), `docs/ai/README.md` (S09-15 AI integration guide), `docs/ai/provider-configuration.md` (S09-15 provider configuration), `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test), `docs/rag/README.md` (RAG grounding — S10-11 follow-up), `docs/rag/pipeline.md` (full pipeline upload→…→ground — S10-11…S10-20) |
-| Observability (metrics, dashboards, SLOs) | `docs/observability/` | `standards.md` (S13-01) ← telemetry conventions; metric catalogue, SLOs ⚠ planned (`S13`) |
+| Observability (metrics, dashboards, SLOs) | `docs/observability/` | `standards.md` (S13-01) ← telemetry conventions; `metrics.md` (S13-11) ← workflow-execution metric catalogue; dashboards/SLOs ⚠ planned (`S13`) |
 | Load tests | `docs/load-tests/` | ⚠ planned |
 | Usage, costs, budgets | `docs/usage-and-costs.md` | S12-15 |
 | Redis helper reference (applications, key format + TTL, failure policy, config, metrics) | `docs/architecture/redis-usage.md` | S12-21 |
