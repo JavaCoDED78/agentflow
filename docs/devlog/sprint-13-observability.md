@@ -15,6 +15,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-09 — standardized JSON logs](#s13-09-standardized-json-logs)
 - [S13-10 — trace context over Kafka](#s13-10-trace-context-over-kafka)
 - [S13-11 — workflow metrics instrumentation](#s13-11-workflow-metrics-instrumentation)
+- [S13-12 — messaging metrics instrumentation](#s13-12-messaging-metrics-instrumentation)
 
 ---
 
@@ -106,11 +107,43 @@ The `workflowexecution` module now emits the Sprint 13 metrics the dashboards (S
 
 ### Scope / follow-up
 
-The `messaging` (outbox/inbox/DLQ) and `ai`/`usage`/`knowledgebase` (AI/RAG) metric families land with S13-12 / S13-13 — this catalogue covers `workflowexecution` only. The run-duration sampler is skipped silently when the run is not readable (a cross-tenant read, an IT-mocked repo with no `findRun` stub) — the counter still increments, so a terminal transition is always visible through `run.total{state}`. No dashboards, alerts or SLOs are defined here (S13-14/15/17/18).
+The `messaging` (outbox/inbox/DLQ) family landed with S13-12 (see the S13-12 section below); the `ai`/`usage`/`knowledgebase` (AI/RAG) family lands with S13-13 — this catalogue covers `workflowexecution` (S13-11) and `messaging` (S13-12). The run-duration sampler is skipped silently when the run is not readable (a cross-tenant read, an IT-mocked repo with no `findRun` stub) — the counter still increments, so a terminal transition is always visible through `run.total{state}`. No dashboards, alerts or SLOs are defined here (S13-14/15/17/18).
 
 ### Documentation
 
 - `docs/observability/metrics.md` (the catalogue), `docs/devlog/sprint-13-observability.md` (this section), `CHANGELOG.md` (this entry).
+
+## S13-12 — messaging metrics instrumentation
+
+### What changed
+
+The `messaging` family of Sprint 13 metrics is now instrumented — the metrics that drive the outbox/inbox/DLQ dashboards (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18): the **pending-row gauges** of the outbox, a **publish-attempt counter** tagged with the bounded outcome vocabulary, a **retry counter**, and the ingester's **consumer-lag gauge** plus a **processing-failures counter** — all bounded by construction, none carrying an identifier, none failing a business operation.
+
+**New [`OutboxPendingSnapshot`](apps/agentflow-app/src/main/java/com/example/agentflow/messaging/persistence/OutboxPendingSnapshot.java)** (`messaging.persistence`) — the read model the outbox gauges consume: `pendingEvents` + `oldestAgeSeconds`, one bounded query (`count(*) AS pending_events` + `EXTRACT(EPOCH FROM now() - min(created_at)) AS oldest_age_seconds`) over exactly the due set `selectForClaim` claims (`PENDING` due / `FAILED` due / `CLAIMED` stale, per the `claim-timeout-seconds` bound), so the gauge and the publisher's view agree. `OutboxEventRepository` gains `pendingSnapshot(long claimTimeoutSeconds)`. `OutboxPublisherService` (optional `MeterRegistry` threaded through the full constructor, 4-arg delegate) registers the two gauges at construction — `agentflow.messaging.outbox.pending.events` and `agentflow.messaging.outbox.oldest.age.seconds` — reading the repository at scrape time; metering is wrapped and debug-logged. After each claimed row it increments `agentflow.messaging.outbox.publish.attempts.total{outcome}` — `delivered` on success, `transient_failure` / `ambiguous` / `permanent_failure` from the `DeliverResult` branch — and, when a row is scheduled for a bounded-backoff retry, increments `agentflow.messaging.outbox.publish.retries.total`.
+
+**`InboxConsumerService`** (`messaging.application`, the consumer boundary) takes an optional `MeterRegistry` (4-arg full constructor, 3-arg delegate) and increments the `agentflow.messaging.consumer.processing.failures.total{outcome}` counter on the `RETRY` / `DEAD_LETTER` branch of `apply()` — `retry` for the transient disposition, `dead_letter` for the terminal one — exactly once per failed business change, never for `PROCESSED` / `OTHER_CLAIMED`, wrapped and debug-logged.
+
+**`DocumentIndexingWorker`** (`ingestion.worker`, extended in place) takes an optional `MeterRegistry` (threaded through the full constructor and the Spring-facing constructor, `@Autowired(required = false)`): a `agentflow.messaging.consumer.lag.count` gauge registering once at construction — it reports the last known value, re-read after every poll pass as `max(0, end - position)` summed over the assigned partitions (`endOffsets` from the broker), 0 when no partitions are assigned or the broker read fails (the catch is wrapped and debug-logged, never escaping the poll loop). The poll loop, the claim logic and the Kafka offset management are untouched.
+
+A null registry everywhere is a silent no-op — the publisher and consumer behave exactly as before when no registry is wired; the previous constructors are unchanged.
+
+### Why
+
+Sprint 13's metric families must exist before the dashboards land — the outbox/inbox/DLQ view was the missing half after S13-11 shipped the workflow-execution family. The plan (S13-12) names exactly five surfaces: pending outbox count, oldest pending row age, per-attempt publish counter, consumer lag and consumer-processing failures. A DLQ count is deliberately **not** a metric: it would need a per-tenant reader and is a business-visible state better surfaced through the `ops:dlq` endpoints (S12-11…13), not as a meter.
+
+### Verification
+
+`./gradlew :apps:agentflow-app:test --tests '*OutboxPublisherMetricsTest' --tests '*InboxConsumerMetricsTest' --tests '*DocumentIndexingWorkerLagTest' --tests '*OutboxEventRepositoryTest' --tests '*InboxConsumerServiceTest' --tests '*OutboxPublisherServiceTest'` — green, JUnit XML verified fresh (`OutboxPublisherMetricsTest` 8/8, `InboxConsumerMetricsTest` 5/5, `DocumentIndexingWorkerLagTest` 5/5, `OutboxEventRepositoryTest` 9/9 incl. the 4 new pending-snapshot cases; `OutboxPublisherServiceTest` and `InboxConsumerServiceTest` unchanged and green). `./gradlew :apps:agentflow-app:test` (whole unit suite) — BUILD SUCCESSFUL; `ArchitectureBoundaryTest --rerun-tasks` green; `spotlessCheck` green.
+
+### Scope / follow-up
+
+- The `ai`/`usage`/`knowledgebase` (AI/RAG) metric family lands with S13-13 — not touched here.
+- No dashboard, alert or SLO is defined in this section (S13-17/18).
+
+### Documentation
+
+- [`docs/observability/metrics.md`](../observability/metrics.md) — the messaging family added to the catalogue (names, types, units, labels, the conventions and the downstream hooks).
+- `docs/devlog/sprint-13-observability.md` (this section); `CHANGELOG.md` (this entry).
 
 ## S13-01 — telemetry conventions
 

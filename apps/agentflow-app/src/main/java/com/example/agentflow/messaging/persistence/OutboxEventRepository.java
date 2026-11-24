@@ -3,6 +3,7 @@ package com.example.agentflow.messaging.persistence;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -176,6 +177,34 @@ public class OutboxEventRepository {
     return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
   }
 
+  /**
+   * Read the pending snapshot the messaging gauges scrape (S13-12): one bounded query over the same
+   * due set the publisher claims — a PENDING row due (or with no next instant), a stale CLAIMED
+   * row, or a FAILED row whose bounded-retry {@code next_attempt_at} has arrived — returning the
+   * count and the age of the oldest such row. A repository call at scrape time, never a cached
+   * counter, so the gauge reads the live database.
+   *
+   * @param claimTimeoutSeconds the stale-claim bound (S06-08): a CLAIMED row older than this is in
+   *     the due set
+   * @return the pending count and oldest age, never null
+   */
+  public OutboxPendingSnapshot pendingSnapshot(long claimTimeoutSeconds) {
+    OffsetDateTime now = OffsetDateTime.now();
+    List<Map<String, Object>> rows =
+        jdbc.queryForList(PENDING_SNAPSHOT_SQL, now, now, claimTimeoutSeconds);
+    if (rows.isEmpty()) {
+      return new OutboxPendingSnapshot(0L, 0.0d);
+    }
+    Map<String, Object> row = rows.get(0);
+    long count = ((Number) row.get("pending_events")).longValue();
+    Object age = row.get("oldest_age_seconds");
+    double oldestAge = age == null ? 0.0d : ((Number) age).doubleValue();
+    if (oldestAge < 0.0d) {
+      oldestAge = 0.0d;
+    }
+    return new OutboxPendingSnapshot(count, oldestAge);
+  }
+
   // A package-private row mapper (S06-07); unit-tested directly in OutboxEventRowMapperTest.
   private final OutboxEventRowMapper rowMapper = new OutboxEventRowMapper();
   private static final String COLUMNS =
@@ -207,4 +236,14 @@ public class OutboxEventRepository {
   private static final String MARK_FAILED_SQL =
       "UPDATE outbox_events SET status = 'FAILED', publish_attempts = ?, next_attempt_at = ?, "
           + "last_error = ? WHERE id = ? AND status = 'CLAIMED'";
+
+  // The bounded snapshot query (S13-12): the same due set selectForClaim reads, aggregated into a
+  // single row — count of due events and the age of the oldest, in seconds (0 when none).
+  private static final String PENDING_SNAPSHOT_SQL =
+      "SELECT count(*) AS pending_events, "
+          + "EXTRACT(EPOCH FROM now() - min(created_at)) AS oldest_age_seconds "
+          + "FROM outbox_events "
+          + "WHERE (status = 'PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "
+          + "OR (status = 'FAILED' AND next_attempt_at <= ?) "
+          + "OR (status = 'CLAIMED' AND claimed_at <= now() - (INTERVAL '1 second' * ?))";
 }

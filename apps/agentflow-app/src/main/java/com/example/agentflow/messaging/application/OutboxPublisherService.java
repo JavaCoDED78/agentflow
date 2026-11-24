@@ -3,6 +3,10 @@ package com.example.agentflow.messaging.application;
 import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.messaging.domain.OutboxEvent;
 import com.example.agentflow.messaging.persistence.OutboxEventRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -47,6 +51,22 @@ import org.springframework.web.server.ResponseStatusException;
  * also optional so the artifact boots without a database (S01-02); when a deliverer is present but
  * no database is configured the poll fails loudly with {@code 503}, mirroring the write path.
  *
+ * <p>S13-12 meters, emitted from this service and registered on the shared {@link MeterRegistry} (a
+ * throwaway registry when none is injected):
+ *
+ * <ul>
+ *   <li>{@code agentflow.messaging.outbox.pending.events} and {@code
+ *       agentflow.messaging.outbox.oldest.age.seconds} (gauges) — counted at scrape time from the
+ *       same due set the publisher claims, never a cached counter;
+ *   <li>{@code agentflow.messaging.outbox.publish.attempts.total{outcome}} — one increment per
+ *       claimed row, tagged with the bounded outcome vocabulary ({@code delivered} / {@code
+ *       transient_failure} / {@code ambiguous} / {@code permanent_failure});
+ *   <li>{@code agentflow.messaging.outbox.publish.retries.total} — one increment per row scheduled
+ *       for a bounded-backoff retry.
+ * </ul>
+ *
+ * No identifier appears in any label (invariant 9); metering never fails a poll.
+ *
  * <p>Delivery is ack-bound (S06-08): the publisher records {@code SENT} — and stamps {@code
  * published_at} — only when {@link MessageDeliverer.DeliverResult#DELIVERED} (the broker confirmed
  * the envelope). An ambiguous outcome ({@link MessageDeliverer.DeliverResult#AMBIGUOUS}, e.g. a
@@ -60,6 +80,21 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class OutboxPublisherService {
 
+  /** The pending-events gauge (S13-12): rows in the due set, counted at scrape time. */
+  static final String PENDING_EVENTS_METRIC = "agentflow.messaging.outbox.pending.events";
+
+  /** The oldest-pending-age gauge (S13-12): age of the oldest due row, in seconds. */
+  static final String OLDEST_AGE_METRIC = "agentflow.messaging.outbox.oldest.age.seconds";
+
+  /** The publish-attempt counter (S13-12): one increment per claimed row, tagged by outcome. */
+  static final String PUBLISH_ATTEMPTS_METRIC = "agentflow.messaging.outbox.publish.attempts.total";
+
+  /**
+   * The publish-retry counter (S13-12): one increment per row scheduled for a bounded-backoff
+   * retry.
+   */
+  static final String PUBLISH_RETRIES_METRIC = "agentflow.messaging.outbox.publish.retries.total";
+
   private static final Logger log = LoggerFactory.getLogger(OutboxPublisherService.class);
 
   private final OutboxEventRepository repository;
@@ -70,6 +105,7 @@ public class OutboxPublisherService {
   private final long baseDelaySeconds;
   private final long maxDelaySeconds;
   private final long claimTimeoutSeconds;
+  private final MeterRegistry meterRegistry;
 
   /**
    * @param repository the outbox read/claim/write path, or {@code null} when no database is
@@ -81,12 +117,28 @@ public class OutboxPublisherService {
    * @param properties the validated publisher tuning (batch size, retry bound, backoff, stale-claim
    *     timeout)
    */
-  @Autowired
   public OutboxPublisherService(
       @Autowired(required = false) OutboxEventRepository repository,
       @Autowired(required = false) MessageDeliverer deliverer,
       @Autowired(required = false) Clock clock,
       AgentFlowProperties properties) {
+    this(repository, deliverer, clock, properties, null);
+  }
+
+  /**
+   * Full constructor: also injects the {@link MeterRegistry} the messaging meters register on. A
+   * {@code null} registry is treated as "no shared registry" and the meters are registered on a
+   * throwaway one (no observability surface).
+   *
+   * @param meterRegistry the registry the meters register on; may be {@code null}
+   */
+  @Autowired
+  public OutboxPublisherService(
+      @Autowired(required = false) OutboxEventRepository repository,
+      @Autowired(required = false) MessageDeliverer deliverer,
+      @Autowired(required = false) Clock clock,
+      AgentFlowProperties properties,
+      MeterRegistry meterRegistry) {
     this.repository = repository;
     this.deliverer = deliverer;
     this.clock = clock != null ? clock : Clock.systemUTC();
@@ -95,6 +147,32 @@ public class OutboxPublisherService {
     this.baseDelaySeconds = properties.getOutbox().getPublisher().getBaseDelaySeconds();
     this.maxDelaySeconds = properties.getOutbox().getPublisher().getMaxDelaySeconds();
     this.claimTimeoutSeconds = properties.getOutbox().getPublisher().getClaimTimeoutSeconds();
+    this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
+    if (repository != null) {
+      registerPendingGauges();
+    }
+  }
+
+  /**
+   * Register the S13-12 pending gauges with the registry: both read the repository at scrape time
+   * (a live query, never a cached counter), so a scrape reports the current outbox. A repository
+   * failure propagates at scrape time (visible, not a silent 0).
+   */
+  private void registerPendingGauges() {
+    Gauge.builder(
+            PENDING_EVENTS_METRIC,
+            repository,
+            (repo) -> repo.pendingSnapshot(claimTimeoutSeconds).pendingEvents())
+        .description(
+            "Rows due for publish in the outbox (PENDING due / FAILED due / CLAIMED stale) (S13-12); no labels")
+        .register(meterRegistry);
+    Gauge.builder(
+            OLDEST_AGE_METRIC,
+            repository,
+            (repo) -> repo.pendingSnapshot(claimTimeoutSeconds).oldestAgeSeconds())
+        .description(
+            "Age of the oldest due outbox row, in seconds (S13-12); 0 when none; no labels")
+        .register(meterRegistry);
   }
 
   /**
@@ -131,12 +209,14 @@ public class OutboxPublisherService {
 
     int published = 0;
     for (OutboxEvent event : claimed) {
-      switch (deliverer.deliver(event)) {
+      MessageDeliverer.DeliverResult outcome = deliverer.deliver(event);
+      switch (outcome) {
         case DELIVERED -> repository.markSent(event.id());
         case TRANSIENT_FAILURE -> handleTransientFailure(event);
         case AMBIGUOUS -> handleAmbiguous(event);
         case PERMANENT_FAILURE -> handlePermanentFailure(event);
       }
+      recordPublishAttempt(outcome);
       published++;
     }
     log.info(
@@ -145,6 +225,39 @@ public class OutboxPublisherService {
         claimed.size(),
         published);
     return published;
+  }
+
+  /**
+   * Record the S13-12 publish-attempt counter: one increment per claimed row, tagged with the
+   * bounded {@code outcome} ({@code delivered} / {@code transient} / {@code ambiguous} / {@code
+   * permanent}) — no identifier. Metering never fails a poll.
+   */
+  private void recordPublishAttempt(MessageDeliverer.DeliverResult outcome) {
+    try {
+      Counter.builder(PUBLISH_ATTEMPTS_METRIC)
+          .tag("outcome", outcome.name().toLowerCase(java.util.Locale.ROOT))
+          .description(
+              "Outbox publish attempts by outcome (S13-12); bounded outcome label, never an id")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException e) {
+      log.debug("outbox publish-attempt metric failed: {}", e.getMessage());
+    }
+  }
+
+  /**
+   * Record the S13-12 publish-retry counter: one increment per row scheduled for a bounded-backoff
+   * retry (within the attempt bound). Metering never fails a poll.
+   */
+  private void recordRetry() {
+    try {
+      Counter.builder(PUBLISH_RETRIES_METRIC)
+          .description("Outbox rows scheduled for a bounded-backoff retry (S13-12); no labels")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException e) {
+      log.debug("outbox publish-retry metric failed: {}", e.getMessage());
+    }
   }
 
   /**
@@ -166,6 +279,7 @@ public class OutboxPublisherService {
     }
     OffsetDateTime next = nextAttemptAt(attempts);
     repository.markFailed(event.id(), attempts, next, reason);
+    recordRetry();
     log.warn(
         "outbox event {} transient publish failure; retry at {} (attempt {})",
         event.eventId(),
@@ -200,6 +314,7 @@ public class OutboxPublisherService {
     }
     OffsetDateTime next = nextAttemptAt(attempts);
     repository.markFailed(event.id(), attempts, next, reason);
+    recordRetry();
     log.warn(
         "outbox event {} ambiguous publish outcome (timeout); re-publish at {} (attempt {}, "
             + "may duplicate — at-least-once, S06-08): {}",
