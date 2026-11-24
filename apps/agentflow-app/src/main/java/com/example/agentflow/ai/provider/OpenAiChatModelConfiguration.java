@@ -3,11 +3,15 @@ package com.example.agentflow.ai.provider;
 import com.example.agentflow.ai.application.ChatModelPort;
 import com.example.agentflow.ai.application.ProviderResiliencePolicy;
 import com.example.agentflow.config.AgentFlowProperties;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import java.time.Duration;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -134,12 +138,20 @@ public class OpenAiChatModelConfiguration {
    *
    * @param adapter the OpenAI adapter to wrap (see {@link #openAiChatModelAdapter(ChatModel)})
    * @param classifier the exception-to-failure-reason classifier (S09-09)
+   * @param meterRegistryProvider the provider of the {@link MeterRegistry} the S13-13 provider
+   *     meters are registered on; absent in sliced contexts, in which case metering is a silent
+   *     no-op
+   * @param tracerProvider the provider of the {@link SdkTracerProvider} the provider-call span is
+   *     built from; absent when no tracing is wired, in which case no span is created
    * @return the resilient port implementing {@link ChatModelPort}
    */
   @Primary
   @Bean
   public ChatModelPort chatModelPort(
-      OpenAiChatModelAdapter adapter, ProviderExceptionClassifier classifier) {
+      OpenAiChatModelAdapter adapter,
+      ProviderExceptionClassifier classifier,
+      ObjectProvider<MeterRegistry> meterRegistryProvider,
+      ObjectProvider<SdkTracerProvider> tracerProvider) {
     AgentFlowProperties.Ai ai = properties.getAi();
     ProviderResiliencePolicy policy =
         ProviderResiliencePolicy.of(
@@ -148,11 +160,16 @@ public class OpenAiChatModelConfiguration {
             ai.getRetry().getMultiplier(),
             Duration.ofSeconds(ai.getRetry().getMaxDelaySeconds()),
             ai.getRetry().isJitter());
+    SdkTracerProvider provider = tracerProvider.getIfAvailable();
+    Tracer tracer = provider == null ? null : provider.get("com.example.agentflow.ai.provider");
+    MeterRegistry meterRegistry = meterRegistryProvider.getIfAvailable();
     return ResilientChatModel.of(
         adapter,
         policy,
         classifier::classify,
         Duration.ofSeconds(ai.getTimeout().getOverallSeconds()),
-        ai.getMaxParallelCalls());
+        ai.getMaxParallelCalls(),
+        meterRegistry,
+        tracer);
   }
 }

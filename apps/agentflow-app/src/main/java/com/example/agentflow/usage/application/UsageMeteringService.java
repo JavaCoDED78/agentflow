@@ -2,6 +2,8 @@ package com.example.agentflow.usage.application;
 
 import com.example.agentflow.usage.domain.UsageRecordDto;
 import com.example.agentflow.usage.persistence.UsageRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -26,14 +28,34 @@ import org.springframework.stereotype.Service;
 @Service
 public class UsageMeteringService {
 
+  /** Estimated-cost counter (S13-13): sum of the {@code estimated_cost} a record carries. */
+  static final String COST_METRIC = "agentflow.usage.estimated.cost.usd";
+
   private final UsageRepository repository;
+  private final MeterRegistry meterRegistry;
 
   /**
+   * Back-compat constructor without metrics.
+   *
    * @param repository the tenant-scoped {@code usage_records} writer; {@code null} when no database
    *     is configured (the S01-02 default-boot contract)
    */
   public UsageMeteringService(@Autowired(required = false) UsageRepository repository) {
+    this(repository, null);
+  }
+
+  /**
+   * @param repository the tenant-scoped {@code usage_records} writer; {@code null} when no database
+   *     is configured (the S01-02 default-boot contract)
+   * @param meterRegistry the registry the S13-13 estimated-cost meter registers on; may be {@code
+   *     null} (the metering is skipped entirely)
+   */
+  @Autowired
+  public UsageMeteringService(
+      @Autowired(required = false) UsageRepository repository,
+      @Autowired(required = false) MeterRegistry meterRegistry) {
     this.repository = repository;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -55,6 +77,30 @@ public class UsageMeteringService {
           "usage metering unavailable: no database connection is configured");
     }
     repository.insert(record);
+    recordEstimatedCost(record);
     return record;
+  }
+
+  /**
+   * Record the estimated cost the record carries (S13-13): one increment of the total estimated USD
+   * per record, only when the record actually carries a value (never an invented one). Metering
+   * never fails a recording (observability, not business state).
+   */
+  private void recordEstimatedCost(UsageRecordDto record) {
+    if (meterRegistry == null || record.estimatedCost() == null) {
+      return;
+    }
+    try {
+      double amount = record.estimatedCost().doubleValue();
+      if (amount <= 0.0) {
+        return;
+      }
+      Counter.builder(COST_METRIC)
+          .description("Estimated cost recorded through the usage seam (S13-13), in USD")
+          .register(meterRegistry)
+          .increment(amount);
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a recording.
+    }
   }
 }

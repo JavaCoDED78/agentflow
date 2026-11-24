@@ -4,9 +4,8 @@
   unit-suffixed names, bounded state labels, no identifiers in labels (invariant 9), no tenant/run/user ids
   anywhere (invariant 9). Every metric here registers on `io.micrometer.core.instrument.MeterRegistry`
   (the shared Prometheus registry in the app), never a hand-rolled global.
-- **Scope:** the `workflowexecution` family (`S13-11`) and the `messaging` family (`S13-12`). The
-  `ai`/`usage`/`knowledgebase` (AI/RAG families) catalogue lands with `S13-13` and is intentionally
-  **not** listed here.
+- **Scope:** the `workflowexecution` family (`S13-11`), the `messaging` family (`S13-12`) and the
+  `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families (`S13-13`).
 
 ---
 
@@ -71,6 +70,48 @@
 - The outbox gauges are registered once at publisher construction; the publisher poll path is
   unchanged — `recordAttempt` / `recordRetry` run inside the existing success/failure paths.
 - The consumer-lag gauge is a `Gauge.builder` that reports the last known lag; it is never refreshed from the broker at scrape time and never blocks the poll.
+
+## AI/RAG metrics (`S13-13`)
+
+- **Owner:** `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` (`com.example.agentflow`)
+  — the provider wrappers (chat + embedding), the usage recorder, the bounded tool executor, the
+  hybrid retrieval and the document-indexing pipeline. The rules: **provider latency, errors, tokens,
+  estimated cost, tool duration, retrieval latency, chunks returned and ingestion failures** — every
+  label bounded, no secret, no prompt/document text, no identifier.
+
+| Metric | Type | Unit / dimension | Labels | Meaning |
+|---|---|---|---|---|
+| `agentflow.ai.provider.chat.latency.seconds` | Timer | seconds | none | Whole provider chat call (the retry loop, not each attempt) — one sample per call, on success and on fault. |
+| `agentflow.ai.provider.chat.errors.total` | Counter | count | `reason` (bounded: `rate_limit` / `server_error` / `timeout` / `connection` / `client_error` / `unknown`, plus `concurrency_limited` for the throttle fault) | One increment per failed attempt; a permanent failure is recorded once (no retry), a retryable one per attempt. |
+| `agentflow.ai.provider.chat.tokens.input.total` | Counter | tokens | none | Input tokens reported by the provider on a successful response (never an invented value). |
+| `agentflow.ai.provider.chat.tokens.output.total` | Counter | tokens | none | Output tokens reported by the provider on a successful response. |
+| `agentflow.ai.provider.embedding.latency.seconds` | Timer | seconds | none | Whole provider embedding call (the retry loop) — one sample per call. |
+| `agentflow.ai.provider.embedding.errors.total` | Counter | count | `reason` (bounded, same vocabulary) | One increment per failed attempt. |
+| `agentflow.ai.provider.embedding.tokens.total` | Counter | tokens | none | Tokens reported by the provider on a successful response. |
+| `agentflow.usage.estimated.cost.usd` | Counter | USD | none | The estimated cost a successful usage record carries, one increment per record (never an invented value; a zero/absent cost records nothing). |
+| `agentflow.toolexecution.tool.duration.seconds` | Timer | seconds | `outcome` (bounded: `succeeded` / `throttled` / `timed_out` / `faulted`) | One sample per concluded tool call, from just before the call through its conclusion (success or fault). |
+| `agentflow.knowledgebase.retrieval.chunks.returned.total` | Counter | chunks | none | Fused chunks returned by one hybrid-retrieval call, incremented once when the retrieval concludes (never an invented value). |
+| `agentflow.ingestion.index.failures.total` | Counter | passes | none | One increment per failed indexing pass — a transient provider fault, a permanent (extraction) failure or a dimension-mismatch failure. |
+
+### Conventions
+
+- Bounded labels only: `reason` is the closed `ProviderFailureReason` vocabulary (plus
+  `concurrency_limited` for the throttle fault); `outcome` is the closed `ToolInvocationOutcome`
+  vocabulary (`succeeded` / `throttled` / `timed_out` / `faulted`). Never add `tenantId`, `runId`,
+  `userId`, `documentId`, `chunkId`, `model` or any other identifier — the `<module>` in the name
+  carries the signal's home.
+- Provider tokens are recorded only when the provider reports them (a null or zero usage records
+  nothing); never an invented value.
+- The estimated cost counter records only the `estimatedCost` a record carries; a record without a
+  cost registers nothing.
+- The retry loop wraps the per-attempt meters: latency and span see the whole call, errors see each
+  attempt.
+- Metering never fails a business operation: every recorder is wrapped so a metering error is a
+  debug-level log, never a call failure. A null registry skips metering silently.
+- **Provider-call span (S13-13):** when a `Tracer` is wired, the resilient chat/embedding wrappers
+  open a closed `ResilientChatModel#chat` / `ResilientEmbeddingModel#embed` span with a single
+  `agentflow.ai.model` attribute (the target model id). No prompt, no content, no tenant, no
+  identifier. The span is closed in `finally`; a failed call marks the span an error.
 
 ## Dashboard / alert hooks (downstream, not yet defined)
 

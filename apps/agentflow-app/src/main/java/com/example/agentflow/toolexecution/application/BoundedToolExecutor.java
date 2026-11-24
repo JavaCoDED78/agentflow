@@ -6,6 +6,9 @@ import com.example.agentflow.toolexecution.domain.ToolDescriptor;
 import com.example.agentflow.toolexecution.domain.ToolExecutionContext;
 import com.example.agentflow.toolexecution.domain.ToolInvocationOutcome;
 import com.example.agentflow.toolexecution.domain.ToolInvocationRecord;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -99,9 +102,13 @@ public final class BoundedToolExecutor {
 
   private final ConcurrentMap<UUID, Semaphore> tenantPermits = new ConcurrentHashMap<>();
 
+  static final String TOOL_DURATION_METRIC = "agentflow.toolexecution.tool.duration.seconds";
+
   private final ToolInvocationListener listener;
 
   private final LongSupplier nanoTime;
+
+  private final MeterRegistry meterRegistry;
 
   /**
    * @param pool the thread pool the calls run on; never {@code null}. Its size is a configuration
@@ -157,6 +164,25 @@ public final class BoundedToolExecutor {
       int perTenantMaxConcurrency,
       ToolInvocationListener listener,
       LongSupplier nanoTime) {
+    this(pool, globalMaxConcurrency, perTenantMaxConcurrency, listener, nanoTime, null);
+  }
+
+  /**
+   * @param pool the thread pool the calls run on; never {@code null}
+   * @param globalMaxConcurrency the maximum number of tool calls this process runs at once
+   * @param perTenantMaxConcurrency the maximum number of tool calls a single tenant may occupy
+   * @param listener the invocation-history seam (S08-13) every concluded call is reported to
+   * @param nanoTime the monotonic time source the latency measurement reads
+   * @param meterRegistry the registry the S13-13 duration timer registers on; may be {@code null}
+   *     (the metering is skipped entirely)
+   */
+  public BoundedToolExecutor(
+      ExecutorService pool,
+      int globalMaxConcurrency,
+      int perTenantMaxConcurrency,
+      ToolInvocationListener listener,
+      LongSupplier nanoTime,
+      MeterRegistry meterRegistry) {
     if (pool == null) {
       throw new IllegalArgumentException("pool must not be null");
     }
@@ -179,6 +205,7 @@ public final class BoundedToolExecutor {
     this.perTenantMaxConcurrency = perTenantMaxConcurrency;
     this.listener = listener;
     this.nanoTime = nanoTime;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -368,6 +395,26 @@ public final class BoundedToolExecutor {
               errorSummary));
     } catch (RuntimeException historyFailure) {
       log.warn("tool invocation history write failed; the call outcome stands", historyFailure);
+    }
+    recordDuration(outcome, latencyMs);
+  }
+
+  /**
+   * Record the S13-13 duration timer for one concluded call (bounded {@code outcome} label).
+   * Metering never fails the call.
+   */
+  private void recordDuration(ToolInvocationOutcome outcome, long latencyMs) {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      Timer.builder(TOOL_DURATION_METRIC)
+          .tag("outcome", outcome.name().toLowerCase(Locale.ROOT))
+          .description("Tool-call duration (S13-13), in seconds")
+          .register(meterRegistry)
+          .record(java.time.Duration.ofMillis(Math.max(0L, latencyMs)));
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a tool call.
     }
   }
 
