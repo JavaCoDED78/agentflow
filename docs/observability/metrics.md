@@ -5,8 +5,19 @@
   anywhere (invariant 9). Every metric here registers on `io.micrometer.core.instrument.MeterRegistry`
   (the shared Prometheus registry in the app), never a hand-rolled global.
 - **Scope:** the `workflowexecution` family (`S13-11`), the `messaging` family (`S13-12`), the
-  `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families (`S13-13`) and the
-  Boot-native HTTP/JVM/DB-pool meters (`S13-14` — the dashboard's data source).
+  `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families (`S13-13`), the `redis`
+  family (`S12-19`) and the Boot-native HTTP/JVM/DB-pool meters (`S13-14` — the dashboard's data source).
+
+## Machine-checked catalogue (`S13-19`)
+
+The metric set in this document is the **machine-checked form**: [`TelemetryCatalogue`](../../apps/agentflow-app/src/main/java/com/example/agentflow/observability/TelemetryCatalogue.java) (`observability`, pure data — no Spring, no I/O) is the authoritative catalogue of every `agentflow.*` meter the app registers, and `TelemetryPrivacyTest` (`observability`, DB-free, run by `./gradlew :apps:agentflow-app:check`) fails the build when the two drift:
+
+- a new `Counter`/`Timer`/`Gauge` appears in `src/main/java` with no catalogue entry (a new meter without a catalogue entry is rejected);
+- a catalogue entry is not produced anywhere in the source tree (a stale catalogue is rejected);
+- a builder carries a label key that is not in that metric's allowed set (an unlisted label is rejected — the no-label metrics stay label-free);
+- a span attribute, span name or log key outside the closed vocabularies appears anywhere in the source tree (a forbidden signal is rejected).
+
+The catalogue also fixes the **closed label value sets** — every label key has a code-defined set of lowercase values (never free text, never an identifier): `state` on `run.total` (`queued` / `running` / `waiting_for_approval` / `retry_wait` / `succeeded` / `failed` / `cancel_requested` / `cancelled`), `outcome` on the outbox counters (`delivered` / `transient_failure` / `ambiguous` / `permanent_failure`, and `retry` / `dead_letter` on the consumer), `outcome` on the tool timer (`succeeded` / `throttled` / `timed_out` / `faulted`), and `reason` on both provider error counters (`rate_limit` / `server_error` / `timeout` / `connection` / `client_error` / `unknown` / `concurrency_limited`). Add a new metric — or a label, attribute, span name or log key — to `TelemetryCatalogue` in the same change, or the S13-19 check fails. Boot-native meters (`http.server.requests`, `jvm.*`, `hikaricp.*`) are intentionally outside the catalogue: Boot-managed, bounded tags, documented in this document without an explicit entry.
 
 ---
 
@@ -121,6 +132,14 @@ Pre-existing retrieval meters (`S10-16`, instrumented with the hybrid search bef
   open a closed `ResilientChatModel#chat` / `ResilientEmbeddingModel#embed` span with a single
   `agentflow.ai.model` attribute (the target model id). No prompt, no content, no tenant, no
   identifier. The span is closed in `finally`; a failed call marks the span an error.
+
+## Redis metrics (`S12-19`)
+
+- **Owner:** `common` (`com.example.agentflow.common.rate_limit`) — the rate-limit adapter around Redis. One counter, no labels: the in-memory fallback must be visible without saying anything about a tenant or principal.
+
+| Metric | Type | Unit / dimension | Labels | Meaning |
+|---|---|---|---|---|
+| `agentflow.redis.rate_limit.fallback_open` | Counter | count | none | One increment per Redis failure after which the adapter falls back to the in-memory decision. Bounded label-free signal — never a tenant / principal / id (invariant 9). |
 
 ## HTTP/JVM/DB-pool metrics (`S13-14`)
 
