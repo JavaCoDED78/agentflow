@@ -24,3 +24,23 @@ Defaults to the `core` profile (PostgreSQL + pgvector, Redis, Garage) — the
 minimum runtime stack. `messaging`/`full` need a one-time `KAFKA_CLUSTER_ID`,
 which the local `infra/compose/.env` provides. The script exits non-zero when any
 service does not become healthy, so it is a CI smoke gate.
+
+## `observability-clean-start-test.sh` (S13-20)
+
+The observability clean-start test. Drops the observability stack's state volumes
+(Grafana sqlite, Prometheus TSDB, Loki chunks/index, Tempo blocks), brings the
+stack back up and verifies over the Grafana API that everything is re-provisioned
+from Git — every datasource, dashboard and alert rule is present, read-only /
+file-provenance, and a manual UI edit of a provisioned dashboard is refused:
+
+```bash
+bash scripts/observability-clean-start-test.sh
+```
+
+The expected surfaces are read from the Git files (`infra/observability/grafana/`),
+never hardcoded, so a new dashboard/datasource/rule added to Git is automatically
+checked. Exits non-zero on any failure. It wipes and recreates the named volumes
+(`agentflow-observability`, `agentflow-prometheus`, `agentflow-loki`,
+`agentflow-tempo`) — the dev/demo stack carries no durable data. See
+[`infra/observability/README.md`](../infra/observability/README.md) for the S13-20
+acceptance record.
