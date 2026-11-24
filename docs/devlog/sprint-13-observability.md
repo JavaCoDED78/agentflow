@@ -21,6 +21,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-15 — Workflow/Kafka dashboard](#s13-15-workflowkafka-dashboard)
 - [S13-16 — AI/RAG/cost dashboard](#s13-16-airagcost-dashboard)
 - [S13-17 — alert rules as code](#s13-17-alert-rules-as-code)
+- [S13-18 — runbooks for alerts](#s13-18-runbooks-for-alerts)
 
 ---
 
@@ -103,7 +104,7 @@ The metrics half (S13-11/S13-12) is untouched. The `WorkflowWorker` span is not 
 
 ### What changed
 
-The `workflowexecution` module now emits the Sprint 13 metrics the dashboards (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18) build on — runs by state, run/step duration, retries, expired leases and cancellations — one metric per fact, every label bounded, nothing carrying an identifier.
+The `workflowexecution` module now emits the Sprint 13 metrics the dashboards (S13-14…S13-16), alerts (S13-17) and runbooks (S13-18) build on — runs by state, run/step duration, retries, expired leases and cancellations — one metric per fact, every label bounded, nothing carrying an identifier.
 
 - **`RunStateMachineService`** (`workflowexecution.application`) gains an optional `MeterRegistry` + `Clock` (a 7-arg full constructor; the existing 5-arg constructor delegates with a null registry — the meters live on a throwaway registry, no observability surface, and the tests are unchanged). After every successful **run** transition it increments `agentflow.workflowexecution.run.total{state}` (target state lowercased — `running`/`succeeded`/`failed`/`cancelled`/`timeout`/… — the bounded closed vocabulary), and on a **terminal** transition it additionally records one sample of `agentflow.workflowexecution.run.duration.seconds` (timer, `run.created_at` → `Clock.instant()`, clamped at 0, the newest `OffsetDateTime` read via `findRun`; skipped silently when the read is unavailable — never fails a transition). After every successful **step** transition to `CANCELLED` it increments `agentflow.workflowexecution.step.cancelled.total`. Metering is wrapped so an instrumenting failure is a debug log, never a transition failure.
 - **`WorkflowWorker`** (`workflowexecution.application`) gains an optional `MeterRegistry` (a 12-arg full constructor; the 10- and 11-arg constructors delegate with a null registry, so the existing tests are untouched). Around each handler invocation it measures the step with a timer recording `agentflow.workflowexecution.step.duration.seconds` (`stepStartedAt` just before the handler, recorded in the `finally` after the step concludes — success, fault, or failure), and in the transient-fault catch path it increments `agentflow.workflowexecution.step.retry.total` once per step actually moved to `RETRY_WAIT` (a step that exhausts the retry budget and ends `FAILED` increments nothing — no retry happened).
@@ -112,7 +113,7 @@ The `workflowexecution` module now emits the Sprint 13 metrics the dashboards (S
 
 ### Scope / follow-up
 
-The `messaging` (outbox/inbox/DLQ) family landed with S13-12 (see the S13-12 section below); the `ai`/`usage`/`knowledgebase` (AI/RAG) family lands with S13-13 — this catalogue covers `workflowexecution` (S13-11) and `messaging` (S13-12). The run-duration sampler is skipped silently when the run is not readable (a cross-tenant read, an IT-mocked repo with no `findRun` stub) — the counter still increments, so a terminal transition is always visible through `run.total{state}`. No dashboards, alerts or SLOs are defined here (S13-14/15/17/18).
+The `messaging` (outbox/inbox/DLQ) family landed with S13-12 (see the S13-12 section below); the `ai`/`usage`/`knowledgebase` (AI/RAG) family lands with S13-13 — this catalogue covers `workflowexecution` (S13-11) and `messaging` (S13-12). The run-duration sampler is skipped silently when the run is not readable (a cross-tenant read, an IT-mocked repo with no `findRun` stub) — the counter still increments, so a terminal transition is always visible through `run.total{state}`. No dashboards, alerts or runbooks are defined here (S13-14/15/17/18).
 
 ### Documentation
 
@@ -122,7 +123,7 @@ The `messaging` (outbox/inbox/DLQ) family landed with S13-12 (see the S13-12 sec
 
 ### What changed
 
-The `messaging` family of Sprint 13 metrics is now instrumented — the metrics that drive the outbox/inbox/DLQ dashboards (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18): the **pending-row gauges** of the outbox, a **publish-attempt counter** tagged with the bounded outcome vocabulary, a **retry counter**, and the ingester's **consumer-lag gauge** plus a **processing-failures counter** — all bounded by construction, none carrying an identifier, none failing a business operation.
+The `messaging` family of Sprint 13 metrics is now instrumented — the metrics that drive the outbox/inbox/DLQ dashboards (S13-14…S13-16), alerts (S13-17) and runbooks (S13-18): the **pending-row gauges** of the outbox, a **publish-attempt counter** tagged with the bounded outcome vocabulary, a **retry counter**, and the ingester's **consumer-lag gauge** plus a **processing-failures counter** — all bounded by construction, none carrying an identifier, none failing a business operation.
 
 **New [`OutboxPendingSnapshot`](apps/agentflow-app/src/main/java/com/example/agentflow/messaging/persistence/OutboxPendingSnapshot.java)** (`messaging.persistence`) — the read model the outbox gauges consume: `pendingEvents` + `oldestAgeSeconds`, one bounded query (`count(*) AS pending_events` + `EXTRACT(EPOCH FROM now() - min(created_at)) AS oldest_age_seconds`) over exactly the due set `selectForClaim` claims (`PENDING` due / `FAILED` due / `CLAIMED` stale, per the `claim-timeout-seconds` bound), so the gauge and the publisher's view agree. `OutboxEventRepository` gains `pendingSnapshot(long claimTimeoutSeconds)`. `OutboxPublisherService` (optional `MeterRegistry` threaded through the full constructor, 4-arg delegate) registers the two gauges at construction — `agentflow.messaging.outbox.pending.events` and `agentflow.messaging.outbox.oldest.age.seconds` — reading the repository at scrape time; metering is wrapped and debug-logged. After each claimed row it increments `agentflow.messaging.outbox.publish.attempts.total{outcome}` — `delivered` on success, `transient_failure` / `ambiguous` / `permanent_failure` from the `DeliverResult` branch — and, when a row is scheduled for a bounded-backoff retry, increments `agentflow.messaging.outbox.publish.retries.total`.
 
@@ -143,7 +144,7 @@ Sprint 13's metric families must exist before the dashboards land — the outbox
 ### Scope / follow-up
 
 - The `ai`/`usage`/`knowledgebase` (AI/RAG) metric family lands with S13-13 — not touched here.
-- No dashboard, alert or SLO is defined in this section (S13-17/18).
+- No dashboard, alert or runbook is defined in this section (S13-17/18).
 
 ### Documentation
 
@@ -154,7 +155,7 @@ Sprint 13's metric families must exist before the dashboards land — the outbox
 
 ### What changed
 
-The `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families of Sprint 13 metrics are now instrumented — the provider-call latency, errors, tokens and estimated cost, the tool-duration and chunks-returned, and the ingestion-failure metrics the AI/RAG dashboards (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18) build on. Every metric is one fact with a bounded label, no identifier anywhere, and metering never fails a business operation.
+The `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families of Sprint 13 metrics are now instrumented — the provider-call latency, errors, tokens and estimated cost, the tool-duration and chunks-returned, and the ingestion-failure metrics the AI/RAG dashboards (S13-14…S13-16), alerts (S13-17) and runbooks (S13-18) build on. Every metric is one fact with a bounded label, no identifier anywhere, and metering never fails a business operation.
 
 **`ResilientChatModel`** (`ai.provider`, extended in place) takes an optional `MeterRegistry` + `Tracer` (threaded through the 11-arg full constructor, 9-arg delegate — the previous 10-arg 9-arg delegates keep the test seams unchanged). After every attempt it records `agentflow.ai.provider.chat.latency.seconds` (timer, the whole retry loop — one sample per call, on success and on fault) and `agentflow.ai.provider.chat.errors.total{reason}` (counter, on failure only — a permanent failure is recorded once, a retryable one per attempt); on a successful response it also records `agentflow.ai.provider.chat.tokens.input.total` / `.tokens.output.total` (counters, only when the provider reports the counts — never an invented value). When a `Tracer` is wired it opens a closed `ResilientChatModel#chat` span (`agentflow.ai.model` = the target model id, no prompt/content/tenant), closed in a `finally`.
 
@@ -180,7 +181,7 @@ S13-11/S13-12 shipped the workflow-execution and messaging families; the AI/RAG 
 
 ### Scope / follow-up
 
-- No dashboard, alert or SLO is defined here (S13-17/18); `docs/observability/metrics.md` carries the new family.
+- No dashboard, alert or runbook is defined here (S13-17/18); `docs/observability/metrics.md` carries the new family.
 - The production embedding-port wiring is unchanged — S13-13 instruments the existing `ResilientEmbeddingModel` (used in tests and the opt-in production path); the production embedding-port bean remains owned by the caller that builds the `EmbeddingPort`.
 
 ### Documentation
@@ -348,8 +349,8 @@ Live, this session, against the local stack (observability profile up — dedica
 
 ### Scope / follow-up
 
-- SLOs (`S13-18`) consume the same rules and metrics — the rules are the alert surface, not the SLO definitions.
-- Thresholds are baseline values per the plan (`S13-18` fine-tuning): they are deliberately coarse (e.g. 0.5 req/s 5xx, 80% pool utilization, 300s outbox age) — severity and the `for` guard are the discipline.
+- Runbooks (`S13-18`) standardise the alert surface's documentation — the rules are the alert surface, not the SLO definitions.
+- Thresholds are baseline values per the plan (future fine-tuning): they are deliberately coarse (e.g. 0.5 req/s 5xx, 80% pool utilization, 300s outbox age) — severity and the `for` guard are the discipline.
 - The scrape rule is unchanged (S13-06). The Overview/API/JVM/DB/Workflow/Kafka/AI/RAG/Cost dashboards are unchanged (S13-14…S13-16).
 
 ### Documentation
@@ -359,6 +360,50 @@ Live, this session, against the local stack (observability profile up — dedica
 - [`docs/observability/metrics.md`](../observability/metrics.md) — alert hooks for the workflow/messaging/AI/ingestion/HTTP/DB-pool families + the S13-17 hooks note.
 - [`infra/observability/README.md`](../../infra/observability/README.md) — grafana/provisioning row + the alerting paragraph (the scrape rule + the S13-17 operational set).
 - `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
+
+## S13-18 — runbooks for alerts
+
+### What changed
+
+The eight observability alert runbooks under `docs/runbooks/` are standardized — one format, consistent depth, uniform cross-references. All eight (the scrape-target-down rule from S13-06 plus the seven operational rules from S13-17) now carry the same skeleton:
+
+- **Status / owner / alert header** — the runbook name, the alert UID, the severity, the task, and an upstream-reference line pointing at the rule in `infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`, the metric family catalogue (`docs/observability/metrics.md`) and the owning architecture/contract doc.
+- **Fires-on** — the exact expression and the `for` guard.
+- **Symptoms and impact** — what the caller sees on the dashboard and what downstream work is affected (never an invented SLO or an impossible impact).
+- **Expected local-dev state** — the honest no-data / silent state (the owning role is not running locally), and what would make the rule fire for itself.
+- **Diagnostics** — `curl`/dashboard commands against the dedicated Prometheus (`localhost:9090`) and the provisioned dashboards, each verified live this session.
+- **Likely causes and safe mitigations** — a bounded, honest table; nothing that asks the operator to edit data by hand, restart or force-change something that self-heals, or bypass the idempotency contract.
+- **Redrive / rollback — and idempotency** — an explicit section: what never happens (no manual row edits, no hand re-publish, no re-run of an ambiguous external call) and what the controlled path is when one exists (DLQ redrive for a held message; the state machine for stuck runs; re-submit through the normal ingestion flow for a failed document).
+- **Recovery criterion** — tied to the `for` guard and the live `GET /api/prometheus/grafana/api/v1/rules` state.
+- **Escalation** — when to page the on-call owner.
+
+No metric, rule, dashboard, alert definition, workflow state, outbox row, document or telemetry surface is changed. No Java/Gradle change.
+
+### Why
+
+S13-17 shipped the alert rules and seven runbooks in a thinner format — dashboards and a couple of commands, with no recovery/idempotency content and no escalation guidance. A caller receiving the page from a non-operational alert could not act without oral hints from the deploy pipeline. The plan (S13-18) requires the runbook to answer: impact, diagnostic queries, probable causes, safe mitigations and recovery criteria, with any redrive/rollback step idempotency-aware. The standard format closes that honestly.
+
+### Verification (live, this session, against the local stack)
+
+1. Every `curl` command in the rewritten runbooks executed against the dedicated Prometheus (`localhost:9090`) — `up`, the targets list, the 5xx sum-by-status queries, the saturation ratio, the per-metric rate queries (outbox age, consumer lag, expired leases, provider errors, ingestion failures, recoveries) — all `status: success`; the operational families are honestly empty (`result: []`) on the local API boot (no role emits those series), the scrape rule and the 5xx state are shown live.
+2. The live alert evaluation (`GET /api/prometheus/grafana/api/v1/rules`, admin password `admin`) shows all 8 rules with `health: ok` and the 7 operational rules honestly `inactive` / `Normal (NoData)` — unchanged.
+3. Every runbook is linked from its rule's `runbook_url` annotation (read from the alerts YAML) and from the index (`docs/runbooks/README.md`).
+4. Every relative link in the runbooks resolves (checked with the same `ls`/`read_file` discipline); the scrape runbook's self-link was removed in this pass.
+
+No Java/Gradle change — the gate is the live evaluation above and the doc/link checks.
+
+### Docs
+
+- [`docs/runbooks/api-error-rate.md`](../runbooks/api-error-rate.md), [`db-saturation.md`](../runbooks/db-saturation.md), [`outbox-age.md`](../runbooks/outbox-age.md), [`kafka-lag.md`](../runbooks/kafka-lag.md), [`expired-leases.md`](../runbooks/expired-leases.md), [`provider-failures.md`](../runbooks/provider-failures.md), [`ingestion-failures.md`](../runbooks/ingestion-failures.md), [`observability-scrape-target-down.md`](../runbooks/observability-scrape-target-down.md) — standardised.
+- [`docs/runbooks/README.md`](../runbooks/README.md) — index (S13-18 uniform format + the eight-runbook table).
+- [`docs/observability/metrics.md`](../observability/metrics.md) — S13-18 hook note + stale SLO cross-reference corrected (runbooks land with S13-18; SLOs remain later, S14-16/S16-14).
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+- SLOs themselves remain later (S14-16 / S16-14) — this task is the runbooks, not the SLO definitions.
+- The scrape-target-down runbook is typed S13-06 (its rule), but its format is S13-18 — one format across the observability alert set.
+- S13-19 (cardinality/privacy check) is a separate task — not touched here.
 
 ## S13-01 — telemetry conventions
 

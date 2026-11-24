@@ -47,7 +47,7 @@
   and the DLQ path; the ingester (`ingestion.worker.DocumentIndexingWorker`) contributes the
   consumer-lag gauge.
 - **Standards / task:** `S13-12` (P0) — the metrics that drive the outbox/inbox/DLQ dashboards
-  (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18).
+  (S13-14…S13-16), alerts (S13-17) and runbooks (S13-18).
 
 | Metric | Type | Unit / dimension | Labels | Meaning |
 |---|---|---|---|---|
@@ -184,4 +184,4 @@ The **AI/RAG/cost dashboard (S13-16)** consumes the AI/RAG family — `agentflow
 
 The **API/JVM/DB dashboard (S13-14)** consumes the Spring Boot Actuator family (`http_server_requests_seconds_count` / `_bucket`, `jvm_memory_used_bytes`, `jvm_gc_pause_seconds_count`, `process_cpu_usage`, `jvm_threads_*`, `hikaricp_connections_*`) — `agentflow-api-jvm-db.json`. Two alerts hook the same family: **`api-error-rate`** (`agentflow-api-error-rate`, `critical`) fires on `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0.5` for 5m, and **`db-saturation`** (`agentflow-db-saturation`, `critical`) fires on `hikaricp_connections_active / hikaricp_connections_max > 0.8` for 5m.
 
-The S13-17 alert set (`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`) is the first consumer of the alert surface: rules carry a `for` guard, a severity label and a `runbook_url` annotation into `docs/runbooks/` (the scrape-target-down rule from S13-06 plus the seven operational rules listed above). SLO definitions land with S13-18. (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)
+The S13-17 alert set (`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`) is the first consumer of the alert surface: rules carry a `for` guard, a severity label and a `runbook_url` annotation into `docs/runbooks/` (the scrape-target-down rule from S13-06 plus the seven operational rules listed above). Runbooks are standardized in S13-18; SLO definitions remain later (S14-16/S16-14). (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)
