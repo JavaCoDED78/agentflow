@@ -2,6 +2,7 @@ package com.example.agentflow.messaging.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -11,7 +12,9 @@ import com.example.agentflow.messaging.domain.OutboxEvent;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -201,7 +204,93 @@ class OutboxEventRepositoryTest {
     assertThat(capturedId.getValue()).isEqualTo(id);
   }
 
+  @Test
+  @SuppressWarnings("unchecked")
+  void pending_snapshot_reads_the_due_set_and_maps_count_and_age() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    Map<String, Object> row = new HashMap<>();
+    row.put("pending_events", 7L);
+    row.put("oldest_age_seconds", 42.5d);
+    when(jdbc.queryForList(
+            anyString(), any(OffsetDateTime.class), any(OffsetDateTime.class), anyLong()))
+        .thenReturn(List.of(row));
+
+    var snapshot = repo.pendingSnapshot(300L);
+
+    assertThat(snapshot.pendingEvents()).isEqualTo(7L);
+    assertThat(snapshot.oldestAgeSeconds()).isEqualTo(42.5d);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Object> first = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> second = ArgumentCaptor.forClass(Object.class);
+    ArgumentCaptor<Object> third = ArgumentCaptor.forClass(Object.class);
+    verify(jdbc).queryForList(sql.capture(), first.capture(), second.capture(), third.capture());
+    assertThat(sql.getValue())
+        .contains("count(*) AS pending_events")
+        .contains("EXTRACT(EPOCH FROM now() - min(created_at))")
+        .contains("(status = 'PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))")
+        .contains("(status = 'FAILED' AND next_attempt_at <= ?)")
+        .contains("(status = 'CLAIMED' AND claimed_at <= now() - (INTERVAL '1 second' * ?))");
+    // the due instant is bound twice (PENDING / FAILED), the stale-claim timeout once
+    assertThat(first.getValue()).isInstanceOf(OffsetDateTime.class);
+    assertThat(second.getValue()).isInstanceOf(OffsetDateTime.class);
+    assertThat(third.getValue()).isEqualTo(300L);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void pending_snapshot_on_an_empty_set_returns_zero_and_age_zero() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    // the aggregate row for an empty due set: count 0, NULL age
+    Map<String, Object> row = new HashMap<>();
+    row.put("pending_events", 0L);
+    row.put("oldest_age_seconds", null);
+    when(jdbc.queryForList(
+            anyString(), any(OffsetDateTime.class), any(OffsetDateTime.class), anyLong()))
+        .thenReturn(List.of(row));
+
+    var snapshot = repo.pendingSnapshot(300L);
+
+    assertThat(snapshot.pendingEvents()).isZero();
+    assertThat(snapshot.oldestAgeSeconds()).isZero();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void pending_snapshot_on_a_fully_empty_result_set_returns_zero_and_age_zero() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    when(jdbc.queryForList(
+            anyString(), any(OffsetDateTime.class), any(OffsetDateTime.class), anyLong()))
+        .thenReturn(List.of());
+
+    var snapshot = repo.pendingSnapshot(300L);
+
+    assertThat(snapshot.pendingEvents()).isZero();
+    assertThat(snapshot.oldestAgeSeconds()).isZero();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void pending_snapshot_clamps_a_negative_age_to_zero() {
+    JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    OutboxEventRepository repo = new OutboxEventRepository(jdbc);
+    Map<String, Object> row = new HashMap<>();
+    row.put("pending_events", 3L);
+    row.put("oldest_age_seconds", -5.0d);
+    when(jdbc.queryForList(
+            anyString(), any(OffsetDateTime.class), any(OffsetDateTime.class), anyLong()))
+        .thenReturn(List.of(row));
+
+    var snapshot = repo.pendingSnapshot(300L);
+
+    assertThat(snapshot.pendingEvents()).isEqualTo(3L);
+    assertThat(snapshot.oldestAgeSeconds()).isZero();
+  }
+
   private static RowMapper<?> anyRowMapper() {
+
     return any(RowMapper.class);
   }
 }

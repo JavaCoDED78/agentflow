@@ -3,6 +3,10 @@ package com.example.agentflow.messaging.application;
 import com.example.agentflow.messaging.domain.DlqMessage;
 import com.example.agentflow.messaging.domain.InboxMessage;
 import com.example.agentflow.messaging.persistence.InboxMessageRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.Locale;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,11 +41,16 @@ import org.springframework.util.Assert;
  */
 public class InboxConsumerService {
 
+  /** The consumer-processing-failure counter (S13-12): one increment per failed business change. */
+  static final String PROCESSING_FAILURES_METRIC =
+      "agentflow.messaging.consumer.processing.failures.total";
+
   private static final Logger log = LoggerFactory.getLogger(InboxConsumerService.class);
 
   private final InboxDedupService inboxDedup;
   private final DlqService dlq;
   private final InboxMessageRepository inbox;
+  private final MeterRegistry meterRegistry;
 
   /**
    * @param inboxDedup the idempotency helper (never {@code null}); applies the business change with
@@ -54,10 +63,23 @@ public class InboxConsumerService {
    */
   public InboxConsumerService(
       InboxDedupService inboxDedup, DlqService dlq, InboxMessageRepository inbox) {
+    this(inboxDedup, dlq, inbox, null);
+  }
+
+  /**
+   * @param meterRegistry the registry the S13-12 failure counter registers on; may be {@code null}
+   *     (a throwaway registry — no observability surface, S13-11 idiom)
+   */
+  public InboxConsumerService(
+      InboxDedupService inboxDedup,
+      DlqService dlq,
+      InboxMessageRepository inbox,
+      MeterRegistry meterRegistry) {
     Assert.notNull(inboxDedup, "inboxDedup must not be null");
     this.inboxDedup = inboxDedup;
     this.dlq = dlq;
     this.inbox = inbox;
+    this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
   }
 
   /**
@@ -73,9 +95,28 @@ public class InboxConsumerService {
   public InboxConsumeResult apply(String topic, InboxMessage claim, InboxConsumerAction action) {
     InboxConsumeResult result = inboxDedup.consume(claim.consumerName(), claim, action);
     if (result == InboxConsumeResult.RETRY || result == InboxConsumeResult.DEAD_LETTER) {
+      recordFailureMetric(result);
       recordDlq(topic, claim, result);
     }
     return result;
+  }
+
+  /**
+   * Record the S13-12 consumer-processing-failure counter: one increment per failed business
+   * change, tagged with the disposition ({@code retry} / {@code dead_letter}) — no identifier.
+   * Metering never fails a consume.
+   */
+  private void recordFailureMetric(InboxConsumeResult result) {
+    try {
+      Counter.builder(PROCESSING_FAILURES_METRIC)
+          .tag("outcome", result.name().toLowerCase(Locale.ROOT))
+          .description(
+              "Consumer-side processing failures by disposition (S13-12); bounded outcome label, never an id")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException e) {
+      log.debug("consumer processing-failure metric failed: {}", e.getMessage());
+    }
   }
 
   /**

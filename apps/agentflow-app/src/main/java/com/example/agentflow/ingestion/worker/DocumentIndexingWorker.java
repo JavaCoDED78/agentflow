@@ -11,6 +11,9 @@ import com.example.agentflow.messaging.application.InboxDedupService;
 import com.example.agentflow.messaging.application.MessagingTracing;
 import com.example.agentflow.messaging.domain.InboxMessage;
 import com.example.agentflow.messaging.persistence.InboxMessageRepository;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
@@ -77,6 +80,13 @@ import org.springframework.transaction.support.TransactionTemplate;
  * in the {@code ingestion-worker} role ({@code agentflow.worker.ingestion-loop-enabled}) and only
  * when a {@link DataSource} exists, so the {@code api} role and the DB-less skeleton never
  * construct a consumer.
+ *
+ * <p><b>S13-12 instrumentation.</b> {@code agentflow.messaging.consumer.lag.count} is a gauge over
+ * the live consumer, re-read after every poll pass (the retained-but-unprocessed record count
+ * across the assigned partitions, in records; no labels). Consumer-side failures are counted by the
+ * {@code InboxConsumerService} on the shared registry ({@code agentflow.messaging.consumer.
+ * processing.failures.total{outcome}} — bounded disposition label, never an identifier). No
+ * identifier appears in any label (invariant 9); metering never fails a poll.
  */
 @Component
 @ConditionalOnProperty(
@@ -94,11 +104,21 @@ public class DocumentIndexingWorker {
   /** The versioned topic this worker consumes (the event contract). */
   static final String TOPIC = "agentflow.document.ingestion-requested.v1";
 
+  /**
+   * The consumer-lag gauge (S13-12): the total retained-but-unprocessed record count across the
+   * worker's assigned partitions, in records. A gauge over the live consumer, re-read after every
+   * poll pass — no label, the whole loop is the only tagged consumer surface.
+   */
+  static final String CONSUMER_LAG_METRIC = "agentflow.messaging.consumer.lag.count";
+
   private final KafkaConsumer<String, String> consumer;
   private final IngestionService ingestionService;
   private final InboxConsumerService inboxConsumerService;
   private final Duration pollTimeout;
   private final Tracer tracer;
+  private final MeterRegistry meterRegistry;
+  private final java.util.concurrent.atomic.AtomicLong lastKnownLag =
+      new java.util.concurrent.atomic.AtomicLong(0L);
 
   /**
    * Spring-managed constructor: builds the consumer from {@code agentflow.kafka.producer.*
@@ -111,6 +131,9 @@ public class DocumentIndexingWorker {
    * @param inboxRepository the inbox write/read path
    * @param dlqService the dead-letter store
    * @param dataSource the application data source (the worker exists only with one)
+   * @param tracerProvider the OTel SDK tracer provider, or {@code null} (no spans)
+   * @param meterRegistry the registry the S13-12 lag gauge registers on; may be {@code null} (a
+   *     throwaway registry and no gauge — S13-11 idiom)
    */
   @Autowired
   public DocumentIndexingWorker(
@@ -119,7 +142,8 @@ public class DocumentIndexingWorker {
       InboxMessageRepository inboxRepository,
       DlqService dlqService,
       DataSource dataSource,
-      ObjectProvider<SdkTracerProvider> tracerProvider) {
+      ObjectProvider<SdkTracerProvider> tracerProvider,
+      @Autowired(required = false) MeterRegistry meterRegistry) {
     this(
         new KafkaConsumer<>(consumerProps(properties)),
         ingestionService,
@@ -129,9 +153,11 @@ public class DocumentIndexingWorker {
                 new TransactionTemplate(new DataSourceTransactionManager(dataSource)),
                 properties.getWorker().getIngestionMaxAttempts()),
             dlqService,
-            inboxRepository),
+            inboxRepository,
+            meterRegistry),
         Duration.ofMillis(properties.getWorker().getIngestionPollTimeoutMs()),
-        tracerProvider.getIfAvailable());
+        tracerProvider.getIfAvailable(),
+        meterRegistry);
   }
 
   /**
@@ -148,7 +174,7 @@ public class DocumentIndexingWorker {
       IngestionService ingestionService,
       InboxConsumerService inboxConsumerService,
       Duration pollTimeout) {
-    this(consumer, ingestionService, inboxConsumerService, pollTimeout, null);
+    this(consumer, ingestionService, inboxConsumerService, pollTimeout, null, null);
   }
 
   /**
@@ -167,12 +193,38 @@ public class DocumentIndexingWorker {
       InboxConsumerService inboxConsumerService,
       Duration pollTimeout,
       SdkTracerProvider tracerProvider) {
+    this(consumer, ingestionService, inboxConsumerService, pollTimeout, tracerProvider, null);
+  }
+
+  /**
+   * Full constructor: also injects the {@link MeterRegistry} the lag gauge registers on. A {@code
+   * null} registry is treated as "no shared registry" (S13-11 idiom): the consumer-failure counters
+   * fall back to a throwaway one and the lag gauge is simply not registered.
+   *
+   * @param consumer the Kafka consumer (manual commits)
+   * @param ingestionService the indexing use case
+   * @param inboxConsumerService the assembled inbox boundary
+   * @param pollTimeout the long-poll timeout of {@link #pollOnce()}
+   * @param tracerProvider the OTel SDK tracer provider, or {@code null} (no spans)
+   * @param meterRegistry the registry the lag gauge registers on; may be {@code null}
+   */
+  DocumentIndexingWorker(
+      KafkaConsumer<String, String> consumer,
+      IngestionService ingestionService,
+      InboxConsumerService inboxConsumerService,
+      Duration pollTimeout,
+      SdkTracerProvider tracerProvider,
+      MeterRegistry meterRegistry) {
     this.consumer = consumer;
     this.ingestionService = ingestionService;
     this.inboxConsumerService = inboxConsumerService;
     this.pollTimeout = pollTimeout;
     this.tracer =
         tracerProvider == null ? null : tracerProvider.get("com.example.agentflow.ingestion");
+    this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
+    if (meterRegistry != null) {
+      registerLagGauge();
+    }
   }
 
   /**
@@ -180,34 +232,84 @@ public class DocumentIndexingWorker {
    * failed one (in-session skip, uncommitted offset) and re-read the rest next poll.
    */
   void pollOnce() {
-    ConsumerRecords<String, String> records = consumer.poll(pollTimeout);
-    if (records.isEmpty()) {
-      return;
-    }
-    Map<TopicPartition, OffsetAndMetadata> acked = new HashMap<>();
-    Set<TopicPartition> repositioned = new HashSet<>();
-    boolean held = false;
-    for (ConsumerRecord<String, String> record : records) {
-      TopicPartition partition = new TopicPartition(record.topic(), record.partition());
-      if (held) {
-        // A previous record was held: leave this one unprocessed and re-read it next poll (the
-        // position moved past the whole batch at poll time, so rewind to its first unprocessed
-        // record — once per partition).
-        if (repositioned.add(partition)) {
-          consumer.seek(partition, record.offset());
+    try {
+      ConsumerRecords<String, String> records = consumer.poll(pollTimeout);
+      if (records.isEmpty()) {
+        return;
+      }
+      Map<TopicPartition, OffsetAndMetadata> acked = new HashMap<>();
+      Set<TopicPartition> repositioned = new HashSet<>();
+      boolean held = false;
+      for (ConsumerRecord<String, String> record : records) {
+        TopicPartition partition = new TopicPartition(record.topic(), record.partition());
+        if (held) {
+          // A previous record was held: leave this one unprocessed and re-read it next poll (the
+          // position moved past the whole batch at poll time, so rewind to its first unprocessed
+          // record — once per partition).
+          if (repositioned.add(partition)) {
+            consumer.seek(partition, record.offset());
+          }
+          continue;
         }
-        continue;
+        if (handle(record) == HandleOutcome.ACK) {
+          acked.put(partition, new OffsetAndMetadata(record.offset() + 1));
+        } else {
+          consumer.seek(partition, record.offset() + 1);
+          repositioned.add(partition);
+          held = true;
+        }
       }
-      if (handle(record) == HandleOutcome.ACK) {
-        acked.put(partition, new OffsetAndMetadata(record.offset() + 1));
-      } else {
-        consumer.seek(partition, record.offset() + 1);
-        repositioned.add(partition);
-        held = true;
+      if (!acked.isEmpty()) {
+        consumer.commitSync(acked);
       }
+    } finally {
+      recordConsumerLag();
     }
-    if (!acked.isEmpty()) {
-      consumer.commitSync(acked);
+  }
+
+  /**
+   * Register the S13-12 consumer-lag gauge with the shared registry: a periodic read of the live
+   * consumer (the retained-but-unprocessed record count across the assigned partitions, in
+   * records), never a cached counter. The gauge re-reads the last recorded value, so the producer
+   * side of the gauge never touches the broker.
+   */
+  private void registerLagGauge() {
+    Gauge.builder(CONSUMER_LAG_METRIC, this, (worker) -> (double) worker.currentLag())
+        .description(
+            "Retained-but-unprocessed record count across the assigned partitions (S13-12); no labels")
+        .register(meterRegistry);
+  }
+
+  /** The latest recorded lag (S13-12): the total across the assigned partitions, or 0. */
+  private long currentLag() {
+    return lastKnownLag.get();
+  }
+
+  /**
+   * Re-read the lag from the live consumer after a poll pass. Never fails the worker: a broker
+   * failure is logged and the gauge keeps the previous value (a scrape reports the last known lag
+   * rather than a silent 0).
+   */
+  private void recordConsumerLag() {
+    try {
+      Set<TopicPartition> assignment = consumer.assignment();
+      if (assignment == null || assignment.isEmpty()) {
+        lastKnownLag.set(0L);
+        return;
+      }
+      Map<TopicPartition, Long> endOffsets = consumer.endOffsets(assignment);
+      long lag = 0L;
+      for (TopicPartition partition : assignment) {
+        long end = endOffsets.getOrDefault(partition, 0L);
+        long position = consumer.position(partition);
+        if (position < 0) {
+          position = 0L;
+        }
+        lag += Math.max(0L, end - position);
+      }
+      lastKnownLag.set(lag);
+    } catch (RuntimeException e) {
+      log.debug("consumer lag metric failed: {}", e.getMessage());
     }
   }
 
