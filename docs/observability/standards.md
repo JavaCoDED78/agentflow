@@ -88,9 +88,7 @@ smallest set that answers a question; an unbounded set is a defect.
 - Adding a label to an existing metric is a breaking cardinality change: it needs an ADR-level
   review of the dashboards/alerts that read it (S13-17), not a drive-by.
 
-**Enforcement.** The S13-19 cardinality check (`cardinality/privacy` unit test, S13-19) walks
-the full metric catalogue and fails on a forbidden label. A new meter without a catalogue
-entry is rejected before it ships.
+**Enforcement.** The S13-19 cardinality/privacy check (`TelemetryPrivacyTest`, DB-free, run by `./gradlew :apps:agentflow-app:check`) walks the full metric catalogue and the live source tree — every `Counter`/`Timer`/`Gauge` in `src/main/java` must have a catalogue entry, every label key on a builder must be in that metric's allowed set, every span attribute and span name must be in the closed vocabulary, and the log whitelist must remain exactly the five pinned keys. A new meter, a new label or a new attribute without a catalogue entry is rejected before it ships; see [`#cardinality--privacy-verification`](#cardinality--privacy-verification).
 
 ## Trace attributes
 
@@ -163,7 +161,9 @@ Explicit, for every carrier:
 
 ## Cardinality / privacy verification
 
-The `S13-19` cardinality and privacy check is a DB-free unit test that walks the full metric
-catalogue (and any catalogue-in-progress) and fails on a forbidden label, a forbidden span
-attribute, or an unbounded value. Add your metric to the catalogue in the same change, or the
-S13-19 check fails CI.
+The S13-19 cardinality and privacy check is a DB-free unit test (`com.example.agentflow.observability.TelemetryPrivacyTest`, 7 tests, run by `./gradlew :apps:agentflow-app:check`) that walks two things:
+
+1. **The catalogue** (`com.example.agentflow.observability.TelemetryCatalogue` — pure data, no Spring, no I/O) — the machine-checked form of this document. It fixes the full metric catalogue (names, types, units, and the bounded label keys with their closed lowercase value sets), the forbidden label set, the forbidden span-attribute set, the allowed trace-attribute vocabulary, the closed span-name vocabulary and the five pinned log MDC keys.
+2. **The live source tree** — every `Counter`/`Timer`/`Gauge` builder call, every `AttributeKey.stringKey(...)` and every span name (the `spanBuilder(...)` literal and the messaging boundary's `startSpan(...)` literal) in `src/main/java` is checked against the catalogue. A new meter without a catalogue entry, an unlisted label key, a forbidden attribute, a free-text span name or a drifted log whitelist makes CI red — before the signal ships.
+
+Add your metric (or label, attribute, span name or log key) to `TelemetryCatalogue` in the same change you add the signal, or the S13-19 check fails. The value *side* of a label is enforced by the closed catalogue sets plus review — the check is structural, not a runtime sampler; secret shapes reaching stdout are enforced by the canary and masker tests (`CanaryLeakScanTest`, `SecretRedactingValueMaskerTest`).

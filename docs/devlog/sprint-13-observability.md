@@ -22,6 +22,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-16 — AI/RAG/cost dashboard](#s13-16-airagcost-dashboard)
 - [S13-17 — alert rules as code](#s13-17-alert-rules-as-code)
 - [S13-18 — runbooks for alerts](#s13-18-runbooks-for-alerts)
+- [S13-19 — cardinality / privacy telemetry check](#s13-19-cardinality--privacy-telemetry-check)
 
 ---
 
@@ -404,6 +405,45 @@ No Java/Gradle change — the gate is the live evaluation above and the doc/link
 - SLOs themselves remain later (S14-16 / S16-14) — this task is the runbooks, not the SLO definitions.
 - The scrape-target-down runbook is typed S13-06 (its rule), but its format is S13-18 — one format across the observability alert set.
 - S13-19 (cardinality/privacy check) is a separate task — not touched here.
+
+## S13-19 — cardinality / privacy telemetry check
+
+### What changed
+
+Telemetry now has a **machine-checked contract** for everything the app emits: one data-only catalogue (`observability.TelemetryCatalogue`) and one DB-free unit test (`observability.TelemetryPrivacyTest`, 7 tests) that walks the source tree and the catalogue and fails the build on any forbidden signal — before it ships.
+
+- **`TelemetryCatalogue`** (new, `observability`, main sourceset) — pure data (no Spring, no I/O, never a business rule): the full metric catalogue — 29 `agentflow.*` meters with type, unit and bounded label keys with closed lowercase value sets (`state` on `run.total`, `outcome` on the outbox counters / the tool timer, `reason` on both provider error counters) — the forbidden label set (tenant/run/user/document ids, prompts, payloads, `correlationId`/`traceId`/`spanId` in labels), the forbidden span-attribute set (content/identifier/credential names), the allowed trace-attribute vocabulary (service identity, causality, operation identity, AI/RAG and tool attributes — the closed set `docs/observability/standards.md` documents), the closed span-name vocabulary (the four code-defined `Class#method` names) and the five pinned log MDC keys (the `StructuredJsonLogstashEncoder` contract).
+- **`TelemetryPrivacyTest`** (new, `observability` test sourceset) — the check itself:
+  - *Catalogue well-formedness* — metric names unique, lowercase, `agentflow.`-prefixed and ≥3 segments, units present; label keys bounded and never forbidden; every label value set is closed, small (≤ 32), non-empty, lowercase-shaped and never a forbidden name; allowed attributes disjoint from the forbidden set; span names structurally `Class#method`.
+  - *Metric scan* over `src/main/java` — every `Counter`/`Timer`/`Gauge` builder call resolves to a catalogue entry (a new meter without a catalogue entry fails CI), every catalogue entry is produced in the source tree (a stale catalogue fails CI), every label key a builder carries is in that metric's allowed set (the no-label metrics stay label-free).
+  - *Span scan* — every `AttributeKey.stringKey(...)` (literal or constant-resolved) and every span name (the `spanBuilder(...)` literal and the messaging boundary's `startSpan(...)` first-literal) is checked against the closed vocabulary; a forbidden or unresolvable name fails CI loudly.
+  - *Log whitelist* — the encoder's `WHITELISTED_MDC_KEYS` is exactly the five pinned keys, none a content/identifier name.
+
+The scan deliberately resolves only **lexical facts** — the metric name, the label keys, the closed attribute names and span names. The value *side* of a label is enforced by the closed catalogue sets plus review (the check is structural, not a runtime sampler); secret shapes reaching stdout are enforced by the canary and masker tests (`CanaryLeakScanTest`, `SecretRedactingValueMaskerTest`).
+
+### Why
+
+`docs/observability/standards.md` described the discipline and its enforcement was a doc note; nothing failed CI when a new meter or span attribute violated it. The check is the enforcement half of S13-01 and the headline acceptance of S13-19 — labels bounded, sensitive data not in telemetry — and it must fail *before* a signal ships, not in review. It is pure data plus a source scan, so it cannot drift from the doc it encodes and it is DB-free.
+
+### Verification
+
+`./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.observability.TelemetryPrivacyTest' --rerun-tasks` — BUILD SUCCESSFUL; JUnit XML `tests="7" failures="0" errors="0"` (grep-verified). The test walks the **live source tree**, so its value depends on the negative scenarios being real. Three negative probes were applied to the tree and then reverted (`git checkout` / file deletion — the tree is clean except the two new files):
+
+1. **Forbidden label key** on a meter — `.tag("runId", runId.toString())` added to `agentflow.workflowexecution.run.total` — `metric_labels_in_code_match_the_catalogue` FAILED as designed (1 failure).
+2. **Uncatalogued meter** — a temporary `agentflow.workflowexecution.not_in_catalogue` counter (`Counter.builder(…)` in a probe class) — `every_metric_in_code_is_in_the_catalogue` FAILED as designed (2 failures: the new meter and the metric with no catalogue entry — the scan is bidirectional).
+3. **Forbidden span attribute** — `AttributeKey.stringKey("documentName")` in `MessagingTracing#startSpan` — `span_attributes_and_names_in_code_are_closed_vocabulary` FAILED as designed (1 failure).
+
+All three probes were reverted; the tree is back to the intended state (only `TelemetryCatalogue.java` and `TelemetryPrivacyTest.java` are new/untracked) and the suite is green.
+
+### Documentation
+
+- [`docs/observability/standards.md`](../observability/standards.md) — the enforcement line and the "Cardinality / privacy verification" section now describe the implemented check (classes, coverage, honest limits).
+- [`docs/observability/metrics.md`](../observability/metrics.md) — new "Machine-checked catalogue" section (the catalogue is the authoritative form of this document; the closed label value sets; the no-label metric policy), the Redis family documented (`agentflow.redis.rate_limit.fallback_open`, `S12-19`), and the scope line updated.
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+Boot-native meters (`http.server.requests`, `jvm.*`, `hikaricp.*`) stay outside the catalogue by design — Boot-managed, bounded tags, documented in the same doc without an explicit entry. The S13-22 Redis instrumentation (new latency/outcome labels) must extend `TelemetryCatalogue` in the same change — the check enforces it. The value-side of labels remains enforced by closed sets + review; runtime secret shapes remain the canary/masker tests.
 
 ## S13-01 — telemetry conventions
 
