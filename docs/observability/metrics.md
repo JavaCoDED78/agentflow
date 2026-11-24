@@ -149,9 +149,9 @@ custom tag beyond the pool name — bounded, static, never an identifier.
 - The DB pool panels show real data once the app borrows a connection (any authenticated API request);
   a zero-traffic boot keeps the idle/max series only. That is honest, not a defect.
 
-## Dashboard / alert hooks (downstream, not yet defined)
+## Dashboard / alert hooks
 
-Expected first consumers (S13-14 dashboards, S13-17 alerts):
+The **Workflow/Kafka operational dashboard (S13-15)** consumes this family — `agentflow-workflow-kafka.json` — with the following first-consumer mapping (the dashboard is provisioned; alert SLOs land with S13-17/S13-18):
 
 - `workflowexecution.run.total{state}` — rate of run transitions; the `failed`/`timeout`/`cancelled` series are the headline health signal.
 - `workflowexecution.run.duration.seconds` — p50/p99 by control-group (not by id); a run that is still in flight contributes nothing (its terminal transition is what samples it).
@@ -163,4 +163,4 @@ Expected first consumers (S13-14 dashboards, S13-17 alerts):
 - `messaging.outbox.publish.attempts.total{outcome}` — the per-attempt outcome mix; `permanent_failure` / `ambiguous` rates are the incident signals.
 - `messaging.consumer.lag.count` — the ingester's backlog; pairs with `messaging.consumer.processing.failures.total{outcome}` for DLQ storms.
 
-No alert, SLO or dashboard is defined in this document — those land with `S13-17`/`S13-18`.
+No alert, SLO or SLO-level dashboard is defined in this document — those land with `S13-17`/`S13-18`. (The S13-14 API/JVM/DB and S13-15 Workflow/Kafka dashboards are already provisioned from Git.)

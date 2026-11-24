@@ -18,6 +18,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-12 — messaging metrics instrumentation](#s13-12-messaging-metrics-instrumentation)
 - [S13-13 — AI/RAG metrics instrumentation](#s13-13-airag-metrics-instrumentation)
 - [S13-14 — API/JVM/DB dashboard](#s13-14-apijvmdb-dashboard)
+- [S13-15 — Workflow/Kafka dashboard](#s13-15-workflowkafka-dashboard)
 
 ---
 
@@ -223,6 +224,45 @@ Live, this session, against the app running in the background:
 - [`infra/observability/README.md`](../../infra/observability/README.md) — scrape-token workflow (gitignored, not committed).
 - [`docs/observability/metrics.md`](../observability/metrics.md) — the HikariCP pool family added.
 - `CHANGELOG.md` (this entry).
+
+## S13-15 — Workflow/Kafka dashboard
+
+### What changed
+
+The Grafana provisioning provider (S13-06) plugs into the second rich dashboard: the **Workflow/Kafka** operational dashboard, rendered entirely from the dedicated Prometheus (the S13-05 store, `agentflow-prometheus` datasource), showing runs by state, run/step durations (p95/p99), step retries, cancellations, lease recovery, outbox pending/age/attempts/retries, consumer lag/failures and approval expiries — plus links into Loki (logs) and Tempo (traces).
+
+**Histogram opt-in for the workflow timers** — `application.yml` gains the same `percentiles-histogram` opt-in S13-14 used for the HTTP server timer, applied to the two workflow timers: `agentflow.workflowexecution.run.duration.seconds` and `agentflow.workflowexecution.step.duration.seconds`. Boot's default timer has no bucket series, so `histogram_quantile` had nothing to render. The buckets carry only the existing bounded tags (no state, no id).
+
+**Dashboard** — new [`infra/observability/grafana/dashboards/agentflow-workflow-kafka.json`](../../infra/observability/grafana/dashboards/agentflow-workflow-kafka.json), stable UID `agentflow-workflow-kafka`, `allowUiUpdates: false` provider: 15 panels (a header + 14 operational panels), all pointing at `agentflow-prometheus`, units labelled in the titles and the field config. It is provisioned by the same S13-06 provider (`updateIntervalSeconds: 30`), so the acceptance — dashboard auto-loaded — holds on a clean instance. The links (Loki/Tempo Explore) are part of the dashboard contract, not a manual UI setup.
+
+**What it deliberately does NOT do:** it does not invent metrics that do not exist. The run/step duration p95/p99 panels need buckets (the opt-in above); the queue/consumer-lag panels need the `workflow-worker` / `ingestion-worker` role, which the local API boot does not start. Empty panels are the honest state of a dev boot — the panels are real and provisioned, not aspirational.
+
+### Why
+
+The plan (S13-15) names the operational dashboard: runs by state, queue age, consumer lag, outbox age, retries, lease recovery and p95/p99, plus logs/traces links. The metrics were instrumented in S13-11 (workflow) and S13-12 (messaging), but nothing showed them; this is the surface that lets an operator see a stuck worker — pending/oldest-age/lag rising while runs by state stop moving — without peeking at the database.
+
+### Verification
+
+Live, this session, against the local stack (observability profile up; the app is the API role):
+
+1. Dashboard provisioned: `GET localhost:3000/api/dashboards/uid/agentflow-workflow-kafka` → `meta.provisioned: true`, `provisionedExternalId: agentflow-workflow-kafka.json`.
+2. All 16 panel queries execute against the dedicated Prometheus (`/api/v1/query_range`, 6h window) and return `status: success` — zero series, because the running role is the API and emits no workflow/messaging meters; the honest state, not a defect. The S13-14 dashboard (API metrics) shows real series by comparison.
+3. The histogram opt-in is verified against the running scrape: `agentflow_workflowexecution_run_duration_seconds_bucket` and `agentflow_workflowexecution_step_duration_seconds_bucket` appear (`0` series — no terminal runs/steps yet); the HTTP server buckets are unchanged.
+4. `./gradlew :apps:agentflow-app:check` — BUILD SUCCESSFUL (compile + unit + architecture + spotless + OpenAPI gate).
+
+**Acceptance note (honest):** the "injected stuck worker" scenario in the plan is not exercised here — it requires the `workflow-worker`/`ingestion-worker` roles running against a live Kafka, which the local API boot does not start. The dashboard is provisioned and its queries execute; the metrics that would make the stuck-worker signal visible require the role-enabled profile, which is out of scope for this task.
+
+### Scope / follow-up
+
+- A stuck-worker drill (inject a worker that stops claiming runs, watch outbox age / lag / runs-by-state move on the dashboard) is the S15 deployment-sprint follow-up, together with the alert rules (S13-17) that consume the same metrics.
+- The dashboard does not add new meters, alerts or runbooks — S13-17 owns alerts; the dashboard is the operator surface.
+- The `agentflow-overview.json` smoke dashboard and `agentflow-api-jvm-db.json` are unchanged.
+
+### Documentation
+
+- [`infra/observability/README.md`](../../infra/observability/README.md) — dashboards list mention.
+- [`docs/observability/metrics.md`](../observability/metrics.md) — the hooks section updated (the dashboard now exists).
+- `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
 
 ## S13-01 — telemetry conventions
 
