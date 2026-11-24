@@ -3,7 +3,7 @@
 - **Owner:** `observability` (`com.example.agentflow.observability`) — meters, trace attributes, correlation, structured JSON logging.
 - **Task:** `S13-01` (P0) — fixes the conventions every later Sprint 13 task (S13-02 … S13-22) follows.
 - **Related:** [`../domain-glossary.md`](../domain-glossary.md) §12 (Correlation / trace ID, Metric label), [`../architecture/module-map.md`](../architecture/module-map.md) (cross-cutting packages), [`../security/secrets.md`](../security/secrets.md), [`../adr/ADR-020-shared-redaction-in-common.md`](../adr/ADR-020-shared-redaction-in-common.md) (shared redaction), [`../adr/ADR-021-redis-role.md`](../adr/ADR-021-redis-role.md) (metrics for the Redis helper).
-- **What this is not:** the metric **catalogue** (metric names, units and meanings — `S13-11…S13-13`, `S13-22`, the handbook `S13-21`), the dashboards (`S13-14…S13-16`), the alerts (`S13-17`) or the SLOs. This file fixes the **rules**; the catalogue is written per signal family later and must follow it.
+- **What this is not:** the metric **catalogue** (metric names, units and meanings — `S13-11…S13-13`, `S13-22`, the handbook `S13-21`), the dashboards (`S13-14…S13-16`), the alerts (`S13-17`) or the SLOs. This file fixes the **rules**; the catalogues are written per signal family and must follow it — the workflow-execution family is `metrics.md` (S13-11); the `messaging` / `ai` / `usage` / `knowledgebase` and Redis families are still planned.
 
 ---
 

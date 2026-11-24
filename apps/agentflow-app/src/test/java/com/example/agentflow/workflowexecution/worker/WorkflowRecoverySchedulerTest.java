@@ -52,6 +52,21 @@ class WorkflowRecoverySchedulerTest {
   }
 
   @Test
+  void publishes_the_expired_lease_counter_once_per_candidate_scanned() {
+    UUID runId = UUID.randomUUID();
+    UUID tenantId = UUID.randomUUID();
+    when(runRepository.findExpiredLeaseRuns(8))
+        .thenReturn(List.of(new ExpiredLeaseRun(runId, tenantId)));
+    when(leaseService.claim(tenantId, runId)).thenReturn(1);
+
+    scheduler().recoverPass();
+
+    Counter expired = meterRegistry.find(WorkflowRecoveryScheduler.EXPIRED_LEASE_METRIC).counter();
+    assertThat(expired).isNotNull();
+    assertThat(expired.count()).isOne();
+  }
+
+  @Test
   void skips_a_run_claim_that_returns_minus_one() {
     // A claim of -1 means the run is terminal, was just taken by another worker, or a cross-tenant
     // / missing id — the recovery skips it (idempotent re-claim, never a lost run).
@@ -67,6 +82,9 @@ class WorkflowRecoverySchedulerTest {
     // The counter exists (registered at construction) but is not incremented for the skipped run.
     assertThat(meterRegistry.find(WorkflowRecoveryScheduler.RECOVERIES_METRIC).counter().count())
         .isZero();
+    // The expired-lease counter still incremented once (the candidate was scanned, S13-11).
+    assertThat(meterRegistry.find(WorkflowRecoveryScheduler.EXPIRED_LEASE_METRIC).counter().count())
+        .isOne();
   }
 
   @Test

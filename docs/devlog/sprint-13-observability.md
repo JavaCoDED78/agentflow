@@ -14,6 +14,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-08 — Tempo as code](#s13-08-tempo-as-code)
 - [S13-09 — standardized JSON logs](#s13-09-standardized-json-logs)
 - [S13-10 — trace context over Kafka](#s13-10-trace-context-over-kafka)
+- [S13-11 — workflow metrics instrumentation](#s13-11-workflow-metrics-instrumentation)
 
 ---
 
@@ -91,6 +92,25 @@ Integration, real KRaft broker (Testcontainers, Apache Kafka 4.3.1), `KafkaTrace
 ### Scope / follow-up
 
 The metrics half (S13-11/S13-12) is untouched. The `WorkflowWorker` span is not added here — it is constructed with a tracer in a later observability task; the worker's own trace handling follows the same `MessagingTracing` builder.
+
+## S13-11 — workflow metrics instrumentation
+
+### What changed
+
+The `workflowexecution` module now emits the Sprint 13 metrics the dashboards (S13-14…S13-16), alerts (S13-17) and SLOs (S13-18) build on — runs by state, run/step duration, retries, expired leases and cancellations — one metric per fact, every label bounded, nothing carrying an identifier.
+
+- **`RunStateMachineService`** (`workflowexecution.application`) gains an optional `MeterRegistry` + `Clock` (a 7-arg full constructor; the existing 5-arg constructor delegates with a null registry — the meters live on a throwaway registry, no observability surface, and the tests are unchanged). After every successful **run** transition it increments `agentflow.workflowexecution.run.total{state}` (target state lowercased — `running`/`succeeded`/`failed`/`cancelled`/`timeout`/… — the bounded closed vocabulary), and on a **terminal** transition it additionally records one sample of `agentflow.workflowexecution.run.duration.seconds` (timer, `run.created_at` → `Clock.instant()`, clamped at 0, the newest `OffsetDateTime` read via `findRun`; skipped silently when the read is unavailable — never fails a transition). After every successful **step** transition to `CANCELLED` it increments `agentflow.workflowexecution.step.cancelled.total`. Metering is wrapped so an instrumenting failure is a debug log, never a transition failure.
+- **`WorkflowWorker`** (`workflowexecution.application`) gains an optional `MeterRegistry` (a 12-arg full constructor; the 10- and 11-arg constructors delegate with a null registry, so the existing tests are untouched). Around each handler invocation it measures the step with a timer recording `agentflow.workflowexecution.step.duration.seconds` (`stepStartedAt` just before the handler, recorded in the `finally` after the step concludes — success, fault, or failure), and in the transient-fault catch path it increments `agentflow.workflowexecution.step.retry.total` once per step actually moved to `RETRY_WAIT` (a step that exhausts the retry budget and ends `FAILED` increments nothing — no retry happened).
+- **`WorkflowRecoveryScheduler`** (`workflowexecution.worker`) increments `agentflow.workflowexecution.lease.expired.total` once per expired-lease candidate scanned by the pass (S07-09's `recoveries` counter is kept verbatim for successful re-claims — renaming a shipped metric would break dashboards).
+- **`docs/observability/metrics.md`** (new) — the catalogue: names, types, units, labels and the meaning of every workflow-execution metric above, the S07-09 `recoveries` metric kept verbatim, the downstream dashboard/alert hooks (not yet defined), and the workflow-only scope note.
+
+### Scope / follow-up
+
+The `messaging` (outbox/inbox/DLQ) and `ai`/`usage`/`knowledgebase` (AI/RAG) metric families land with S13-12 / S13-13 — this catalogue covers `workflowexecution` only. The run-duration sampler is skipped silently when the run is not readable (a cross-tenant read, an IT-mocked repo with no `findRun` stub) — the counter still increments, so a terminal transition is always visible through `run.total{state}`. No dashboards, alerts or SLOs are defined here (S13-14/15/17/18).
+
+### Documentation
+
+- `docs/observability/metrics.md` (the catalogue), `docs/devlog/sprint-13-observability.md` (this section), `CHANGELOG.md` (this entry).
 
 ## S13-01 — telemetry conventions
 

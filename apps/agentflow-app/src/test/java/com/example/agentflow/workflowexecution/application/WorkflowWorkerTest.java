@@ -28,6 +28,9 @@ import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStatusRow;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1005,6 +1008,111 @@ class WorkflowWorkerTest {
         .containsExactly("step.ready", "step.running", "step.succeeded");
   }
 
+  // ---------------------------------------------------------------------------
+  // S13-11: step-duration timer and step-retry counter
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void a_successful_step_records_a_step_duration_sample() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("a", WorkflowStepState.PENDING);
+    WorkflowGraph graph = new WorkflowGraph(List.of(node("a", "NOOP")), List.of());
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    WorkflowWorker worker = buildWorker(List.of(new DeterministicStepHandler()), registry);
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    Timer duration = registry.find(WorkflowWorker.STEP_DURATION_METRIC).timer();
+    assertThat(duration).isNotNull();
+    assertThat(duration.count()).isEqualTo(1);
+  }
+
+  @Test
+  void a_transient_fault_increments_the_step_retry_counter() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+    String stepKey = "a";
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put(stepKey, WorkflowStepState.PENDING);
+    WorkflowGraph graph = new WorkflowGraph(List.of(node(stepKey, "THROW")), List.of());
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.QUEUED, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId)).thenReturn(graph);
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    StepHandler throwing =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "THROW".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            throw new RuntimeException("connection refused");
+          }
+        };
+
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    WorkflowWorker worker = buildWorker(List.of(throwing), registry);
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isEqualTo(1);
+    assertThat(stepState.get(stepKey)).isEqualTo(WorkflowStepState.RETRY_WAIT);
+    io.micrometer.core.instrument.Counter retries =
+        registry.find(WorkflowWorker.STEP_RETRY_METRIC).counter();
+    assertThat(retries).isNotNull();
+    assertThat(retries.count()).isEqualTo(1.0);
+  }
+
   private static WorkflowNode node(String id, String type) {
     return new WorkflowNode(id, type, new LinkedHashMap<>());
   }
@@ -1027,5 +1135,23 @@ class WorkflowWorkerTest {
         approvalRepository,
         handlers,
         properties);
+  }
+
+  private WorkflowWorker buildWorker(List<StepHandler> handlers, SimpleMeterRegistry registry) {
+    AgentFlowProperties properties = mock(AgentFlowProperties.class);
+    when(properties.getWorker()).thenReturn(new AgentFlowProperties.Worker());
+    return new WorkflowWorker(
+        runRepository,
+        stepRepository,
+        versionService,
+        leaseService,
+        null,
+        transitionService,
+        checkpointAdapter,
+        approvalRepository,
+        handlers,
+        properties,
+        Clock.systemUTC(),
+        registry);
   }
 }

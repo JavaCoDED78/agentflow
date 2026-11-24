@@ -6,11 +6,21 @@ import com.example.agentflow.workflowexecution.domain.InvalidStateException;
 import com.example.agentflow.workflowexecution.domain.WorkflowRunState;
 import com.example.agentflow.workflowexecution.domain.WorkflowStepState;
 import com.example.agentflow.workflowexecution.persistence.RunStateSnapshot;
+import com.example.agentflow.workflowexecution.persistence.RunView;
 import com.example.agentflow.workflowexecution.persistence.StepStateSnapshot;
 import com.example.agentflow.workflowexecution.persistence.WorkflowRunRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepAttemptHistoryRepository;
 import com.example.agentflow.workflowexecution.persistence.WorkflowStepRunRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.Locale;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -55,11 +65,27 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class RunStateMachineService {
 
+  /**
+   * The run-transition counter (S13-11): one increment per run transition, labelled {@code state}
+   * with the target state (a bounded closed vocabulary). Never carries an id.
+   */
+  static final String RUN_TOTAL_METRIC = "agentflow.workflowexecution.run.total";
+
+  /** The run-duration timer (S13-11): run creation to the terminal transition, in seconds. */
+  static final String RUN_DURATION_METRIC = "agentflow.workflowexecution.run.duration.seconds";
+
+  /** The step-cancellation counter (S13-11): one increment per step transition to CANCELLED. */
+  static final String STEP_CANCELLED_METRIC = "agentflow.workflowexecution.step.cancelled.total";
+
+  private static final Logger log = LoggerFactory.getLogger(RunStateMachineService.class);
+
   private final WorkflowRunRepository runRepository;
   private final WorkflowStepRunRepository stepRepository;
   private final WorkflowStepAttemptHistoryRepository attemptHistoryRepository;
   private final WorkflowEventService eventService;
   private final RunQuotaGuard runQuotaGuard;
+  private final MeterRegistry meterRegistry;
+  private final Clock clock;
 
   public RunStateMachineService(
       @Autowired(required = false) WorkflowRunRepository runRepository,
@@ -67,11 +93,94 @@ public class RunStateMachineService {
       @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository,
       WorkflowEventService eventService,
       @Autowired(required = false) RunQuotaGuard runQuotaGuard) {
+    this(
+        runRepository,
+        stepRepository,
+        attemptHistoryRepository,
+        eventService,
+        runQuotaGuard,
+        null,
+        null);
+  }
+
+  /**
+   * Full constructor: also injects the {@link MeterRegistry} the transition meters register on and
+   * the injectable {@link Clock} (invariant 10). A {@code null} registry is treated as "no shared
+   * registry" and the meters are registered on a throwaway one (no observability surface).
+   *
+   * @param meterRegistry the registry the meters register on; may be {@code null}
+   * @param clock the injectable clock; may be {@code null} (falls back to UTC)
+   */
+  @Autowired
+  public RunStateMachineService(
+      @Autowired(required = false) WorkflowRunRepository runRepository,
+      @Autowired(required = false) WorkflowStepRunRepository stepRepository,
+      @Autowired(required = false) WorkflowStepAttemptHistoryRepository attemptHistoryRepository,
+      WorkflowEventService eventService,
+      @Autowired(required = false) RunQuotaGuard runQuotaGuard,
+      MeterRegistry meterRegistry,
+      @Autowired(required = false) Clock clock) {
     this.runRepository = runRepository;
     this.stepRepository = stepRepository;
     this.attemptHistoryRepository = attemptHistoryRepository;
     this.eventService = eventService;
     this.runQuotaGuard = runQuotaGuard;
+    this.meterRegistry = meterRegistry == null ? new SimpleMeterRegistry() : meterRegistry;
+    this.clock = clock == null ? Clock.systemUTC() : clock;
+  }
+
+  /**
+   * Record the S13-11 run-transition meters after a successful run transition: one increment of
+   * {@code run.total{state}} and, when the transition is terminal, one duration sample of {@code
+   * run.duration.seconds} (run creation to the terminal state). Metering never fails a transition.
+   */
+  private void recordRunTransitionMetrics(UUID tenantId, UUID runId, WorkflowRunState to) {
+    try {
+      Counter.builder(RUN_TOTAL_METRIC)
+          .tag("state", to.name().toLowerCase(Locale.ROOT))
+          .description("Run transitions by target state (S13-11); bounded state label, never an id")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException e) {
+      log.debug("run transition metric failed: {}", e.getMessage());
+    }
+    if (to == null || !to.isTerminal()) {
+      return;
+    }
+    try {
+      RunView view =
+          runRepository == null ? null : runRepository.findRun(tenantId, runId).orElse(null);
+      if (view == null || view.createdAt() == null) {
+        return;
+      }
+      Duration duration = Duration.between(view.createdAt().toInstant(), clock.instant());
+      if (duration.isNegative()) {
+        duration = Duration.ZERO;
+      }
+      Timer.builder(RUN_DURATION_METRIC)
+          .description("Run duration from creation to a terminal state (S13-11), in seconds")
+          .register(meterRegistry)
+          .record(duration);
+    } catch (RuntimeException e) {
+      log.debug("run duration metric failed: {}", e.getMessage());
+    }
+  }
+
+  /**
+   * Record the S13-11 step-cancellation counter after a successful step transition to CANCELLED.
+   */
+  private void recordStepTransitionMetrics(WorkflowStepState to) {
+    if (to != WorkflowStepState.CANCELLED) {
+      return;
+    }
+    try {
+      Counter.builder(STEP_CANCELLED_METRIC)
+          .description("Step transitions to CANCELLED (S13-11); no labels")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException e) {
+      log.debug("step cancellation metric failed: {}", e.getMessage());
+    }
   }
 
   /**
@@ -112,6 +221,7 @@ public class RunStateMachineService {
     applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
     appendRunEvent(tenantId, runId, from, to, eventType, actor);
     releaseQuotaSlotAtTerminal(tenantId, runId, to);
+    recordRunTransitionMetrics(tenantId, runId, to);
     return to;
   }
 
@@ -166,6 +276,7 @@ public class RunStateMachineService {
     applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
     appendRunEvent(tenantId, runId, from, to, eventType, actor, errorClass);
     releaseQuotaSlotAtTerminal(tenantId, runId, to);
+    recordRunTransitionMetrics(tenantId, runId, to);
     return to;
   }
 
@@ -219,6 +330,7 @@ public class RunStateMachineService {
     applyStepTransition(runId, tenantId, stepKey, from, current.leaseEpoch(), to);
     recordStepAttempt(tenantId, runId, stepKey, from, to, actor, null, null);
     appendStepEvent(tenantId, runId, current.stepId(), stepKey, from, to, eventType, actor, null);
+    recordStepTransitionMetrics(to);
     return to;
   }
 
@@ -281,6 +393,7 @@ public class RunStateMachineService {
     recordStepAttempt(tenantId, runId, stepKey, from, to, null, errorClass, safeReason);
     appendStepEvent(
         tenantId, runId, current.stepId(), stepKey, from, to, eventType, null, errorClass);
+    recordStepTransitionMetrics(to);
     return to;
   }
 

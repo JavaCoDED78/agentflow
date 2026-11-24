@@ -70,12 +70,19 @@ public class WorkflowRecoveryScheduler {
   /** The recovery metric name (invariant 9: the counter carries no tenant / run label). */
   static final String RECOVERIES_METRIC = "agentflow.workflow.recoveries";
 
+  /**
+   * The expired-lease metric name (S13-11): one increment per expired-lease candidate scanned this
+   * pass. Invariant 9: no tenant / run label.
+   */
+  static final String EXPIRED_LEASE_METRIC = "agentflow.workflowexecution.lease.expired.total";
+
   private static final Logger log = LoggerFactory.getLogger(WorkflowRecoveryScheduler.class);
 
   private final WorkflowRunRepository runRepository;
   private final RunLeaseService leaseService;
   private final AgentFlowProperties properties;
   private final Counter recoveries;
+  private final Counter expiredLeases;
 
   /**
    * @param runRepository the run repository, {@code null} when no {@link javax.sql.DataSource} is
@@ -97,6 +104,12 @@ public class WorkflowRecoveryScheduler {
             .description(
                 "Stale runs re-claimed by the recovery scheduler (S07-09); one increment per "
                     + "successful re-claim")
+            .register(meterRegistry);
+    this.expiredLeases =
+        Counter.builder(EXPIRED_LEASE_METRIC)
+            .description(
+                "Expired-lease candidates scanned by the recovery scheduler (S13-11); one "
+                    + "increment per candidate")
             .register(meterRegistry);
   }
 
@@ -122,6 +135,8 @@ public class WorkflowRecoveryScheduler {
     List<ExpiredLeaseRun> candidates = runRepository.findExpiredLeaseRuns(limit);
     int recovered = 0;
     for (ExpiredLeaseRun candidate : candidates) {
+      // S13-11: one increment per expired-lease candidate scanned this pass.
+      expiredLeases.increment();
       // Atomic re-claim: the claim skips terminal runs and is tenant scoped (invariant 1); a -1
       // means the run is terminal, was just taken by another worker, or a cross-tenant / missing id
       // — skip it (idempotent re-claim, invariant 3).
