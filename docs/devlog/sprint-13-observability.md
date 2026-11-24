@@ -23,6 +23,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-17 — alert rules as code](#s13-17-alert-rules-as-code)
 - [S13-18 — runbooks for alerts](#s13-18-runbooks-for-alerts)
 - [S13-19 — cardinality / privacy telemetry check](#s13-19-cardinality--privacy-telemetry-check)
+- [S13-20 — dashboards restore from empty state (clean-start test)](#s13-20-dashboards-restore-from-empty-state-clean-start-test)
 
 ---
 
@@ -444,6 +445,44 @@ All three probes were reverted; the tree is back to the intended state (only `Te
 ### Scope / follow-up
 
 Boot-native meters (`http.server.requests`, `jvm.*`, `hikaricp.*`) stay outside the catalogue by design — Boot-managed, bounded tags, documented in the same doc without an explicit entry. The S13-22 Redis instrumentation (new latency/outcome labels) must extend `TelemetryCatalogue` in the same change — the check enforces it. The value-side of labels remains enforced by closed sets + review; runtime secret shapes remain the canary/masker tests.
+
+## S13-20 — dashboards restore from empty state (clean-start test)
+
+### What changed
+
+The Grafana-provisioning contract is now proven by a runnable test, not by eyeballed `GET` responses. New **[`scripts/observability-clean-start-test.sh`](../../scripts/observability-clean-start-test.sh)** — the observability clean-start test as code:
+
+- **Reads the expected surfaces from Git, never a hardcoded list**: dashboard UIDs from the `infra/observability/grafana/dashboards/*.json` filenames, datasource UIDs from the `provisioning/datasources/agentflow.yaml` declarations, alert-rule UIDs from the `provisioning/alerting/agentflow-alerts.yaml` rule `uid`s. Adding a dashboard/datasource/rule to Git automatically makes the test check it.
+- **Wipes the state volumes** — `docker compose --profile observability down` + `docker volume rm agentflow-observability agentflow-prometheus agentflow-loki agentflow-tempo` (Grafana sqlite, Prometheus TSDB, Loki chunks/index, Tempo blocks + WAL) — then brings the stack back up from a clean state.
+- **Verifies over the Grafana API** (admin credentials from the same `GF_ADMIN_PASSWORD` default the compose file uses): all five datasources present and `readOnly: true`; all four dashboards with `meta.provisioned: true`; all eight alert rules in the provisioning API **and** evaluating live (`/api/prometheus/grafana/api/v1/rules` — `health: ok`, `provenance: file`); and a manual UI-edit attempt (`POST /api/dashboards/db` on a provisioned UID) refused with `HTTP 400` `Cannot save provisioned dashboard`.
+- **28 checks, exit non-zero on any failure**; the expected-uid read from Git exits early with a clear error if a Git file cannot be parsed.
+
+No dashboard, alert rule, datasource, metric, provisioning file or container configuration was changed — the S13-06/07/08/14/15/16/17 contracts are what the test proves. Documentation only: `scripts/README.md`, `infra/observability/README.md` (S13-20 acceptance), this file and `CHANGELOG.md`.
+
+### Why
+
+S13-06…S13-08 proved the provisioning contract once per task (datasources, dashboards, alert rules reloaded from Git) and S13-17 added the operational alert set — but nothing re-proves it after a future edit, and a regression (a provisioned dashboard silently ignored, a dropped UID, a mis-parsed rules YAML) would ship green. The plan's acceptance is **"manual Grafana UI editing is not required"** — the test makes that an executable, repeatable criterion instead of a one-off live run.
+
+### Verification (live, this session, from a wiped state)
+
+`bash scripts/observability-clean-start-test.sh` — twice in a row from a wiped state (`docker volume rm agentflow-observability agentflow-prometheus agentflow-loki agentflow-tempo`, then the script's own `down` + `volume rm` + `up -d`):
+
+- **CLEAN-START TEST: PASS — 28 checks**: preconditions (docker + compose config), state wiped, all five containers healthy, Grafana `database: ok`, 5 datasources present and read-only, 4 dashboards `meta.provisioned: true`, 8 alert rules in the provisioning API, all 8 alert rules live (`health: ok`, `provenance: file`), the UI-edit refusal (`HTTP 400` `Cannot save provisioned dashboard`), and the UI-edit refusal body checked, not the status alone.
+- `bash scripts/smoke-local.sh --profile observability` — SMOKE TEST: PASS (all five observability-profile containers healthy, then torn down).
+- The scrape-target-down rule is honestly `firing` on the live evaluation (the local API boot is not scraped — the documented local-dev drift, `up{job="agentflow-api"} = 0`), and the seven operational rules are honestly `inactive` / `Normal (NoData)` — unchanged from S13-17/18.
+
+No Java/Gradle change — the gate is the clean-start test and the smoke run above.
+
+### Docs
+
+- [`scripts/observability-clean-start-test.sh`](../../scripts/observability-clean-start-test.sh) — the deliverable.
+- [`scripts/README.md`](../../scripts/README.md) — the new script.
+- [`infra/observability/README.md`](../../infra/observability/README.md) — the S13-20 acceptance section.
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+The test is deliberately Grafana/Git-focused (the S13-20 contract): it does not assert application scrape health (`up{job="agentflow-api"}`) — the API is not part of the observability stack and the scrape rule already documents its local drift. A production alert-notification layer (contact points, routing) is the deferred notification work, not S13-20.
 
 ## S13-01 — telemetry conventions
 
