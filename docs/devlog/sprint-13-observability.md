@@ -20,6 +20,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-14 — API/JVM/DB dashboard](#s13-14-apijvmdb-dashboard)
 - [S13-15 — Workflow/Kafka dashboard](#s13-15-workflowkafka-dashboard)
 - [S13-16 — AI/RAG/cost dashboard](#s13-16-airagcost-dashboard)
+- [S13-17 — alert rules as code](#s13-17-alert-rules-as-code)
 
 ---
 
@@ -255,7 +256,7 @@ Live, this session, against the local stack (observability profile up; the app i
 
 ### Scope / follow-up
 
-- A stuck-worker drill (inject a worker that stops claiming runs, watch outbox age / lag / runs-by-state move on the dashboard) is the S15 deployment-sprint follow-up, together with the alert rules (S13-17) that consume the same metrics.
+- A stuck-worker drill (inject a worker that stops claiming runs, watch outbox age / lag / runs-by-state move on the dashboard) is the S15 deployment-sprint follow-up. The alert rules that consume these metrics now live in [S13-17](#s13-17-alert-rules-as-code) (`agentflow-outbox-age`, `agentflow-kafka-lag`, `agentflow-expired-leases`).
 - The dashboard does not add new meters, alerts or runbooks — S13-17 owns alerts; the dashboard is the operator surface.
 - The `agentflow-overview.json` smoke dashboard and `agentflow-api-jvm-db.json` are unchanged.
 
@@ -298,7 +299,7 @@ Live, this session, against the local stack (observability profile up; the app i
 
 ### Scope / follow-up
 
-- A fake-provider drill (inject a provider latency/error spike, watch the error/latency panels move) is the S15 deployment-sprint follow-up, together with the alert rules (S13-17) that consume the same metrics.
+- A fake-provider drill (inject a provider latency/error spike, watch the error/latency panels move) is the S15 deployment-sprint follow-up. The alert rules that consume these metrics now live in [S13-17](#s13-17-alert-rules-as-code) (`agentflow-provider-failures`, `agentflow-ingestion-failures`).
 - The dashboard does not add new meters, alerts or runbooks — S13-17 owns alerts; the dashboard is the operator surface.
 - The `agentflow-overview.json`, `agentflow-api-jvm-db.json` and `agentflow-workflow-kafka.json` dashboards are unchanged.
 
@@ -306,6 +307,57 @@ Live, this session, against the local stack (observability profile up; the app i
 
 - [`infra/observability/README.md`](../../infra/observability/README.md) — dashboards list mention.
 - [`docs/observability/metrics.md`](../observability/metrics.md) — the AI/RAG family (pre-existing S10-16 retrieval meters documented) and the S13-16 hooks section.
+- `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
+
+## S13-17 — alert rules as code
+
+### What changed
+
+The Grafana provisioning provider (S13-06) gains the full operational alert set: seven new rules alongside the S13-06 scrape-target-down rule, in [`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`](../../infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml). Every rule carries a `for` guard, a `severity` label (warning / critical), a `noDataState` choice, an `execErrState: Error` and a `runbook_url` annotation into `docs/runbooks/`:
+
+| UID | Severity | Threshold | `for` | Signal |
+|---|---|---|---|---|
+| `agentflow-api-error-rate` | critical | `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0.5` | 5m | API 5xx rate |
+| `agentflow-db-saturation` | critical | `hikaricp_connections_active / hikaricp_connections_max > 0.8` | 5m | DB pool saturation |
+| `agentflow-outbox-age` | warning | `agentflow_messaging_outbox_oldest_age_seconds > 300` | 5m | outbox oldest age |
+| `agentflow-kafka-lag` | warning | `agentflow_messaging_consumer_lag_count > 1000` | 10m | ingester backlog |
+| `agentflow-expired-leases` | warning | `rate(agentflow_workflowexecution_lease_expired_total[5m]) > 0` | 5m | lease-recovery scan load |
+| `agentflow-provider-failures` | warning | `rate(agentflow_ai_provider_chat_errors_total[5m]) + rate(agentflow_ai_provider_embedding_errors_total[5m]) > 0` | 5m | AI provider errors |
+| `agentflow-ingestion-failures` | warning | `rate(agentflow_ingestion_index_failures_total[5m]) > 0` | 5m | indexing failures |
+
+**Two deliberate state choices.** (a) The operational rules use `noDataState: OK` — a local API boot emits no series for the workflow/messaging/AI/ingestion families (the data comes from the messaging/ingestion/workflow-worker roles), so "no data" there must never page; only a real series breaching the threshold pages. The scrape rule keeps its own `Alerting` `noDataState` (a vanished target is alertable). (b) `execErrState: Error` — an evaluation error pages loudly rather than silently normal.
+
+**Provisioning model unchanged.** The rules ride the same S13-06 provider (`alerting/agentflow-alerts.yaml`, mounted read-only, `allowUiUpdates: false`) — no manual UI edits, and no change to the dashboards or datasources.
+
+**Seven runbooks** (`docs/runbooks/`): `api-error-rate.md`, `db-saturation.md`, `outbox-age.md`, `kafka-lag.md`, `expired-leases.md`, `provider-failures.md`, `ingestion-failures.md`. Each carries: the alert name + UID + severity, what it fires on, the honest local-dev silent state (the owning role is not running → the rule is deliberately silent, and the scrape-target-down rule carries the outage signal), diagnostics with real commands (`curl` against the dedicated Prometheus at `localhost:9090`, the provisioned dashboards), likely causes with safe actions, and the recovery criterion. Every runbook is linked from its rule's `runbook_url` annotation and from `docs/runbooks/README.md`.
+
+### Why
+
+The plan (S13-17) names alert rules as code — thresholds + severities + runbook links — on top of the metrics instrumented in S13-11…S13-13 and the dashboards of S13-14…S13-16. Without them an operator sees the dashboards and no page-worthy signal; with only the scrape-target rule, a real 5xx spike or a saturated DB pool is invisible to the caller. The rules consume only documented, bounded series — no identifier, no tenant, no run id.
+
+### Verification
+
+Live, this session, against the local stack (observability profile up — dedicated Prometheus + the lgtm/Grafana container at `localhost:3000`, admin password `admin`):
+
+1. Provisioning API: `GET /api/v1/provisioning/alert-rules` → all **8** rules loaded (S13-06 scrape + 7 S13-17) with `for`, `severity`, `runbook_url`.
+2. Live evaluation API: `GET /api/prometheus/grafana/api/v1/rules` → all 8 rules evaluated within the last interval; `health: ok` on all 8; the operational group is honestly `inactive` / `Normal (NoData)` (the local API boot emits no series for those families) and the scrape rule is **firing** (`state=Alerting`, `value=1e+00`, `activeAt=2026-11-24T12:25:10Z`) — the predefined scenario (agentflow-api target down) carries the test-alert proof.
+3. PromQL validity: each of the 7 rule `A` expressions executed directly via the dedicated Prometheus (`/api/v1/query`) → `status: success` (0 series each — honest local state).
+4. The alert YAML fails loudly in Grafana if malformed: a Grafana restart with `noDataState: Normal` (an invalid value for the Grafana 13 alerting model) crash-looped the container with no Grafana output, and `noDataState: OK` (the correct value) brought it healthy again — the provisioning API is the source of truth for the definition, the evaluation API for the live state.
+
+**Acceptance note (honest):** the scrape rule demonstrably fires on the predefined scenario (target down — the app is not scraped on the configured target). No operational-rule firing scenario was staged: the local app is the API role and emits no workflow/messaging/AI/ingestion series, and staging a fake series to force an alert would fabricate a signal instead of proving one. Each rule is verifiable the moment the app is scraped on the configured target; its PromQL is validated above.
+
+### Scope / follow-up
+
+- SLOs (`S13-18`) consume the same rules and metrics — the rules are the alert surface, not the SLO definitions.
+- Thresholds are baseline values per the plan (`S13-18` fine-tuning): they are deliberately coarse (e.g. 0.5 req/s 5xx, 80% pool utilization, 300s outbox age) — severity and the `for` guard are the discipline.
+- The scrape rule is unchanged (S13-06). The Overview/API/JVM/DB/Workflow/Kafka/AI/RAG/Cost dashboards are unchanged (S13-14…S13-16).
+
+### Documentation
+
+- [`docs/runbooks/api-error-rate.md`](../runbooks/api-error-rate.md), [`db-saturation.md`](../runbooks/db-saturation.md), [`outbox-age.md`](../runbooks/outbox-age.md), [`kafka-lag.md`](../runbooks/kafka-lag.md), [`expired-leases.md`](../runbooks/expired-leases.md), [`provider-failures.md`](../runbooks/provider-failures.md), [`ingestion-failures.md`](../runbooks/ingestion-failures.md) — new.
+- [`docs/runbooks/README.md`](../runbooks/README.md) — the seven runbooks added to the index.
+- [`docs/observability/metrics.md`](../observability/metrics.md) — alert hooks for the workflow/messaging/AI/ingestion/HTTP/DB-pool families + the S13-17 hooks note.
+- [`infra/observability/README.md`](../../infra/observability/README.md) — grafana/provisioning row + the alerting paragraph (the scrape rule + the S13-17 operational set).
 - `docs/devlog/sprint-13-observability.md` (this file) + `CHANGELOG.md` (Unreleased / Added).
 
 ## S13-01 — telemetry conventions

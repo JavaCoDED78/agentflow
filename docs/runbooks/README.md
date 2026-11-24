@@ -25,6 +25,7 @@ The durable-execution **model** (run/step lease, fencing, recovery) lives in
   groups, fail-open limiter), what is safe to do (restart Redis, leave the app running, never
   flush) and when recovery is complete.
 - **`observability/*.md`** (S13) — observability alerts and recovery.
+- **`api-error-rate.md`**, **`db-saturation.md`**, **`outbox-age.md`**, **`kafka-lag.md`**, **`expired-leases.md`**, **`provider-failures.md`**, **`ingestion-failures.md`** (S13-17) — the seven operational alert rules: what each rule fires on, the local-dev silent state, what to look at, and what is safe to do. Every rule is provisioned from Git with a `runbook_url` annotation; every runbook links back to the alert.
 
 Scaffolded in **S01-03**. Durable execution design (`durable-execution.md`) and
 the recovery runbook (`workflow-recovery.md`) are added in **S07-17**;
