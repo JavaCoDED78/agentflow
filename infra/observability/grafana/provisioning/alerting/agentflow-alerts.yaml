@@ -1,13 +1,28 @@
-# AgentFlow Grafana alert rules (S13-06) — configuration as code.
+# AgentFlow Grafana alert rules (S13-06, S13-17) — configuration as code.
 #
 # Provisioned alert definitions: a rule here is a rule in Grafana; a rule created
 # in the UI is not a change (infra/AGENTS.md). Every rule carries a `for` guard,
 # a severity label and a runbook_url annotation pointing at docs/runbooks/.
 #
-# Query model: A = instant PromQL against a provisioned datasource, B = reduce
+# Query model: A = instant PromQL against the provisioned datasource, B = reduce
 # (last), C = threshold — the stable Grafana 13 expression chain (no
-# classic_conditions). noDataState: Alerting is deliberate: a scrape target
-# vanishing from discovery entirely is as alertable as up == 0.
+# classic_conditions). Two deliberate state choices:
+#
+# - agentflow-scrape (scrape target down): noDataState: Alerting — a target
+#   vanishing from discovery entirely is as alertable as up == 0.
+# - agentflow-operational (API error rate, DB saturation, outbox age, Kafka
+#   lag, expired leases / stuck runs, provider failures, ingestion failures):
+#   noDataState: OK — the local stack's API role emits no metric series for
+#   the workflow/messaging/AI/ingestion families (the API boot is silent), so
+#   "no data" there must not page anyone; a genuine series that exceeds the
+#   threshold is what pages. Outage discovery for the app itself is the scrape
+#   rule's job, and is carried by it, not duplicated here.
+#
+# Thresholds are baseline values (S13-17): severity and the `for` guard are the
+# discipline; per-signal fine-tuning lands with the SLO work (S13-18/S13-21).
+# The Grafana evaluation API (GET /api/prometheus/grafana/api/v1/rules) is the
+# source of truth for a rule's live state; the provisioning API is the source of
+# truth for the definition.
 
 apiVersion: 1
 
@@ -81,5 +96,486 @@ groups:
           summary: "AgentFlow scrape target {{ $labels.job }} is down or missing"
           description: "Prometheus cannot scrape {{ $labels.job }} (up < 1 or no series) for more than 1 minute. Locally the agentflow-api target is expected to be down while the app is not running (see runbook before acting)."
           runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/observability-scrape-target-down.md"
+        labels:
+          severity: warning
+
+  - orgId: 1
+    name: agentflow-operational
+    folder: AgentFlow
+    folderUid: agentflow
+    interval: 30s
+    rules:
+      # --- S13-17 operational alerts --------------------------------------
+
+      # API 5xx error rate (P0): the user-facing health signal. 0.5 req/s of
+      # 5xx for 5 minutes is the baseline — tune against production traffic in
+      # SLO work, not by hand in the UI.
+      - uid: agentflow-api-error-rate
+        title: AgentFlow API 5xx error rate
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.5
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow API 5xx error rate: {{ $value }} req/s"
+          description: "5xx requests are {{ $value }} req/s over the last 5m (threshold 0.5 req/s, for 5m). noDataState: OK — an unscraped app is the scrape-target-down rule's job, not this one."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/api-error-rate.md"
+        labels:
+          severity: critical
+
+      # DB pool saturation (P0): saturation blocks every request.
+      - uid: agentflow-db-saturation
+        title: AgentFlow DB pool saturating
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: hikaricp_connections_active / hikaricp_connections_max
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.8
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow DB pool utilization: {{ $value }} (0..1 of max)"
+          description: "hikaricp_connections_active / hikaricp_connections_max > 0.8 for 5m. The pool is saturated — requests queue or fail. noDataState: OK — when the app is not scraped, the scrape-target-down rule carries the outage signal."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/db-saturation.md"
+        labels:
+          severity: critical
+
+      # Outbox oldest event age (S13-12 gauge): the publisher is behind or stuck.
+      - uid: agentflow-outbox-age
+        title: AgentFlow outbox oldest event age
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: agentflow_messaging_outbox_oldest_age_seconds
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 300
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow outbox oldest event age: {{ $value }}s"
+          description: "The oldest due outbox row is {{ $value }}s old (threshold 300s, for 5m). The publisher is behind or wedged. noDataState: OK — the ingestion/messaging role emits this; a local API boot is silent."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/outbox-age.md"
+        labels:
+          severity: warning
+
+      # Kafka consumer lag (S13-12 gauge): the ingester is backing up.
+      - uid: agentflow-kafka-lag
+        title: AgentFlow Kafka consumer lag
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: agentflow_messaging_consumer_lag_count
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 1000
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "AgentFlow Kafka consumer lag: {{ $value }} records"
+          description: "The ingester is {{ $value }} records behind across assigned partitions (threshold 1000, for 10m). Kafka or the ingester is backing up. noDataState: OK — the ingestion-worker role emits this; a local API boot is silent."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/kafka-lag.md"
+        labels:
+          severity: warning
+
+      # Expired leases / stuck runs (S13-11 counter): the recovery scheduler is
+      # churning — runs stuck, crashed or looping in recovery.
+      - uid: agentflow-expired-leases
+        title: AgentFlow expired leases (stuck runs)
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: rate(agentflow_workflowexecution_lease_expired_total[5m])
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow lease-recovery scan load: {{ $value }}/s"
+          description: "rate(agentflow_workflowexecution_lease_expired_total[5m]) > 0 for 5m — the recovery scheduler keeps finding expired-lease candidates (a stuck or crashed run). Note: the counter measures the scan load, not only re-claims (see the metrics catalogue). noDataState: OK — the workflow-worker role emits this; a local API boot is silent."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/expired-leases.md"
+        labels:
+          severity: warning
+
+      # Provider failures (S13-13 counters): provider errors dominating — the
+      # fake-provider scenario (rate_limit / server_error / timeout / …).
+      - uid: agentflow-provider-failures
+        title: AgentFlow provider failures
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: rate(agentflow_ai_provider_chat_errors_total[5m]) + rate(agentflow_ai_provider_embedding_errors_total[5m])
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow provider failures: {{ $value }}/s"
+          description: "rate(chat+embedding errors[5m]) > 0 for 5m — provider wrapper failures (rate_limit / server_error / timeout / connection / client_error / unknown / concurrency_limited). See the AI/RAG dashboard panels for the reason mix. noDataState: OK — the AI/usage roles emit this; a local API boot is silent."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/provider-failures.md"
+        labels:
+          severity: warning
+
+      # Ingestion failures (S13-13 counter): indexing passes are failing.
+      - uid: agentflow-ingestion-failures
+        title: AgentFlow ingestion failures
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: rate(agentflow_ingestion_index_failures_total[5m])
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow ingestion failures: {{ $value }}/s"
+          description: "rate(agentflow_ingestion_index_failures_total[5m]) > 0 for 5m — indexing passes failing (transient provider faults, permanent extraction failures, dimension mismatch). noDataState: OK — the ingestion role emits this; a local API boot is silent."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/ingestion-failures.md"
         labels:
           severity: warning

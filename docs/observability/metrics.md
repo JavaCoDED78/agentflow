@@ -159,27 +159,29 @@ custom tag beyond the pool name — bounded, static, never an identifier.
 
 ## Dashboard / alert hooks
 
-The **Workflow/Kafka operational dashboard (S13-15)** consumes this family — `agentflow-workflow-kafka.json` — with the following first-consumer mapping (the dashboard is provisioned; alert SLOs land with S13-17/S13-18):
+The **Workflow/Kafka operational dashboard (S13-15)** consumes this family — `agentflow-workflow-kafka.json` — with the following first-consumer mapping:
 
 - `workflowexecution.run.total{state}` — rate of run transitions; the `failed`/`timeout`/`cancelled` series are the headline health signal.
 - `workflowexecution.run.duration.seconds` — p50/p99 by control-group (not by id); a run that is still in flight contributes nothing (its terminal transition is what samples it).
 - `workflowexecution.step.duration.seconds` — the step-level tail latency.
-- `workflowexecution.step.retry.total` / `workflowexecution.lease.expired.total` / `recoveries` — retry storms and recovery-scan load; an expiry that is not reclaimed is a real incident signal (the stale run is not re-claimed).
+- `workflowexecution.step.retry.total` / `workflowexecution.lease.expired.total` / `recoveries` — retry storms and recovery-scan load; an expiry that is not reclaimed is a real incident signal (the stale run is not re-claimed). The **`expired-leases`** alert (`agentflow-expired-leases`) fires on `rate(agentflow_workflowexecution_lease_expired_total[5m]) > 0` for 5m.
 - `workflowexecution.step.cancelled.total` — cancellations from all paths (user cancel, run terminal, lease fence).
-- `messaging.outbox.pending.events` — the headline outbox lag; a sustained non-zero value means the publisher is falling behind.
+- `messaging.outbox.pending.events` — the headline outbox lag; a sustained non-zero value means the publisher is falling behind. The **`outbox-age`** alert (`agentflow-outbox-age`) fires on `agentflow_messaging_outbox_oldest_age_seconds > 300` for 5m.
 - `messaging.outbox.oldest.age.seconds` — the age of the oldest due row; a long-tail value means the publisher is stuck.
 - `messaging.outbox.publish.attempts.total{outcome}` — the per-attempt outcome mix; `permanent_failure` / `ambiguous` rates are the incident signals.
-- `messaging.consumer.lag.count` — the ingester's backlog; pairs with `messaging.consumer.processing.failures.total{outcome}` for DLQ storms.
+- `messaging.consumer.lag.count` — the ingester's backlog; pairs with `messaging.consumer.processing.failures.total{outcome}` for DLQ storms. The **`kafka-lag`** alert (`agentflow-kafka-lag`) fires on `agentflow_messaging_consumer_lag_count > 1000` for 10m.
 
-The **AI/RAG/cost dashboard (S13-16)** consumes the AI/RAG family — `agentflow-ai-rag-cost.json` — with the following first-consumer mapping (the dashboard is provisioned; alert SLOs land with S13-17/S13-18):
+The **AI/RAG/cost dashboard (S13-16)** consumes the AI/RAG family — `agentflow-ai-rag-cost.json` — with the following first-consumer mapping:
 
 - `ai.provider.chat.latency.seconds` / `ai.provider.embedding.latency.seconds` — p95/p99 whole-call latency, one series each; a persistent p99 spike is a degraded provider.
-- `ai.provider.chat.errors.total{reason}` / `ai.provider.embedding.errors.total{reason}` — the **provider-error** signal; one panel per leg, so a fake-provider scenario (rate_limit / timeout / connection / server_error / client_error / unknown / concurrency_limited) is visible without waiting for an alert.
+- `ai.provider.chat.errors.total{reason}` / `ai.provider.embedding.errors.total{reason}` — the **provider-error** signal; one panel per leg, so a fake-provider scenario (rate_limit / timeout / connection / server_error / client_error / unknown / concurrency_limited) is visible without waiting for an alert. The **`provider-failures`** alert (`agentflow-provider-failures`) fires on the summed rate of both counters (`> 0`) for 5m.
 - `ai.provider.chat.tokens.input.total` / `.tokens.output.total` / `.embedding.tokens.total` — token throughput, one series per source, reported by the provider only.
 - `usage.estimated.cost.usd` — the hourly estimated-cost gauge (increase over 1h); the honest cost line for a budget.
 - `toolexecution.tool.duration.seconds{outcome}` — the **application-side failure** surface (throttled / timed_out / faulted), shown separately from the provider panels.
 - `knowledgebase.retrieval.duration` — hybrid-retrieval p95/p99.
 - `knowledgebase.retrieval.hybrid` vs `knowledgebase.retrieval.chunks.returned.total` — the **empty-retrieval** signal: continuous hybrid calls with zero chunks returned means an empty collection, no close-enough candidate, or a drifted embedding model; no panel is invented to mark it.
-- `ingestion.index.failures.total` — the application-side indexing-failure rate.
+- `ingestion.index.failures.total` — the application-side indexing-failure rate. The **`ingestion-failures`** alert (`agentflow-ingestion-failures`) fires on `rate(agentflow_ingestion_index_failures_total[5m]) > 0` for 5m.
 
-No alert, SLO or SLO-level dashboard is defined in this document — those land with `S13-17`/`S13-18`. (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)
+The **API/JVM/DB dashboard (S13-14)** consumes the Spring Boot Actuator family (`http_server_requests_seconds_count` / `_bucket`, `jvm_memory_used_bytes`, `jvm_gc_pause_seconds_count`, `process_cpu_usage`, `jvm_threads_*`, `hikaricp_connections_*`) — `agentflow-api-jvm-db.json`. Two alerts hook the same family: **`api-error-rate`** (`agentflow-api-error-rate`, `critical`) fires on `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0.5` for 5m, and **`db-saturation`** (`agentflow-db-saturation`, `critical`) fires on `hikaricp_connections_active / hikaricp_connections_max > 0.8` for 5m.
+
+The S13-17 alert set (`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`) is the first consumer of the alert surface: rules carry a `for` guard, a severity label and a `runbook_url` annotation into `docs/runbooks/` (the scrape-target-down rule from S13-06 plus the seven operational rules listed above). SLO definitions land with S13-18. (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)
