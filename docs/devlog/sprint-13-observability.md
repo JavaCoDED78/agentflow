@@ -24,6 +24,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-18 — runbooks for alerts](#s13-18-runbooks-for-alerts)
 - [S13-19 — cardinality / privacy telemetry check](#s13-19-cardinality--privacy-telemetry-check)
 - [S13-20 — dashboards restore from empty state (clean-start test)](#s13-20-dashboards-restore-from-empty-state-clean-start-test)
+- [S13-21 — observability handbook](#s13-21-observability-handbook)
 
 ---
 
@@ -445,6 +446,38 @@ All three probes were reverted; the tree is back to the intended state (only `Te
 ### Scope / follow-up
 
 Boot-native meters (`http.server.requests`, `jvm.*`, `hikaricp.*`) stay outside the catalogue by design — Boot-managed, bounded tags, documented in the same doc without an explicit entry. The S13-22 Redis instrumentation (new latency/outcome labels) must extend `TelemetryCatalogue` in the same change — the check enforces it. The value-side of labels remains enforced by closed sets + review; runtime secret shapes remain the canary/masker tests.
+
+## S13-21 — observability handbook
+
+### What changed
+
+The Sprint 13 observability surface is now one operator-facing guide — new **[`docs/observability/README.md`](../observability/README.md)**, the handbook that ties together the stack's telemetry path, service/resource attributes, trace propagation through Kafka, the machine-checked metric catalogue and its labels, SLOs/alerts with runbook links, dashboard provisioning, data retention and the stack recovery commands. It is deliberately a **navigation and operating guide**, not a copy of the detailed documents: the rules live in [`docs/observability/standards.md`](../observability/standards.md), the catalogue in [`docs/observability/metrics.md`](../observability/metrics.md), the stack wiring in [`infra/observability/README.md`](../../infra/observability/README.md) and the trace-context contract in [`docs/architecture/kafka-topics.md`](../architecture/kafka-topics.md) — every claim in the handbook links there, never duplicates.
+
+The handbook covers, in order: the stack at a glance (the three signals and their homes); the telemetry path (traces → Collector → Tempo; logs → JSON stdout, masked → the collector's logs pipeline → Loki; metrics → `/actuator/prometheus` scrape → the dedicated Prometheus → Grafana — and never OTLP push); service/resource attributes (`service.name`, `service.version`, `deployment.environment`, the `application` metric tag, the `local` Prometheus external label); trace propagation through Kafka (the W3C `traceparent` in the outbox `headers` JSON, the producer/consumer spans, the boundary rules); the machine-checked metric catalogue (the S13-19 contract: catalogue-driven, closed label sets, no-label metrics stay label-free, Boot-native meters outside the catalogue); the forbidden high-cardinality labels and sensitive fields (the S13-19 enforcement + the log whitelist); the four dashboards with their UIDs and panel counts; the eight alert rules with uid/title/severity/`for`/expression/runbook, owner (engineering, on-call) and the honestly stated SLO status (no SLO definitions yet — the thresholds are S13-17 baselines, SLOs land with S14-16/S16-14); data retention and volumes (Prometheus 7 d/2 GB, Loki 168 h, Tempo 168 h, Grafana sqlite on the volume); stack recovery commands (up/down/smoke/clean-start/mint-scrape-token, and the ordered checks when the stack is broken); and a checklist for adding a signal.
+
+No provisioning file, dashboard, alert rule, metric, compose file or code was changed — the S13-06…S13-20 contracts are what the handbook documents. Documentation only: the handbook, the index line in [`docs/README.md`](../README.md), this file and `CHANGELOG.md`.
+
+### Why
+
+S13-06…S13-20 each added one piece of the observability stack (the Collector, the dedicated stores, the Grafana surface, the dashboards, the alert rules, the runbooks, the clean-start test), but the Sprint 13 acceptance is a single, operator-facing guide — a human who gets paged should be able to find the whole surface: what the signals carry, how a trace crosses the Kafka boundary, which dashboards and alerts exist, how to bring the stack back. The handbook is that guide, with a link to the source of truth per topic instead of a wall of copied detail.
+
+### Verification
+
+Documentation-only — no Java/Gradle gate applies; the verification is structural (no live stack was required and the acceptance is not a live-run criterion):
+
+- Every in-document link in the handbook was resolved programmatically (every relative path target exists).
+- Every identifier in the handbook was cross-checked against Git: all four dashboard UIDs/titles/panel counts (`agentflow-overview`/`agentflow-api-jvm-db`/`agentflow-workflow-kafka`/`agentflow-ai-rag-cost`) against the provisioned JSON files, all eight alert UIDs/titles/severities/`for` guards/expressions/runbook links against `infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml` and `infra/observability/prometheus/prometheus.yml` / `collector.yaml` for the wiring.
+- `git diff --check` — whitespace clean.
+
+### Docs
+
+- [`docs/observability/README.md`](../observability/README.md) (new) — the handbook.
+- [`docs/README.md`](../README.md) — index line and table row (the handbook added; the dashboards/SLOs ⚠ marker corrected — the dashboards/alerts are provisioned and the SLOs stay honestly planned).
+- `docs/devlog/sprint-13-observability.md` (this file) + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+The handbook deliberately does not restate the detailed documents — a rule, a catalogue entry or a runbook edit updates its owning document and this index follows. The one operational surface the handbook does not own is the kubernetes profile (S15): the sampling rate, the network policies and the in-cluster collector are S15's surface, and the kubernetes profile remains the only place the sampling rate is lowered. S13-22 (Redis/rate-limit metrics) extends the catalogue and the handbook's metric section.
 
 ## S13-20 — dashboards restore from empty state (clean-start test)
 
