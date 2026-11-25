@@ -221,6 +221,13 @@ provides the localhost defaults — see [`.env.example`](.env.example).
 - `./gradlew check` — unit tests, the module-boundary and no-cycles architecture gates, the formatting gate (`spotlessCheck`) and the OpenAPI contract gate. Runs without Docker.
 - `./gradlew integrationTest` — Testcontainers suites on the real PostgreSQL/pgvector, Kafka, Redis and Keycloak images (the same images the Compose profiles pin).
 
+The unit/integration split is explicit: `integrationTest` runs a separate source set (`src/integrationTest`), and the fast `test` gate additionally excludes `*IT` classes so a test class is one tier and never both. The integration tier is designed for stability, not first-minute luck:
+
+- **Per-class containers** — every integration-test class declares its own container (via `@Container` + `@Testcontainers`, or a manual `@BeforeAll`/`@AfterAll` pair), so no class shares a container lifecycle with another.
+- **Per-test isolation, no flat sleeps** — tests seed only the rows/keys they need: rows tagged by per-test random UUIDs, or (benchmarks, Redis suites) rows/keys that are deleted or flushed in `@AfterEach`/`@AfterAll`; pool connections are closed in `@AfterEach` rather than steered through a key-scoped reset.
+- **Readiness over sleeps** — waiting for an asynchronous condition is expressed as an explicit poll with a deadline and a real assertion (a bounded loop that fails with the state it saw), not a flat sleep with a hoped-for wait.
+- **Data isolation** — Kafka topics are freshly created per test (or per class) and message/outbox assertions are made against freshly seeded identifiers, never against a shared broker state.
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

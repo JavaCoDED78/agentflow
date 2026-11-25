@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -90,6 +91,29 @@ class RedisRateLimiterIT {
 
   @AfterEach
   void closeFactories() {
+    // Data isolation: drop every key the test wrote through the shared container so each test
+    // starts
+    // from a fresh namespace (the fixed TENANT + key is identical across the class). A fresh live
+    // connection is used so this runs even when the test wired a dead one.
+    try {
+      LettuceConnectionFactory live =
+          new LettuceConnectionFactory(
+              new RedisStandaloneConfiguration("localhost", redis.getMappedPort(6379)));
+      live.afterPropertiesSet();
+      try {
+        StringRedisTemplate flush = new StringRedisTemplate(live);
+        flush.execute(
+            (RedisCallback<Object>)
+                connection -> {
+                  connection.flushDb();
+                  return null;
+                });
+      } finally {
+        live.destroy();
+      }
+    } catch (RuntimeException ignored) {
+      // Best-effort flush; the test-owned factories are still destroyed below.
+    }
     factories.forEach(connection -> ((LettuceConnectionFactory) connection).destroy());
   }
 
