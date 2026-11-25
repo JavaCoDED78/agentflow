@@ -57,7 +57,7 @@ public class UsageRepository {
             + " provider, model, tool_name, tool_version, input_tokens, output_tokens,"
             + "estimated_cost, provider_cost, unit, currency, provider_request_id, provider_metadata, "
             + "price_version, pricing_revision) "
-            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?, ?)",
         ps -> {
           ps.setObject(1, record.id());
           ps.setObject(2, record.tenantId());

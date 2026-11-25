@@ -217,6 +217,59 @@ class WorkflowRunControllerTest {
     verify(runService).getAttemptHistory(any(), any());
   }
 
+  /**
+   * A run that belongs to another tenant is reported exactly like a missing one: {@code 404} with
+   * {@code error_class: not_found}, and the body carries nothing that identifies the resource — not
+   * its id, its status or its workflow (the 403/404 masking policy, invariant 1). The tenant-scoped
+   * lookup returns empty for the wrong tenant, so the caller cannot tell a foreign resource from a
+   * non-existent one by the status or the problem body.
+   */
+  @Test
+  void get_run_cross_tenant_is_not_found_identical_to_missing() throws Exception {
+    UUID runId = UUID.randomUUID();
+    when(runService.getRun(eq(TENANT), eq(runId)))
+        .thenThrow(
+            new ResponseStatusException(
+                HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
+
+    mockMvc
+        .perform(get("/api/v1/runs/" + runId))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class").value("not_found"))
+        // no run fields leak through the error body
+        .andExpect(jsonPath("$.id").doesNotExist())
+        .andExpect(jsonPath("$.workflowId").doesNotExist())
+        .andExpect(jsonPath("$.attempt").doesNotExist());
+
+    // the service received the configured tenant, never a tenant from the request
+    verify(runService).getRun(eq(TENANT), eq(runId));
+  }
+
+  /**
+   * A cross-tenant run cannot be cancelled either: the service raises a {@code 404} (the tenant-
+   * scoped lookup misses), so the caller gets the identical not-found problem as for a missing run,
+   * without the run's data. The cancel path passes the configured tenant and the {@code actor} to
+   * the service — never anything from the request.
+   */
+  @Test
+  void cancel_cross_tenant_run_is_not_found_identical_to_missing() throws Exception {
+    UUID runId = UUID.randomUUID();
+    when(runService.requestCancellation(eq(TENANT), eq(runId), eq("local")))
+        .thenThrow(
+            new ResponseStatusException(
+                HttpStatus.NOT_FOUND, "no run with id " + runId + " for this tenant"));
+
+    mockMvc
+        .perform(post("/api/v1/runs/" + runId + "/cancel"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class").value("not_found"))
+        .andExpect(jsonPath("$.id").doesNotExist())
+        .andExpect(jsonPath("$.workflowId").doesNotExist())
+        .andExpect(jsonPath("$.attempt").doesNotExist());
+
+    verify(runService).requestCancellation(eq(TENANT), eq(runId), eq("local"));
+  }
+
   private static RunDto queuedRun() {
     return new RunDto(
         UUID.randomUUID(), WORKFLOW, WorkflowRunState.QUEUED.name(), 1, OffsetDateTime.now());
