@@ -176,6 +176,10 @@ Checked live (app booted against the `local` profile with a real Redis):
   while readiness is `UP` — `RedisHealthIndicatorReadinessIsolationTest`.
 - The rate-limit fail-open is proven against a real `redis:8.10.2` container —
   `RedisRateLimiterIT` (`two_limiter_instances_observe_a_single_global_limit`, `fails_open_to_the_in_memory_limiter_when_redis_is_unreachable`).
+- Slow / hanging responses are bounded by the configured command timeout (S14-08) — `RedisRateLimiterIT`
+  (`slow_responses_are_bounded_by_the_command_timeout_and_fail_open`): a reachable Redis that accepts
+  the connection but never replies is served by the in-memory failover within the bound, never an
+  unbounded pin (1 s in the test; 5 s in production config).
 
 ## 8. Related
 

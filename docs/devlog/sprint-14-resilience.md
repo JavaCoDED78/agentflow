@@ -4,6 +4,7 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-08 — Redis outage verification](#s14-08--redis-outage-verification)
 - [S14-07 — PostgreSQL outage / unknown commit](#s14-07--postgresql-outage--unknown-commit)
 - [S14-06 — concurrent lease claims](#s14-06--concurrent-lease-claims)
 - [S14-05 — broker restart and publisher crash](#s14-05--broker-restart-and-publisher-crash)
@@ -11,6 +12,32 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-08 — Redis outage verification
+
+### What changed
+
+One new test in [`RedisRateLimiterIT`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/common/rate_limit/RedisRateLimiterIT.java) (1 test, Testcontainers — real `redis:8.10.2` on the shared suite + a never-responding local TCP server, direct construction): the **slow-response / hanging-Redis** case that the existing unreachable-port test does not cover — a reachable Redis that accepts the connection but never replies is served by the in-memory failover within the configured command timeout (1 s in the test; 5 s in production config), never an unbounded pin, with `fallback_open` incremented exactly once. The test scaffolding adds a slow-socket factory (`slowFactory(int commandTimeoutSeconds)` — a daemon accept-and-hold thread over `ServerSocket(0)`, guarded in `@AfterEach`).
+
+No production change — the fail-open contract was already in place (S12-19 / S13-22); the new evidence proves the one acceptance criterion that no existing test covered: a slow Redis is bounded by the command timeout. The cache purpose (`cache`) is documented as **not live** — it is planned for S14-18 and has no code to exercise, so its per-function row says so instead of showing an evidence cell.
+
+Docs: `docs/testing/failure-matrix.md` (Redis section: per-function outage contract table + the overview/evidence rows updated + the "Redis outage full table" gap closed); `docs/architecture/redis-usage.md` §7 (the slow-response bound); `docs/runbooks/redis-outage.md` (the slow-response evidence bullet); this devlog.
+
+### Why
+
+`S14-08` is the P1 Sprint 14 task: "остановить Redis, а также имитировать недоступность по сети и медленные ответы; пройти по списку функций из `docs/architecture/redis-usage.md` (rate limiter по политике ADR-021, cache bypass, quota/ops rate limit) и проверить фактическое поведение каждой; убедиться, что durable workflow state остаётся в PostgreSQL, readiness остаётся UP, а health indicator, метрика и alert отражают сбой; проверить восстановление после запуска Redis без ручных действий; внести таблицу «функция → поведение при outage → evidence» в `docs/testing/failure-matrix.md`." The two outage presentations were covered: network-down (refused port — `fails_open_to_the_in_memory_limiter_when_redis_is_unreachable`) and slow-response (never-responding server — this test). Every function on the `redis-usage.md` list was checked and its behaviour recorded. Durable workflow state never leaves PostgreSQL (the worker never connects to Redis); readiness stays `UP` via the non-critical `cache` group; the health indicator and the metrics (`agentflow.redis.command.errors.total`, `latency.seconds{result="failed"}`, `decision.total{result="fallback"}`, `fallback_open`) reflect the failure; the Git-provisioned `agentflow-redis-unavailable` alert fires on the error series.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:integrationTest --tests '*RedisRateLimiterIT*'` — BUILD SUCCESSFUL, **3 tests, 0 failures, 0 errors** (JUnit XML `tests="3" failures="0" errors="0"`, fresh run).
+- `./gradlew :apps:agentflow-app:integrationTest --tests '*RedisSmokeTest*' --tests '*QuotaRedisDependencyIT*'` — BUILD SUCCESSFUL, **3 + 2 tests** (XML `tests="3"` / `tests="2"`, failures=0).
+- `./gradlew :apps:agentflow-app:test --tests '*RedisRateLimiterTest*' --tests '*RedisHealthIndicator*'` — BUILD SUCCESSFUL (XML `tests="10"` / `tests="1"` / `tests="2"`, failures=0).
+
+### Scope / follow-up
+
+The rebuildable cache row is honestly **not live** (planned for S14-18) — the per-function table records the contract without evidence. The live-boot health-group transitions (`redis-usage.md` §7) remain manual evidence — no automated stopped-container test exists (the operational injection stays `docker stop agentflow-redis`). S14-18 must close the cache row with real tests before it can be marked live.
 
 ---
 
