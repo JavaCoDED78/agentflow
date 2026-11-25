@@ -1,5 +1,6 @@
 package com.example.agentflow.common.rate_limit;
 
+import com.example.agentflow.common.RateLimitGroup;
 import com.example.agentflow.common.RateLimitKey;
 import com.example.agentflow.common.RateLimitPolicy;
 import com.example.agentflow.common.RateLimiter;
@@ -10,12 +11,15 @@ import com.example.agentflow.common.redis.RedisPurpose;
 import com.example.agentflow.common.redis.RedisTtl;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -39,6 +43,14 @@ import org.springframework.data.redis.core.script.RedisScript;
  * script {@code INCR}s the key and, on the first writer of the window, {@code PEXPIRE}s it for
  * {@link #TTL}. The {@link RedisTtl} bound ({@code RedisTtl#MAX_SECONDS}) is enforced at the
  * builder.
+ *
+ * <p>Observability ({@code S13-22}): the whole command surface is metered with only bounded labels
+ * — {@code operation} ({@code rate_limit}) and {@code result} ({@code succeeded} / {@code failed})
+ * on the latency timer, {@code operation} on the error counter, and {@code group} (the lowercase
+ * enum name) + {@code result} ({@code allowed} / {@code limited} / {@code fallback}) on the
+ * decision counter — never a tenant / principal / key (invariant 9 and the S13-19 machine-checked
+ * catalogue). Every recorder is wrapped so a metering error is a silent skip, never a business
+ * failure.
  *
  * <p>Correctness contract:
  *
@@ -65,6 +77,13 @@ public final class RedisRateLimiter implements RateLimiter {
   /** Fixed 60s sliding window; the window index is part of the key (see the Javadoc). */
   private static final int WINDOW_SECONDS = 60;
 
+  /** The single bounded operation this adapter performs (the only Redis use today). */
+  private static final String OPERATION = "rate_limit";
+
+  private static final String COMMAND_LATENCY_METRIC = "agentflow.redis.command.latency.seconds";
+  private static final String COMMAND_ERRORS_METRIC = "agentflow.redis.command.errors.total";
+  private static final String DECISION_METRIC = "agentflow.redis.rate_limit.decision.total";
+
   /**
    * The atomic INCR + first-writer PEXPIRE; the write is never TTL-less (invariant: write → TTL).
    */
@@ -88,6 +107,7 @@ public final class RedisRateLimiter implements RateLimiter {
   private final RateLimiter failover;
   private final Clock clock;
   private final RedisKeyBuilder keyBuilder;
+  private final MeterRegistry meterRegistry;
   private final Counter failoverMeter;
 
   /**
@@ -96,8 +116,8 @@ public final class RedisRateLimiter implements RateLimiter {
    * @param failover the in-memory limiter to fall back to on Redis unavailability; mandatory, never
    *     {@code null}
    * @param clock the clock driving the window (UTC); {@link Clock#systemUTC()} in production
-   * @param meterRegistry the registry for the fail-open meter ({@code null} is tolerated, the meter
-   *     is then skipped)
+   * @param meterRegistry the registry for the meters ({@code null} is tolerated, the meters are
+   *     then skipped)
    * @param keyBuilder the key builder (per deployment env); the adapter builds the tenant-scoped
    *     key
    * @throws IllegalArgumentException when {@code failover} is {@code null}
@@ -117,6 +137,7 @@ public final class RedisRateLimiter implements RateLimiter {
     this.failover = failover;
     this.clock = clock;
     this.keyBuilder = keyBuilder;
+    this.meterRegistry = meterRegistry;
     this.failoverMeter =
         meterRegistry != null
             ? Counter.builder("agentflow.redis.rate_limit.fallback_open").register(meterRegistry)
@@ -129,6 +150,7 @@ public final class RedisRateLimiter implements RateLimiter {
       // Nothing to throttle: fail open to an empty result (the interceptor is the guard).
       return Optional.empty();
     }
+    long startNanos = System.nanoTime();
     try {
       long now = clock.millis();
       int budget = policy.maxPerMinute(key.group());
@@ -145,20 +167,85 @@ public final class RedisRateLimiter implements RateLimiter {
       long used =
           redis.execute(
               SCRIPT, List.of(redisKey.value()), Long.toString(TTL.duration().toMillis()));
-      return Optional.of(budget - (int) used);
+      recordLatency(startNanos, "succeeded");
+      int remaining = budget - (int) used;
+      recordDecision(key.group(), remaining >= 0 ? "allowed" : "limited");
+      return Optional.of(remaining);
     } catch (RuntimeException exception) {
       // Redis unavailable or command failed (connection failure, command timeout, execution error):
-      // fail open to the bounded in-memory limiter (ADR-021), never reject every request. The meter
-      // (no high-cardinality labels) records the failover.
+      // fail open to the bounded in-memory limiter (ADR-021), never reject every request. The
+      // meters (bounded labels, no high-cardinality ids) record the failure.
+      recordLatency(startNanos, "failed");
+      recordError();
       if (failoverMeter != null) {
         failoverMeter.increment();
       }
+      recordDecision(key.group(), "fallback");
       return failover.remaining(key);
     }
   }
 
   private long windowIndex(long nowMillis) {
     return Math.floorDiv(nowMillis, WINDOW_SECONDS * 1000L);
+  }
+
+  /**
+   * Register and record one {@code operation}/{@code result} latency sample for the Redis command
+   * (bounded labels). Metering is never a failure: a registry error is swallowed, a {@code null}
+   * registry skips it.
+   */
+  private void recordLatency(long startNanos, String result) {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      Timer.builder(COMMAND_LATENCY_METRIC)
+          .tag("operation", OPERATION)
+          .tag("result", result)
+          .description("Redis command latency in seconds (S13-22); bounded operation/result labels")
+          .register(meterRegistry)
+          .record(Math.max(0L, System.nanoTime() - startNanos), TimeUnit.NANOSECONDS);
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a business call.
+    }
+  }
+
+  /** Record one failed Redis command (bounded {@code operation} label). */
+  private void recordError() {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      Counter.builder(COMMAND_ERRORS_METRIC)
+          .tag("operation", OPERATION)
+          .description("Redis command failures (S13-22); bounded operation label")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a business call.
+    }
+  }
+
+  /**
+   * Record one rate-limit decision. The {@code group} label carries the lowercase enum name (never
+   * the config key with its {@code /}); the {@code result} is {@code allowed} / {@code limited} /
+   * {@code fallback}.
+   */
+  private void recordDecision(RateLimitGroup group, String result) {
+    if (meterRegistry == null) {
+      return;
+    }
+    try {
+      Counter.builder(DECISION_METRIC)
+          .tag("group", group.name().toLowerCase(Locale.ROOT))
+          .tag("result", result)
+          .description(
+              "Rate-limit decisions (S13-22); bounded group/result labels, never a tenant or key")
+          .register(meterRegistry)
+          .increment();
+    } catch (RuntimeException | Error ignored) {
+      // Metering must never fail a business call.
+    }
   }
 
   private static String hashedPrincipal(String principal) {

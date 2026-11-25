@@ -579,3 +579,72 @@ groups:
           runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/ingestion-failures.md"
         labels:
           severity: warning
+
+      # Redis unavailable (S13-22): the Redis-backed rate limiter is failing its
+      # commands — it serves from the in-memory fallback meanwhile (degraded, not
+      # down). Warning-only: degraded is the expected behaviour of the fallback.
+      - uid: agentflow-redis-unavailable
+        title: AgentFlow Redis unavailable
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: agentflow-prometheus
+            model:
+              editorMode: code
+              expr: rate(agentflow_redis_command_errors_total[5m])
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: "-100"
+            model:
+              conditions: []
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: "-100"
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: "-100"
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "AgentFlow Redis unavailable: {{ $value }} errors/s"
+          description: "rate(agentflow_redis_command_errors_total[5m]) > 0 for 5m — the rate limiter's Redis commands are failing (connection failure, timeout, execution error). Requests keep serving from the in-memory fallback; the alert is still a warning because that is the designed degraded state, not an outage. noDataState: OK — the API boot emits this; an app that never scrapes is the scrape-target-down rule's job."
+          runbook_url: "https://github.com/JavaCoDED78/agentflow/blob/main/docs/runbooks/redis-outage.md"
+        labels:
+          severity: warning

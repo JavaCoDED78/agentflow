@@ -41,7 +41,7 @@ class InMemoryRateLimiterTest {
   }
 
   @Test
-  void servesExactlyTheBudgetPerWindowThenRejects() {
+  void serves_exactly_the_budget_per_window_then_rejects() {
     RateLimiter limiter =
         new InMemoryRateLimiter(policy(3, RateLimitGroup.CREATE_RUN), Clock.fixed(BASE, UTC));
 
@@ -54,7 +54,7 @@ class InMemoryRateLimiterTest {
   }
 
   @Test
-  void resetsTheCounterAtTheStartOfTheNextMinute() {
+  void resets_the_counter_at_the_start_of_the_next_minute() {
     RateLimiter limiter =
         new InMemoryRateLimiter(policy(2, RateLimitGroup.CREATE_RUN), Clock.fixed(BASE, UTC));
     RateLimitKey key = key(RateLimitGroup.CREATE_RUN);
@@ -70,20 +70,20 @@ class InMemoryRateLimiterTest {
   }
 
   @Test
-  void failsOpenWhenThrottlingIsDisabled() {
+  void fails_open_when_throttling_is_disabled() {
     RateLimiter limiter =
         new InMemoryRateLimiter(new RateLimitPolicy(false, Map.of()), Clock.fixed(BASE, UTC));
     assertThat(limiter.remaining(key(RateLimitGroup.CREATE_RUN))).isEmpty();
   }
 
   @Test
-  void failsOpenWhenTheGroupHasNoBudget() {
+  void fails_open_when_the_group_has_no_budget() {
     RateLimiter limiter = new InMemoryRateLimiter(noBudgetPolicy(), Clock.fixed(BASE, UTC));
     assertThat(limiter.remaining(key(RateLimitGroup.CREATE_RUN))).isEmpty();
   }
 
   @Test
-  void keepsTenantsAndActorsIndependent() {
+  void keeps_tenants_and_actors_independent() {
     RateLimiter limiter =
         new InMemoryRateLimiter(policy(1, RateLimitGroup.CREATE_RUN), Clock.fixed(BASE, UTC));
     RateLimitKey tenantA = new RateLimitKey(UUID.randomUUID(), "actorA", RateLimitGroup.CREATE_RUN);
@@ -95,7 +95,7 @@ class InMemoryRateLimiterTest {
   }
 
   @Test
-  void evictsLeastRecentlyUsedKeysWhenTheStoreIsFull() {
+  void evicts_least_recently_used_keys_when_the_store_is_full() {
     RateLimiter limiter =
         new InMemoryRateLimiter(policy(1, RateLimitGroup.CREATE_RUN), Clock.fixed(BASE, UTC), 2);
     RateLimitKey k1 = new RateLimitKey(UUID.randomUUID(), "a", RateLimitGroup.CREATE_RUN);

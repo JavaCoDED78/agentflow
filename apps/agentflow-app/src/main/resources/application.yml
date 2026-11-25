@@ -200,8 +200,9 @@ management:
       application: ${spring.application.name}
     # S13-02: disable the instrument groups that add no operational value here. HTTP/JVM/DB-pool
     # metrics (tomcat HTTP server, jvm, hikaricp) stay enabled (Boot auto-configuration defaults).
-    # The Redis command latency is off — S13-22 owns the Redis-helper meters; logback event counters
-    # are off — logs are JSON on stdout, not per-level metrics; cache is off — no caches configured.
+    # The Boot `spring.data.redis` instrument group stays off (S13-02) — our S13-22 Redis
+    # meters are manually registered on the shared registry. Logback event counters are off —
+    # logs are JSON on stdout, not per-level metrics; cache is off — no caches configured.
     enable:
       'spring.data.redis': false
       logback: false
@@ -214,6 +215,8 @@ management:
     # S13-16: the same opt-in for the AI/RAG timers, so the AI/RAG/cost
     # dashboard can render p95/p99 provider latency, tool duration and
     # retrieval latency.
+    # S13-22: the same opt-in for the Redis command latency timer, so the
+    # API/JVM/DB dashboard can render p95 Redis command latency.
     distribution:
       percentiles-histogram:
         http.server.requests: true
@@ -223,6 +226,7 @@ management:
         agentflow.ai.provider.embedding.latency.seconds: true
         agentflow.toolexecution.tool.duration.seconds: true
         agentflow.knowledgebase.retrieval.duration: true
+        agentflow.redis.command.latency.seconds: true
   # Tracing (S13-03): OpenTelemetry SDK + OTLP exporter, auto-configured by the
   # spring-boot-starter-opentelemetry starter. Every HTTP request becomes a span; the batch
   # exporter posts protobuf to the OTLP endpoint asynchronously, so a missing collector never

@@ -6,7 +6,7 @@
   (the shared Prometheus registry in the app), never a hand-rolled global.
 - **Scope:** the `workflowexecution` family (`S13-11`), the `messaging` family (`S13-12`), the
   `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` families (`S13-13`), the `redis`
-  family (`S12-19`) and the Boot-native HTTP/JVM/DB-pool meters (`S13-14` — the dashboard's data source).
+  family (`S12-19`, `S13-22`) and the Boot-native HTTP/JVM/DB-pool meters (`S13-14` — the dashboard's data source).
 
 ## Machine-checked catalogue (`S13-19`)
 
@@ -133,13 +133,24 @@ Pre-existing retrieval meters (`S10-16`, instrumented with the hybrid search bef
   `agentflow.ai.model` attribute (the target model id). No prompt, no content, no tenant, no
   identifier. The span is closed in `finally`; a failed call marks the span an error.
 
-## Redis metrics (`S12-19`)
+## Redis metrics (`S12-19`, `S13-22`)
 
-- **Owner:** `common` (`com.example.agentflow.common.rate_limit`) — the rate-limit adapter around Redis. One counter, no labels: the in-memory fallback must be visible without saying anything about a tenant or principal.
+- **Owner:** `common` (`com.example.agentflow.common.rate_limit`) — the Redis-backed rate-limit adapter. The whole command surface is metered with only bounded labels — never a tenant / principal / key (invariant 9 and the S13-19 machine-checked catalogue).
 
 | Metric | Type | Unit / dimension | Labels | Meaning |
 |---|---|---|---|---|
+| `agentflow.redis.command.latency.seconds` | Timer | seconds | `operation` (closed: `rate_limit`) · `result` (closed: `succeeded` / `failed`) | One sample per Redis command, wrapped from just before the command through its conclusion — success or fault. Buckets are opt-in (`percentiles-histogram`) so the dashboard can render p95 latency. |
+| `agentflow.redis.command.errors.total` | Counter | count | `operation` (closed: `rate_limit`) | One increment per failed Redis command (connection failure, command timeout, execution error). |
+| `agentflow.redis.rate_limit.decision.total` | Counter | count | `group` (closed: lowercase enum name — `create_run` / `upload` / `search_debug` / `ops`) · `result` (closed: `allowed` / `limited` / `fallback`) | One increment per throttled-group decision: `allowed` when the counter returns non-negative remaining budget, `limited` when it goes negative (the interceptor rejects), `fallback` when the command fails and the decision was delegated to the in-memory fallback. |
 | `agentflow.redis.rate_limit.fallback_open` | Counter | count | none | One increment per Redis failure after which the adapter falls back to the in-memory decision. Bounded label-free signal — never a tenant / principal / id (invariant 9). |
+
+The `group` label deliberately carries the lowercase **enum name**, not the config key
+(`search/debug` is not a legal label value — the S13-19 check requires a bounded shape,
+`^[a-z][a-z0-9]*$` for keys and ≤ 32 closed values for each label); the config key is still the
+human-facing group name, and the enum name maps 1:1 to it in `RateLimitGroup`. This is a deliberate
+deviation from the plan's `route_group` label name: the plan text predates the S13-19 shape rule, and
+the machine-checked catalogue wins over the prose. Bounded labels only: no `tenantId`, `userId`,
+`runId`, principal hash or key — the `<module>`/`<object>` in the name carries the signal's home.
 
 ## HTTP/JVM/DB-pool metrics (`S13-14`)
 
@@ -201,6 +212,6 @@ The **AI/RAG/cost dashboard (S13-16)** consumes the AI/RAG family — `agentflow
 - `knowledgebase.retrieval.hybrid` vs `knowledgebase.retrieval.chunks.returned.total` — the **empty-retrieval** signal: continuous hybrid calls with zero chunks returned means an empty collection, no close-enough candidate, or a drifted embedding model; no panel is invented to mark it.
 - `ingestion.index.failures.total` — the application-side indexing-failure rate. The **`ingestion-failures`** alert (`agentflow-ingestion-failures`) fires on `rate(agentflow_ingestion_index_failures_total[5m]) > 0` for 5m.
 
-The **API/JVM/DB dashboard (S13-14)** consumes the Spring Boot Actuator family (`http_server_requests_seconds_count` / `_bucket`, `jvm_memory_used_bytes`, `jvm_gc_pause_seconds_count`, `process_cpu_usage`, `jvm_threads_*`, `hikaricp_connections_*`) — `agentflow-api-jvm-db.json`. Two alerts hook the same family: **`api-error-rate`** (`agentflow-api-error-rate`, `critical`) fires on `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0.5` for 5m, and **`db-saturation`** (`agentflow-db-saturation`, `critical`) fires on `hikaricp_connections_active / hikaricp_connections_max > 0.8` for 5m.
+The **API/JVM/DB dashboard (S13-14, extended by S13-22)** consumes the Spring Boot Actuator family (`http_server_requests_seconds_count` / `_bucket`, `jvm_memory_used_bytes`, `jvm_gc_pause_seconds_count`, `process_cpu_usage`, `jvm_threads_*`, `hikaricp_connections_*`) plus the Redis family (`agentflow.redis.command.latency.seconds` p95, `agentflow.redis.command.errors.total`, `agentflow.redis.rate_limit.decision.total`, `agentflow.redis.rate_limit.fallback_open`) — `agentflow-api-jvm-db.json` (panels 13–16). Two alerts hook the same family: **`api-error-rate`** (`agentflow-api-error-rate`, `critical`) fires on `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0.5` for 5m, and **`db-saturation`** (`agentflow-db-saturation`, `critical`) fires on `hikaricp_connections_active / hikaricp_connections_max > 0.8` for 5m; the **`redis-unavailable`** rule (`agentflow-redis-unavailable`, `warning`, S13-22) fires on `rate(agentflow_redis_command_errors_total[5m]) > 0` for 5m.
 
-The S13-17 alert set (`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`) is the first consumer of the alert surface: rules carry a `for` guard, a severity label and a `runbook_url` annotation into `docs/runbooks/` (the scrape-target-down rule from S13-06 plus the seven operational rules listed above). Runbooks are standardized in S13-18; SLO definitions remain later (S14-16/S16-14). (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)
+The S13-17 alert set (`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`) is the first consumer of the alert surface: rules carry a `for` guard, a severity label and a `runbook_url` annotation into `docs/runbooks/` (the scrape-target-down rule from S13-06 plus the eight operational rules listed above). Runbooks are standardized in S13-18; SLO definitions remain later (S14-16/S16-14). (The S13-14 API/JVM/DB, S13-15 Workflow/Kafka and S13-16 AI/RAG/cost dashboards are already provisioned from Git.)

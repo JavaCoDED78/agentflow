@@ -25,6 +25,7 @@ Detailed per-task changelog records for the observability thread. Slim one-line 
 - [S13-19 — cardinality / privacy telemetry check](#s13-19-cardinality--privacy-telemetry-check)
 - [S13-20 — dashboards restore from empty state (clean-start test)](#s13-20-dashboards-restore-from-empty-state-clean-start-test)
 - [S13-21 — observability handbook](#s13-21-observability-handbook)
+- [S13-22 — Redis and rate limiter instrumentation](#s13-22--redis-and-rate-limiter-instrumentation)
 
 ---
 
@@ -846,3 +847,50 @@ No Java/Gradle change — `./gradlew check` is not the gate here; the compose/co
 ### Scope / follow-up
 
 Collector-only: Prometheus/Grafana/Loki/Tempo as dedicated services (S13-05…S13-08) swap the exporter endpoints; the collector's own metrics scrape is S13-05's surface; the lgtm service keeps no healthcheck (pre-existing, outside this task's scope).
+
+## S13-22 — Redis and rate limiter instrumentation
+
+### What changed
+
+The Redis command surface is now metered — the plan's "метрики latency и ошибок команд Redis (требование раздела 12), решений лимитера (allowed/limited/fallback) и счётчик перехода на in-memory fallback". Every recorder is a plain, label-bounded helper on the existing `RedisRateLimiter`; nothing new is reserved globally; no tenantId, userId or keys in labels.
+
+- **`RedisRateLimiter`** — three recorders wrap the whole command path (`remaining()`):
+  - `agentflow.redis.command.latency.seconds` (Timer, tags `operation=rate_limit` + `result=succeeded|failed`) — one sample per Redis command, from just before the command through its conclusion (success or fault). Buckets are opt-in via Micrometer's `percentiles-histogram`, so a p95 is renderable without touching the histogram-less `Timer` default.
+  - `agentflow.redis.command.errors.total` (Counter, tag `operation=rate_limit`) — one increment per failed Redis command (connection failure, timeout, execution error). Registered only on failure, like the S12-19 `fallback_open` counter.
+  - `agentflow.redis.rate_limit.decision.total` (Counter, tags `group` + `result`) — one increment per throttled-group decision: `allowed` (counter returned non-negative remaining), `limited` (returned negative — the interceptor rejects), `fallback` (the command failed and the decision was delegated to the in-memory fallback). The `group` label carries the lowercase enum name (`create_run` / `upload` / `search_debug` / `ops`), never the config key (`search/debug` contains a `/`, which is not a legal bounded label value).
+  - The S12-19 label-free `agentflow.redis.rate_limit.fallback_open` counter is unchanged and still increments per Redis failure.
+  Every recorder is wrapped so a metering error is a silent skip (a failed `Counter/Timer` registration never fails a business call) — the same contract as the S12-19 recorder.
+- **Telemetry config** — `application.yml` opts the new Redis timer into percentile histograms (`agentflow.redis.command.latency.seconds`) alongside the existing opt-in set; the Boot `spring.data.redis` instrument group stays off (S13-02) — our meters are manually registered.
+- **`TelemetryCatalogue`** (S13-19, machine-checked) — the three new metrics are in the catalogue with closed value sets (`operation`, `result`, `group`) and the duplicate-label/forbidden-name rules hold; the catalogue now covers the whole Redis family (previously only `fallback_open`).
+- **Dashboard** (`agentflow-api-jvm-db.json`) — four new panels (13–16): Redis command latency p95 (seconds, from the histogram), Redis command errors (failures/s), rate-limit decisions by result (per s), rate-limit fallbacks (per s) — in the S13-14 API/JVM/DB dashboard, alongside the API/DB panels.
+- **Alert** (`infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml`) — new rule `agentflow-redis-unavailable` (`warning`, `for: 5m`, `noDataState: OK`): `rate(agentflow_redis_command_errors_total[5m]) > 0` — fires on genuine error series (a series that never exists is not an alert; the scrape-target-down rule remains the outage signal for a down app).
+- **Docs** — `docs/observability/metrics.md` (Redis family: the four metrics with closed label sets + the deviation note), `docs/observability/README.md` (catalogue table + alert table + noDataState/SLO honesty note + clean-start count: 9 rules), `docs/architecture/redis-usage.md` §5 (metrics table extended, S13-22 section line removed), `docs/runbooks/redis-outage.md` (symptoms, diagnosis, recovery criterion, evidence — all now reference the new signals and the alert), `docs/runbooks/README.md` (9 runbooks), `docs/devlog/sprint-13-observability.md` (this file).
+
+No new module, no new dependency, no ADR — the meters stay inside `common.rate_limit`.
+
+### Why
+
+Redis is a helper component (`ADR-021`) — correctness never depends on it, but an outage must be visible. S12-19 landed the fail-open limiter with a single label-free counter; S13-22 gives the operator the signal they need to see a degraded state (error rate, decision mix, fallback rate) without ever leaking tenant / principal / key into a label — and to get an alert, not just a dashboard, when Redis is down. The plan's required labels were `operation` / `result` / `route_group`; the plan's `route_group` was corrected to `group` (single lowercase word) because the S13-19 machine-checked catalogue rejects label keys that contain `_` — the test enforces `^[a-z][a-z0-9]*$`, which wins over the prose. Both `operation` and `result` are unchanged by the correction, and the plan's "bounded labels без tenantId, userId и ключей" is fully met.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:test --tests '*RedisRateLimiterTest' --tests '*TelemetryPrivacyTest'` — BUILD SUCCESSFUL (the three new `RedisRateLimiterTest` cases: succeeded latency + allowed decision, limited decision, and a failed command recording failed latency/error/fallback decision, plus the catalogue well-formedness and the metric/label scan against the extended catalogue).
+- `./gradlew :apps:agentflow-app:integrationTest --tests '*RedisRateLimiterIT'` — integration (`redis:8.10.2` Testcontainers): the fail-open IT now also asserts the S13-22 signals grow on failure (failed latency samples, error counter, fallback decision counter) alongside the S12-19 fallback meter.
+- `./gradlew :apps:agentflow-app:check` — green (compile + unit + architecture + no-cycles + spotless + OpenAPI contract gate + the S13-19 telemetry check).
+- The S13-22 surfaces are provisioned from Git: `agentflow-redis-unavailable` in the alerts YAML (read from Git by the clean-start test — `EXPECTED_ALERTS` picks up the new UID automatically, 9 rules); the dashboard's new panels are in the same JSON file the clean-start test verifies.
+- Live alert-fires-on-Redis-down is **not** asserted in this session — the rule is delivered and provisioned; the acceptance criterion "alert fires in a test environment" is covered by the unit/IT assertions that the error counter grows on failure plus the clean-start test's live evaluation of the rule (Grafana API `health: ok`). A live stack run with Redis stopped would complete the loop; it is not part of this session's verification.
+
+### Documentation
+
+- `apps/agentflow-app/src/main/java/com/example/agentflow/common/rate_limit/RedisRateLimiter.java` — the three recorders.
+- `apps/agentflow-app/src/main/java/com/example/agentflow/observability/TelemetryCatalogue.java` — the three new catalogue entries (the S13-19 check is the enforcement).
+- `apps/agentflow-app/src/main/resources/application.yml` — the `percentiles-histogram` opt-in for the new timer.
+- `apps/agentflow-app/src/test/java/com/example/agentflow/common/rate_limit/RedisRateLimiterTest.java` — 3 new cases.
+- `apps/agentflow-app/src/integrationTest/java/com/example/agentflow/common/rate_limit/RedisRateLimiterIT.java` — the fail-open case asserts the S13-22 signals.
+- `infra/observability/grafana/dashboards/agentflow-api-jvm-db.json` — panels 13–16.
+- `infra/observability/grafana/provisioning/alerting/agentflow-alerts.yaml` — the `agentflow-redis-unavailable` rule.
+- `docs/observability/metrics.md`, `docs/observability/README.md`, `docs/architecture/redis-usage.md`, `docs/runbooks/redis-outage.md`, `docs/runbooks/README.md`, this file + contents line; `CHANGELOG.md` (Unreleased / Added).
+
+### Scope / follow-up
+
+The Redis metrics stay a small, label-bounded set (the S13-19 rules); the S12-19 rate limiter remains the owner of the global limit — never the S13-22 meters. The Redis cache (`S14-18`) is a separate, planned task and must follow the same catalogue rule. The S13-22 alert is warning-only by design — a down Redis degrades the limiter to per-replica fallback, which is a degraded state, not a fireable outage; a critical page would be noisier than the failure it reports.

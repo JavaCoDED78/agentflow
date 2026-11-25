@@ -161,8 +161,25 @@ public final class TelemetryCatalogue {
           metric("agentflow.knowledgebase.retrieval.hybrid", MetricType.COUNTER, "calls"),
           metric("agentflow.knowledgebase.retrieval.half-results", MetricType.COUNTER, "results"),
           metric("agentflow.knowledgebase.retrieval.duration", MetricType.TIMER, "seconds"),
-          // Redis family (S12-19)
-          metric("agentflow.redis.rate_limit.fallback_open", MetricType.COUNTER, "count"));
+          // Redis family (S12-19, S13-22)
+          metric("agentflow.redis.rate_limit.fallback_open", MetricType.COUNTER, "count"),
+          metric(
+              "agentflow.redis.command.latency.seconds",
+              MetricType.TIMER,
+              "seconds",
+              label("operation", "rate_limit"),
+              label("result", "succeeded", "failed")),
+          metric(
+              "agentflow.redis.command.errors.total",
+              MetricType.COUNTER,
+              "count",
+              label("operation", "rate_limit")),
+          metric(
+              "agentflow.redis.rate_limit.decision.total",
+              MetricType.COUNTER,
+              "count",
+              label("group", "create_run", "upload", "search_debug", "ops"),
+              label("result", "allowed", "limited", "fallback")));
 
   /**
    * Label names that are forbidden in EVERY metric, in every position — high-cardinality
@@ -286,6 +303,11 @@ public final class TelemetryCatalogue {
 
   private static Metric metric(String name, MetricType type, String unit, Label label) {
     return new Metric(name, type, unit, List.of(label));
+  }
+
+  private static Metric metric(
+      String name, MetricType type, String unit, Label first, Label second) {
+    return new Metric(name, type, unit, List.of(first, second));
   }
 
   private static Metric metric(String name, MetricType type, String unit) {

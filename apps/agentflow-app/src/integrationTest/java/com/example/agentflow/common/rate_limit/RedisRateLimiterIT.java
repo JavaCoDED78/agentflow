@@ -95,7 +95,7 @@ class RedisRateLimiterIT {
 
   @Test
   @DisplayName("two limiter instances on one Redis observe a single global limit")
-  void globalLimitIsGlobalAcrossTwoInstances() {
+  void two_limiter_instances_observe_a_single_global_limit() {
     // Two independent limiter instances, both wired to the same Redis.
     RedisRateLimiter a = limiter(60, RateLimitGroup.CREATE_RUN, factory());
     RedisRateLimiter b = limiter(60, RateLimitGroup.CREATE_RUN, factory());
@@ -114,13 +114,36 @@ class RedisRateLimiterIT {
 
   @Test
   @DisplayName("fails open to the in-memory limiter when Redis is unreachable")
-  void failsOpenWhenRedisIsUnavailable() throws IOException {
+  void fails_open_to_the_in_memory_limiter_when_redis_is_unreachable() throws IOException {
     RedisRateLimiter limiter = limiter(60, RateLimitGroup.CREATE_RUN, deadFactory());
 
     // The in-memory failover (budget 60) returns 59, then 58 for two calls to the same key.
     assertThat(limiter.remaining(key())).contains(59);
     assertThat(limiter.remaining(key())).contains(58);
     assertThat(registry.get("agentflow.redis.rate_limit.fallback_open").counter().count())
+        .isEqualTo(2.0);
+    // The S13-22 meters record the same outage: a failed latency sample, one error, one fallback
+    // decision — bounded labels only.
+    assertThat(
+            registry
+                .get("agentflow.redis.command.latency.seconds")
+                .tags("operation", "rate_limit", "result", "failed")
+                .timer()
+                .count())
+        .isEqualTo(2L);
+    assertThat(
+            registry
+                .get("agentflow.redis.command.errors.total")
+                .tags("operation", "rate_limit")
+                .counter()
+                .count())
+        .isEqualTo(2.0);
+    assertThat(
+            registry
+                .get("agentflow.redis.rate_limit.decision.total")
+                .tags("group", "create_run", "result", "fallback")
+                .counter()
+                .count())
         .isEqualTo(2.0);
   }
 

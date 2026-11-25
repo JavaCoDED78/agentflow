@@ -83,7 +83,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("serves exactly the budget per window, then rejects")
-  void servesExactlyTheBudgetThenRejects() {
+  void serves_exactly_the_budget_per_window_then_rejects() {
     // INCR returns 1, 2, 3, 4 for budget = 3 -> remaining 2, 1, 0, -1.
     doReturn(1L)
         .doReturn(2L)
@@ -100,7 +100,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("the per-minute budget is derived from the policy")
-  void budgetDerivedFromPolicy() {
+  void the_per_minute_budget_is_derived_from_the_policy() {
     limiter =
         new RedisRateLimiter(
             policy(5, RateLimitGroup.CREATE_RUN),
@@ -115,7 +115,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("the key is tenant-scoped and deterministic (same input -> same key)")
-  void keyIsTenantScopedAndDeterministic() {
+  void the_key_is_tenant_scoped_and_deterministic() {
     doReturn(1L).when(template).execute(any(RedisScript.class), anyList(), anyString());
 
     limiter.remaining(key(RateLimitGroup.CREATE_RUN));
@@ -131,7 +131,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("different tenants never share a budget")
-  void crossTenantKeysDiffer() {
+  void different_tenants_never_share_a_budget() {
     doReturn(1L).when(template).execute(any(RedisScript.class), anyList(), anyString());
     limiter.remaining(key(RateLimitGroup.CREATE_RUN));
     RateLimitKey other = new RateLimitKey(UUID.randomUUID(), PRINCIPAL, RateLimitGroup.CREATE_RUN);
@@ -146,7 +146,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("a throttled group consumes the counter; the meter records each fail-over")
-  void failOpenToInMemoryAndMetersEachFailover() {
+  void a_throttled_group_consumes_the_counter_and_the_meter_records_each_failover() {
     // Redis never answers the way the mock would; force the failure path.
     org.mockito.Mockito.when(template.execute(any(RedisScript.class), anyList(), anyString()))
         .thenThrow(new IllegalStateException("redis down"));
@@ -161,7 +161,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("an unthrottled group is open and never touches Redis")
-  void failsOpenWhenThrottlingDisabled() {
+  void an_unthrottled_group_is_open_and_never_touches_redis() {
     limiter =
         new RedisRateLimiter(
             new RateLimitPolicy(false, Map.of()),
@@ -177,7 +177,7 @@ class RedisRateLimiterTest {
 
   @Test
   @DisplayName("the counter key is written with a bounded, non-zero TTL")
-  void keyIsWrittenWithABoundedTtl() {
+  void the_counter_key_is_written_with_a_bounded_non_zero_ttl() {
     doReturn(1L).when(template).execute(any(RedisScript.class), anyList(), anyString());
     limiter.remaining(key(RateLimitGroup.CREATE_RUN));
 
@@ -187,5 +187,80 @@ class RedisRateLimiterTest {
     verify(template).execute(any(RedisScript.class), anyList(), ttlCaptor.capture());
     assertThat(ttlCaptor.getAllValues()).containsExactly(Long.toString(120_000L));
     assertThat(120_000L).isLessThanOrEqualTo(RedisTtl.MAX_SECONDS * 1000);
+  }
+
+  @Test
+  @DisplayName("a successful command records a succeeded latency sample and an allowed decision")
+  void a_successful_command_records_a_succeeded_latency_sample_and_an_allowed_decision() {
+    doReturn(1L).when(template).execute(any(RedisScript.class), anyList(), anyString());
+
+    assertThat(limiter.remaining(key(RateLimitGroup.CREATE_RUN))).contains(2);
+
+    assertThat(
+            registry
+                .get("agentflow.redis.command.latency.seconds")
+                .tags("operation", "rate_limit", "result", "succeeded")
+                .timer()
+                .count())
+        .isEqualTo(1L);
+    assertThat(
+            registry
+                .get("agentflow.redis.rate_limit.decision.total")
+                .tags("group", "create_run", "result", "allowed")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+    // The error counter is never registered on the success path (no meter at all).
+    assertThat(registry.find("agentflow.redis.command.errors.total").meter()).isNull();
+  }
+
+  @Test
+  @DisplayName("an exceeded budget records a limited decision")
+  void an_exceeded_budget_records_a_limited_decision() {
+    // INCR returns 4 -> budget 3 -> remaining -1 -> the interceptor rejects (S04-16).
+    doReturn(4L).when(template).execute(any(RedisScript.class), anyList(), anyString());
+
+    assertThat(limiter.remaining(key(RateLimitGroup.CREATE_RUN))).contains(-1);
+
+    assertThat(
+            registry
+                .get("agentflow.redis.rate_limit.decision.total")
+                .tags("group", "create_run", "result", "limited")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  @DisplayName("a failed command records a failed latency sample, an error and a fallback decision")
+  void a_failed_command_records_a_failed_latency_sample_an_error_and_a_fallback_decision() {
+    org.mockito.Mockito.when(template.execute(any(RedisScript.class), anyList(), anyString()))
+        .thenThrow(new IllegalStateException("redis down"));
+
+    assertThat(limiter.remaining(key(RateLimitGroup.CREATE_RUN))).contains(2);
+
+    assertThat(
+            registry
+                .get("agentflow.redis.command.latency.seconds")
+                .tags("operation", "rate_limit", "result", "failed")
+                .timer()
+                .count())
+        .isEqualTo(1L);
+    assertThat(
+            registry
+                .get("agentflow.redis.command.errors.total")
+                .tags("operation", "rate_limit")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+    assertThat(
+            registry
+                .get("agentflow.redis.rate_limit.decision.total")
+                .tags("group", "create_run", "result", "fallback")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+    assertThat(registry.get("agentflow.redis.rate_limit.fallback_open").counter().count())
+        .isEqualTo(1.0);
   }
 }
