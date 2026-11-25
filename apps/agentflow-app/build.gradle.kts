@@ -245,6 +245,13 @@ tasks.named<Test>("test") {
     useJUnitPlatform {
         excludeTags("real-provider")
     }
+    // Unit/integration split (S14-02): the fast gate must never discover an integration test —
+    // a stray `*IT` class in the unit source set would otherwise run (or fail to run) here.
+    // Integration tests live in the separate integrationTest source set and run via
+    // `./gradlew integrationTest` only.
+    filter {
+        excludeTestsMatching("*IT")
+    }
     // Fail the build (not silently pass) if a future change makes the platform
     // discover zero tests. This caught the silent "0 tests discovered" pass.
     failOnNoDiscoveredTests = true
@@ -291,7 +298,12 @@ configurations.named("integrationTestRuntimeOnly") {
 tasks.register<Test>("integrationTest") {
     testClassesDirs = integrationTest.output.classesDirs
     classpath = integrationTest.runtimeClasspath
-    useJUnitPlatform()
+    // Unit/integration split (S14-02): the Docker-backed suite never runs the opt-in real-provider
+    // contract test, even if a tagged class ever lands in the integration source set — that tag
+    // stays opt-in via `realProviderContractTest` (needs OPENAI_API_KEY).
+    useJUnitPlatform {
+        excludeTags("real-provider")
+    }
     // Fail loudly if the suite is ever emptied instead of silently passing.
     failOnNoDiscoveredTests = true
 }

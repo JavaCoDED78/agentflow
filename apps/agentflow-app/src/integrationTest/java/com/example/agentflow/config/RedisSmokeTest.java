@@ -66,6 +66,9 @@ class RedisSmokeTest {
 
   @AfterEach
   void disconnect() {
+    // Data isolation: drop the keys the test wrote, so each test starts from a fresh namespace.
+    template.delete("greeting");
+    template.delete("session");
     this.factory.stop();
   }
 

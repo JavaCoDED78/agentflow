@@ -107,9 +107,20 @@ class OutboxPublisherBenchmarkIT {
   }
 
   @AfterEach
-  void closePool() {
-    if (ds != null) {
-      ds.close();
+  void cleanup() {
+    try {
+      if (jdbc != null) {
+        // Data isolation: the class shares one container across its tests, so drop the seeded rows
+        // (outbox_events with its FK, then the tenant rows) instead of leaking them into the next
+        // test. Deleting outbox_events first keeps the (outbox_events.tenant_id -> tenants.id) FK
+        // intact.
+        jdbc.update("DELETE FROM outbox_events");
+        jdbc.update("DELETE FROM tenants");
+      }
+    } finally {
+      if (ds != null && !ds.isClosed()) {
+        ds.close();
+      }
     }
   }
 
@@ -214,7 +225,7 @@ class OutboxPublisherBenchmarkIT {
   }
 
   @Test
-  void drain_throughput_and_per_poll_latency() throws InterruptedException {
+  void drain_throughput_and_per_poll_latency() {
     UUID tenant = jdbc.queryForObject("SELECT id FROM tenants", UUID.class);
     for (int i = 0; i < DRAIN_ROWS; i++) {
       UUID id = UUID.randomUUID();
@@ -257,7 +268,6 @@ class OutboxPublisherBenchmarkIT {
       if (polls > 1_000) {
         break;
       }
-      Thread.sleep(1);
     } while (rows < DRAIN_ROWS);
     double drainMillis = (System.nanoTime() - start) / 1_000_000.0;
 
