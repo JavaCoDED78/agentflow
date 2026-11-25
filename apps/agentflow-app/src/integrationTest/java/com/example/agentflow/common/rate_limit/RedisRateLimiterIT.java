@@ -10,16 +10,21 @@ import com.example.agentflow.common.redis.RedisKeyBuilder;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -50,6 +55,9 @@ class RedisRateLimiterIT {
   private final RedisKeyBuilder keyBuilder = new RedisKeyBuilder("test");
   private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
   private final List<RedisConnectionFactory> factories = new ArrayList<>();
+  private ServerSocket slowServerSocket;
+  private Thread slowServerThread;
+  private final List<Socket> slowAcceptedSockets = new ArrayList<>();
 
   private RedisConnectionFactory factory() {
     LettuceConnectionFactory connection =
@@ -67,6 +75,38 @@ class RedisRateLimiterIT {
     }
     LettuceConnectionFactory connection =
         new LettuceConnectionFactory(new RedisStandaloneConfiguration("localhost", deadPort));
+    connection.afterPropertiesSet();
+    factories.add(connection);
+    return connection;
+  }
+
+  /**
+   * Wire a factory whose server accepts the TCP connection but never replies - a slow / hanging
+   * Redis. The command timeout bounds how long a call can hang, so the request returns within the
+   * configured bound instead of pinning a thread forever (S14-08).
+   */
+  private RedisConnectionFactory slowFactory(int commandTimeoutSeconds) throws IOException {
+    slowServerSocket = new ServerSocket(0);
+    int port = slowServerSocket.getLocalPort();
+    slowServerThread =
+        new Thread(
+            () -> {
+              try {
+                while (!Thread.currentThread().isInterrupted()) {
+                  slowAcceptedSockets.add(slowServerSocket.accept());
+                }
+              } catch (IOException ignored) {
+                // The test owns the socket; a closed socket ends the accept loop.
+              }
+            });
+    slowServerThread.setDaemon(true);
+    slowServerThread.start();
+    LettuceConnectionFactory connection =
+        new LettuceConnectionFactory(
+            new RedisStandaloneConfiguration("localhost", port),
+            LettuceClientConfiguration.builder()
+                .commandTimeout(Duration.ofSeconds(commandTimeoutSeconds))
+                .build());
     connection.afterPropertiesSet();
     factories.add(connection);
     return connection;
@@ -115,6 +155,25 @@ class RedisRateLimiterIT {
       // Best-effort flush; the test-owned factories are still destroyed below.
     }
     factories.forEach(connection -> ((LettuceConnectionFactory) connection).destroy());
+    slowAcceptedSockets.forEach(
+        socket -> {
+          try {
+            socket.close();
+          } catch (IOException ignored) {
+          }
+        });
+    slowAcceptedSockets.clear();
+    if (slowServerThread != null) {
+      slowServerThread.interrupt();
+      slowServerThread = null;
+    }
+    if (slowServerSocket != null) {
+      try {
+        slowServerSocket.close();
+      } catch (IOException ignored) {
+      }
+      slowServerSocket = null;
+    }
   }
 
   @Test
@@ -169,6 +228,28 @@ class RedisRateLimiterIT {
                 .counter()
                 .count())
         .isEqualTo(2.0);
+  }
+
+  @Test
+  @DisplayName(
+      "a slow Redis is bounded by the command timeout and fails open to the in-memory limiter")
+  void slow_responses_are_bounded_by_the_command_timeout_and_fail_open() throws IOException {
+    // A reachable but hanging Redis: the connection is accepted, the command never gets a reply.
+    RedisRateLimiter limiter = limiter(60, RateLimitGroup.CREATE_RUN, slowFactory(1));
+
+    long start = System.nanoTime();
+    Optional<Integer> remaining = limiter.remaining(key());
+    long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+    // The failover is the in-memory budget (60): 59 for the first call. The bounded command timeout
+    // must return a decision (never a hang) — at least the 1 s timeout actually elapsed, and an
+    // unbounded pin is impossible: the assertion leaves generous headroom over the 1 s test bound
+    // (the production bound is 5 s) while proving nothing close to an unbounded hang.
+    assertThat(remaining).contains(59);
+    assertThat(elapsedMs).isGreaterThanOrEqualTo(900);
+    assertThat(elapsedMs).isLessThan(5_000);
+    assertThat(registry.get("agentflow.redis.rate_limit.fallback_open").counter().count())
+        .isEqualTo(1.0);
   }
 
   private static RateLimitKey key() {

@@ -112,7 +112,9 @@ stale or the container is unhealthy; restart Redis and confirm the health endpoi
 - `RedisRateLimiterIT` — real `redis:8.10.2` (Testcontainers): two limiter instances share one global
   limit of 60, and an unreachable port fails open (the `fallback_open` meter counts the failures,
   alongside the `command.errors.total` counter, the failed latency samples and the
-  `decision.total{result="fallback"}` counter).
+  `decision.total{result="fallback"}` counter); a slow / never-responding Redis returns within the
+  configured command timeout (1 s in the test — `RedisRateLimiterIT#slow_responses_are_bounded_by_the_command_timeout_and_fail_open`)
+  and fails open.
 - `RedisSmokeTest` — real `redis:8.10.2` round-trip + TTL countdown + the `PING` the indicator uses.
 - Live local boot: `/actuator/health/cache` goes `DOWN` (HTTP 503) with the container stopped and
   recovers to `UP` within seconds of restart, with readiness `UP` throughout.
