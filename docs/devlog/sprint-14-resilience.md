@@ -4,12 +4,40 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-07 — PostgreSQL outage / unknown commit](#s14-07--postgresql-outage--unknown-commit)
 - [S14-06 — concurrent lease claims](#s14-06--concurrent-lease-claims)
 - [S14-05 — broker restart and publisher crash](#s14-05--broker-restart-and-publisher-crash)
 - [S14-04 — duplicates and reordered events](#s14-04--duplicates-and-reordered-events)
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-07 — PostgreSQL outage / unknown commit
+
+### What changed
+
+One new integration suite, [`PostgresOutageUnknownCommitIT`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/workflowexecution/application/PostgresOutageUnknownCommitIT.java) (2 tests, Testcontainers — real PostgreSQL `pgvector/pgvector:0.8.6-pg18`, direct construction, no hand-set row), closing the PostgreSQL row of the S14-01 failure matrix — the connection-loss-mid-transaction / unknown-commit half of the Sprint 14 acceptance criterion, which the S14-01 matrix honestly marked as a gap:
+
+- **`create_run_cut_mid_transaction_retries_with_the_same_key_and_creates_no_duplicate`** — the connection is cut *while a keyed create-run is blocked at the outbox append* (the last write of the create-run transaction, after the run row has already applied — the genuine unknown-commit window, modelled at the persistence seam, never a hand-set row). The first attempt fails with an error and the client cannot know whether the transaction committed; whatever the first attempt did by construction — run and outbox rows move together — the abort leaves both absent together. The same request is re-issued with the same idempotency key and payload fingerprint through a fresh connection pool; the retry succeeds and yields exactly one run and one outbox event, moved together, never a duplicate.
+- **`worker_update_cut_mid_transaction_retries_cleanly_without_a_duplicate`** — the connection is cut *while the worker's fenced state transition is blocked at the history-event append* (the last write of the transition transaction, after the run transition has already applied). The first attempt fails with an error and the worker cannot know whether the transition committed; the rolled-back transaction leaves the run and its history absent together, never a moved run without its transition fact. The same fenced transition is re-issued through a fresh connection pool; the retry lands exactly one transition and exactly one history row, never a duplicate, never a partial state.
+
+The cut is a real **session termination** — the gated connection is identified by the one holding an open transaction (`xact_start IS NOT NULL`) and killed with `pg_terminate_backend` from a separate admin connection, with a poll-until-gone guard so the gate is released only once the session is really dead (otherwise the gated write races the SIGTERM and commits on a not-yet-dead socket). No test DB is ever hand-edited: the run and the worker transitions are produced by the production `RunService.createRun` / `RunStateMachineService.transitionRun` paths, and the kill is a live backend death, not a hand-set row. A fresh container per test (and per test method) keeps the two independent.
+
+### Why
+
+`S14-07` is the P0 Sprint-14 task: "оборвать connections во время create-run и worker update; повторить запрос с тем же idempotency key; проверить наличие/отсутствие run и outbox вместе". The acceptance criterion — no accepted run without durable state/outbox and no duplicate on retry — was a documented gap in the S14-01 failure matrix (the one dedicated PostgreSQL live-outage scenario). Two windows were covered: create-run and worker update, each against a live PostgreSQL with the connection cut in flight, and each with the re-issue-on-retry guarantee that the retry lands a consistent state and never a double.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:integrationTest --tests '*PostgresOutageUnknownCommitIT*'` — BUILD SUCCESSFUL, **2 tests, 0 failures, 0 errors** (JUnit XML `tests="2" failures="0" errors="0" skipped="0"`, fresh `--rerun-tasks` on the final state).
+- Sibling suites (S14-03/04/05/06) in the same thread green: `WorkflowWorkerConcurrencyIT` 2/0, `BrokerRestartPublisherCrashIT` 2/0, `WorkflowTransitionConcurrencyIT` 2/0, `InboxDedupConcurrencyIT` 1/0.
+- `./gradlew :apps:agentflow-app:check` — BUILD SUCCESSFUL, EXIT=0 (including `spotlessCheck` on the new file).
+
+### Scope / follow-up
+
+The cut is modelled as a mid-transaction session termination rather than a container stop: in this suite the schema did not survive a container `stop()`/`start()`, which is the whole-service-outage pattern (S06-14/S07/S14-05) — but the **unknown-commit window is a connection-loss claim, not a whole-service outage**, so the test cuts the gated session and keeps the server and the schema intact. The operational `docker stop agentflow-postgres` path remains the failure injection in the matrix (the operator's real mitigation), and the atomicity guarantees above (`RunServiceAtomicIT`) are proven alongside it; this suite closes the mid-transaction half. `S14-08` (Redis outage) remains out of scope.
 
 ---
 

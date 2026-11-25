@@ -32,16 +32,15 @@ six critical dependencies in the platform are: **PostgreSQL**, **Kafka**, **Redi
 **object storage**, the **AI provider** and the **worker role** (workflow-worker /
 ingestion-worker).
 
-Two honest gaps are recorded in [Known gaps](#known-gaps) rather than papered over:
-the dedicated live PostgreSQL-outage integration test is `S14-07`, and the object
-storage client is not wired yet (`ADR-014`) so its outage path is only verified up
-to the port boundary.
+One honest gap is recorded in [Known gaps](#known-gaps) rather than papered over:
+the object storage client is not wired yet (`ADR-014`), so its outage path is only
+verified up to the port boundary.
 
 ## Overview
 
 | Component | Injection | Fail-open? | Expected outcome | Metric / alert | Evidence |
 |---|---|---|---|---|---|
-| PostgreSQL | `docker stop agentflow-postgres` | No — blocks | Requests fail; run+outbox never committed partially | `agentflow-db-saturation`, `agentflow-api-error-rate` | `RunServiceAtomicIT`, `MigrationsTest` (live outage test = S14-07) |
+| PostgreSQL | `docker stop agentflow-postgres` | No — blocks | Requests fail; run+outbox never committed partially | `agentflow-db-saturation`, `agentflow-api-error-rate` | `RunServiceAtomicIT`, `MigrationsTest`, `PostgresOutageUnknownCommitIT` |
 | Kafka | `docker stop agentflow-kafka` / dead port | No — queues | Durable outbox waits; consumer replays; inbox dedups | `agentflow-outbox-age`, `agentflow-kafka-lag` | `ReliabilityScenarioIT`, `KafkaMessageDelivererIT`, `BrokerRestartPublisherCrashIT` |
 | Redis | `docker stop agentflow-redis` | Yes — degraded | Limiter falls open to in-memory; health DOWN, readiness UP | `agentflow-redis-unavailable` | `RedisRateLimiterIT`, `RedisHealthIndicatorReadinessIsolationTest` |
 | Object storage | `docker stop agentflow-garage` | No — blocks ingestion | Ingestion fails loudly, document requeued | `agentflow-ingestion-failures` | `IngestionIndexingIT` (port-boundary only — no Garage client yet) |
@@ -55,13 +54,11 @@ to the port boundary.
 | | |
 |---|---|
 | **Component** | PostgreSQL 18 (+ pgvector), the only durable store (`ADR-002`) |
-| **Failure injection** | `docker stop agentflow-postgres` (local `core` profile) — or a mid-request connection loss / pool exhaustion. Dedicated live-outage scenario: `S14-07` |
+| **Failure injection** | `docker stop agentflow-postgres` (local `core` profile) — or a mid-request connection loss / pool exhaustion. The dedicated connection-loss scenario: `S14-07` (`PostgresOutageUnknownCommitIT`, the session killed mid-transaction) |
 | **Expected behaviour** | The app never runs on a stale state: the local profile requires a wired `DataSource` (a missing one is a loud boot failure); a configured-but-dead datasource makes DB-dependent requests fail (connection refused / acquisition timeout) and 5xx climb. The base profile boots with no database (`S01-02` skeleton), which is a skeleton property, not a runtime state. No run is created without its outbox row: `RunServiceAtomicIT` proves the run + the outbox event commit in one transaction, and a failing outbox append rolls the run back. No event is processed without its inbox dedup row |
 | **Recovery target** | `docker start agentflow-postgres` → the pool self-heals, writes resume, runs created before the outage are durable and re-readable |
 | **Metric / alert** | `agentflow-db-saturation` (`hikaricp_connections_active / hikaricp_connections_max` > 0.8 for 5m, critical) · `agentflow-api-error-rate` (5xx > 0.5 req/s for 5m, critical) · `agentflow-scrape-target-down` if the app itself is down |
-| **Evidence** | `RunServiceAtomicIT` (create-run commits run+outbox atomically; outbox failure rolls the run back; idempotent keyed repeat; payload conflict) · `MigrationsTest` (schema applies, version pinned) · `WorkflowTransitionConcurrencyIT` (one winner on a run transition) · `docs/runbooks/db-saturation.md` |
-
-**Not wired yet:** the dedicated PostgreSQL-outage integration test (connection loss mid-create-run / unknown commit, re-issue with the same idempotency key) is `S14-07`. The atomicity guarantees above are proven; only the mid-outage behaviour is unverified.
+| **Evidence** | `RunServiceAtomicIT` (create-run commits run+outbox atomically; outbox failure rolls the run back; idempotent keyed repeat; payload conflict) · `MigrationsTest` (schema applies, version pinned) · `WorkflowTransitionConcurrencyIT` (one winner on a run transition) · `PostgresOutageUnknownCommitIT` (connection cut mid-create-run and mid-worker-update — the client cannot know whether the transaction committed; the retry lands exactly one run/event or one transition/fact, never a duplicate, never a partial state) · `docs/runbooks/db-saturation.md` |
 
 ## Kafka — event transport
 
@@ -126,7 +123,6 @@ to the port boundary.
 
 | Gap | Why it is not closed | Owner / next task |
 |---|---|---|
-| PostgreSQL live-outage scenario | The dedicated test of connection loss mid-create-run / unknown commit with idempotency-key re-issue is not written | `S14-07` |
 | Object-storage outage behaviour | No Garage client is wired yet (`ADR-014`, opt-in); the outage path is verified only up to the port boundary | the Sprint 10 ingestion work / `ADR-014` client |
 | Cross-tenant outage regression | Tenant-boundary checks across runs/documents/chunks/approvals/usage/audit are not in this matrix's scope | `S14-03` |
 | Redis outage full table | The per-function outage table (function → behaviour → evidence) is Sprint 14's own follow-up | `S14-08` (this matrix documents the current state only) |
