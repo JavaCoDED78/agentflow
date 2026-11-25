@@ -207,22 +207,41 @@ public class RunStateMachineService {
   @Transactional
   public WorkflowRunState transitionRun(
       UUID tenantId, UUID runId, WorkflowRunState to, String eventType, String actor) {
-    requireRepository(runRepository);
-    RunStateSnapshot current =
-        runRepository
-            .findState(tenantId, runId)
-            .orElseThrow(
-                () ->
-                    new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "run " + runId + " was not found for this tenant"));
+    return transitionRunFlow(tenantId, runId, to, eventType, actor, null, null, null);
+  }
 
-    WorkflowRunState from = current.status();
-    assertRunTransition(from, to);
-    applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
-    appendRunEvent(tenantId, runId, from, to, eventType, actor);
-    releaseQuotaSlotAtTerminal(tenantId, runId, to);
-    recordRunTransitionMetrics(tenantId, runId, to);
-    return to;
+  /**
+   * Move a run to {@code to}, fenced on the caller's claimed {@code lease_epoch} (invariant 5).
+   *
+   * <p>The worker calls this variant: after a successful atomic claim it passes the {@code
+   * lease_epoch} the claim returned, and the service refuses the transition ({@code 409}) when the
+   * run's fence has moved in the gap — another worker re-claimed the run — so a stale owner can
+   * never commit a result on a fence it no longer holds. It shares the fresh-read variant's flow;
+   * the only difference is the assertion below, checked <em>before</em> the conditional update,
+   * with the claimed fence used for the update itself.
+   *
+   * @param tenantId the owning tenant, from the verified security context (invariant 1)
+   * @param runId the run to move
+   * @param to the requested next state, one of the allowed successors of the current state
+   * @param eventType the transition / trigger name recorded in {@code workflow_events}
+   * @param actor the authenticated actor recorded in the event payload (nullable)
+   * @param expectedLeaseEpoch the {@code lease_epoch} the caller's successful claim returned
+   * @return {@code to}, the state the run moved to
+   * @throws IllegalArgumentException {@code expectedLeaseEpoch} is not a positive epoch
+   * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no run
+   *     matches {@code (tenantId, runId)}, {@code 400} if {@code from -> to} is not an allowed
+   *     edge, {@code 409} if the run's fence no longer matches the claimed epoch (the run was
+   *     re-claimed by another worker)
+   */
+  @Transactional
+  public WorkflowRunState transitionRun(
+      UUID tenantId,
+      UUID runId,
+      WorkflowRunState to,
+      String eventType,
+      String actor,
+      int expectedLeaseEpoch) {
+    return transitionRunFlow(tenantId, runId, to, eventType, actor, null, null, expectedLeaseEpoch);
   }
 
   /**
@@ -262,22 +281,41 @@ public class RunStateMachineService {
       String actor,
       String errorClass,
       String safeReason) {
-    requireRepository(runRepository);
-    RunStateSnapshot current =
-        runRepository
-            .findState(tenantId, runId)
-            .orElseThrow(
-                () ->
-                    new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "run " + runId + " was not found for this tenant"));
+    return transitionRunFlow(tenantId, runId, to, eventType, actor, errorClass, safeReason, null);
+  }
 
-    WorkflowRunState from = current.status();
-    assertRunTransition(from, to);
-    applyRunTransition(runId, tenantId, from, current.version(), current.leaseEpoch(), to);
-    appendRunEvent(tenantId, runId, from, to, eventType, actor, errorClass);
-    releaseQuotaSlotAtTerminal(tenantId, runId, to);
-    recordRunTransitionMetrics(tenantId, runId, to);
-    return to;
+  /**
+   * Move a run to {@code to} with the fault's {@code ErrorClass} token and short, safe reason,
+   * fenced on the caller's claimed {@code lease_epoch} (invariant 5). This is the worker's
+   * controlled-{@code FAILED} exit for a per-run limit breach: the same flow as the fresh-read
+   * variant, plus the claimed-epoch assertion.
+   *
+   * @param tenantId the owning tenant, from the verified security context (invariant 1)
+   * @param runId the run to move
+   * @param to the requested next state, one of the allowed successors of the current state
+   * @param eventType the transition / trigger name recorded in {@code workflow_events}
+   * @param actor the authenticated actor recorded in the event payload (nullable)
+   * @param errorClass the {@code ErrorClass#errorClass()} token of the transition (nullable)
+   * @param safeReason the short redacted description (nullable)
+   * @param expectedLeaseEpoch the {@code lease_epoch} the caller's successful claim returned
+   * @return {@code to}, the state the run moved to
+   * @throws IllegalArgumentException {@code expectedLeaseEpoch} is not a positive epoch
+   * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no run
+   *     matches {@code (tenantId, runId)}, {@code 400} if {@code from -> to} is not an allowed
+   *     edge, {@code 409} if the run's fence no longer matches the claimed epoch
+   */
+  @Transactional
+  public WorkflowRunState transitionRun(
+      UUID tenantId,
+      UUID runId,
+      WorkflowRunState to,
+      String eventType,
+      String actor,
+      String errorClass,
+      String safeReason,
+      int expectedLeaseEpoch) {
+    return transitionRunFlow(
+        tenantId, runId, to, eventType, actor, errorClass, safeReason, expectedLeaseEpoch);
   }
 
   /**
@@ -311,27 +349,44 @@ public class RunStateMachineService {
       WorkflowStepState to,
       String eventType,
       String actor) {
-    requireRepository(stepRepository);
-    StepStateSnapshot current =
-        stepRepository
-            .findState(tenantId, runId, stepKey)
-            .orElseThrow(
-                () ->
-                    new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "step '"
-                            + stepKey
-                            + "' on run "
-                            + runId
-                            + " was not found for this tenant"));
+    return transitionStepFlow(
+        tenantId, runId, stepKey, to, eventType, actor, null, null, null, false);
+  }
 
-    WorkflowStepState from = current.status();
-    assertStepTransition(from, to);
-    applyStepTransition(runId, tenantId, stepKey, from, current.leaseEpoch(), to);
-    recordStepAttempt(tenantId, runId, stepKey, from, to, actor, null, null);
-    appendStepEvent(tenantId, runId, current.stepId(), stepKey, from, to, eventType, actor, null);
-    recordStepTransitionMetrics(to);
-    return to;
+  /**
+   * Move a step to {@code to}, fenced on the caller's claimed {@code lease_epoch} (invariant 5).
+   *
+   * <p>The worker calls this variant: after a successful atomic claim it passes the {@code
+   * lease_epoch} the claim returned, and the service refuses the transition ({@code 409}) when the
+   * step's fence has moved in the gap — another worker re-claimed the run — so a stale owner can
+   * never commit a result on a fence it no longer holds. It shares the fresh-read variant's flow;
+   * the only difference is the assertion below, checked <em>before</em> the conditional update,
+   * with the claimed fence used for the update itself.
+   *
+   * @param tenantId the owning tenant, from the verified security context (invariant 1)
+   * @param runId the run the step belongs to
+   * @param stepKey the graph node the step runs
+   * @param to the requested next state, one of the allowed successors of the current state
+   * @param eventType the transition / trigger name recorded in {@code workflow_events}
+   * @param actor the authenticated actor recorded in the event payload (nullable)
+   * @param expectedLeaseEpoch the {@code lease_epoch} the caller's successful claim returned
+   * @return {@code to}, the state the step moved to
+   * @throws IllegalArgumentException {@code expectedLeaseEpoch} is not a positive epoch
+   * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no
+   *     step matches for this tenant, {@code 400} if {@code from -> to} is not an allowed edge,
+   *     {@code 409} if the step's fence no longer matches the claimed epoch
+   */
+  @Transactional
+  public WorkflowStepState transitionStep(
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState to,
+      String eventType,
+      String actor,
+      int expectedLeaseEpoch) {
+    return transitionStepFlow(
+        tenantId, runId, stepKey, to, eventType, actor, null, null, expectedLeaseEpoch, false);
   }
 
   /**
@@ -372,6 +427,124 @@ public class RunStateMachineService {
       String eventType,
       String errorClass,
       String safeReason) {
+    return transitionStepFlow(
+        tenantId, runId, stepKey, to, eventType, null, errorClass, safeReason, null, true);
+  }
+
+  /**
+   * Move a step to {@code to} with the fault's {@code ErrorClass} token and short, safe reason,
+   * fenced on the caller's claimed {@code lease_epoch} (invariant 5). The worker calls this variant
+   * for the RETRY_WAIT / FAILED exit of a classified fault.
+   *
+   * @param tenantId the owning tenant, from the verified security context (invariant 1)
+   * @param runId the run the step belongs to
+   * @param stepKey the graph node the step runs
+   * @param to the requested next state, one of the allowed successors of the current state
+   * @param eventType the transition / trigger name recorded in {@code workflow_events}
+   * @param errorClass the fault's {@code ErrorClass#errorClass()} token (nullable)
+   * @param safeReason the short redacted description (nullable)
+   * @param expectedLeaseEpoch the {@code lease_epoch} the caller's successful claim returned
+   * @return {@code to}, the state the step moved to
+   * @throws IllegalArgumentException {@code expectedLeaseEpoch} is not a positive epoch
+   * @throws ResponseStatusException {@code 503} if no database is configured, {@code 404} if no
+   *     step matches for this tenant, {@code 400} if {@code from -> to} is not an allowed edge,
+   *     {@code 409} if the step's fence no longer matches the claimed epoch
+   */
+  @Transactional
+  public WorkflowStepState transitionStep(
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState to,
+      String eventType,
+      String errorClass,
+      String safeReason,
+      int expectedLeaseEpoch) {
+    return transitionStepFlow(
+        tenantId,
+        runId,
+        stepKey,
+        to,
+        eventType,
+        null,
+        errorClass,
+        safeReason,
+        expectedLeaseEpoch,
+        true);
+  }
+
+  /**
+   * Shared flow for the run transition variants (fresh-read and claimed-epoch). Reads the current
+   * state through a tenant-scoped lookup (a cross-tenant id is a {@code 404}), asserts the {@code
+   * from -> to} edge (a forbidden pair is a {@code 400}) and — for the claimed-epoch variants —
+   * refuses the transition ({@code 409}) when the run's fence has moved, before the conditional
+   * update. The update is fenced on the claimed epoch when one is passed (the fresh-read variants
+   * fence on the freshly read epoch), and the transition fact is appended in the same transaction.
+   *
+   * @param expectedLeaseEpoch the epoch the caller claimed to hold, or {@code null} to fence on the
+   *     freshly read epoch (the fresh-read variants)
+   */
+  private WorkflowRunState transitionRunFlow(
+      UUID tenantId,
+      UUID runId,
+      WorkflowRunState to,
+      String eventType,
+      String actor,
+      String errorClass,
+      String safeReason,
+      Integer expectedLeaseEpoch) {
+    requireRepository(runRepository);
+    RunStateSnapshot current =
+        runRepository
+            .findState(tenantId, runId)
+            .orElseThrow(
+                () ->
+                    new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "run " + runId + " was not found for this tenant"));
+
+    WorkflowRunState from = current.status();
+    assertRunTransition(from, to);
+    int fenceEpoch = current.leaseEpoch();
+    if (expectedLeaseEpoch != null) {
+      requireClaimedEpoch(expectedLeaseEpoch, current.leaseEpoch(), "run " + runId);
+      fenceEpoch = expectedLeaseEpoch;
+    }
+    applyRunTransition(runId, tenantId, from, current.version(), fenceEpoch, to);
+    appendRunEvent(tenantId, runId, from, to, eventType, actor, errorClass);
+    releaseQuotaSlotAtTerminal(tenantId, runId, to);
+    recordRunTransitionMetrics(tenantId, runId, to);
+    return to;
+  }
+
+  /**
+   * Shared flow for the step transition variants (fresh-read and claimed-epoch). Reads the step's
+   * current state through a tenant-scoped lookup (a cross-tenant id is a {@code 404}), asserts the
+   * {@code from -> to} edge (a forbidden pair is a {@code 400}) and — for the claimed-epoch
+   * variants — refuses the transition ({@code 409}) when the step's fence has moved, before the
+   * conditional update. The update is fenced on the claimed epoch when one is passed (the
+   * fresh-read variants fence on the freshly read epoch), and the transition fact + attempt
+   * lifecycle are appended in the same transaction.
+   *
+   * @param actor the worker instance recorded in the event payload (nullable)
+   * @param errorClass the fault's {@code ErrorClass} token (nullable: records no error metadata)
+   * @param safeReason the short redacted description (nullable)
+   * @param expectedLeaseEpoch the epoch the caller claimed to hold, or {@code null} to fence on the
+   *     freshly read epoch (the fresh-read variants)
+   * @param isFault true when the caller asked to record fault metadata (the {@code errorClass} /
+   *     {@code safeReason} — even when null): the repository's 8-arg {@code transition} overload is
+   *     used. A clean transition uses the 6-arg overload, which never writes an error column.
+   */
+  private WorkflowStepState transitionStepFlow(
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState to,
+      String eventType,
+      String actor,
+      String errorClass,
+      String safeReason,
+      Integer expectedLeaseEpoch,
+      boolean isFault) {
     requireRepository(stepRepository);
     StepStateSnapshot current =
         stepRepository
@@ -388,13 +561,46 @@ public class RunStateMachineService {
 
     WorkflowStepState from = current.status();
     assertStepTransition(from, to);
-    applyStepTransition(
-        runId, tenantId, stepKey, from, current.leaseEpoch(), to, errorClass, safeReason);
-    recordStepAttempt(tenantId, runId, stepKey, from, to, null, errorClass, safeReason);
+    int fenceEpoch = current.leaseEpoch();
+    if (expectedLeaseEpoch != null) {
+      requireClaimedEpoch(
+          expectedLeaseEpoch, current.leaseEpoch(), "step '" + stepKey + "' on run " + runId);
+      fenceEpoch = expectedLeaseEpoch;
+    }
+    if (isFault) {
+      applyStepTransition(runId, tenantId, stepKey, from, fenceEpoch, to, errorClass, safeReason);
+    } else {
+      applyStepTransition(runId, tenantId, stepKey, from, fenceEpoch, to);
+    }
+    recordStepAttempt(tenantId, runId, stepKey, from, to, actor, errorClass, safeReason);
     appendStepEvent(
-        tenantId, runId, current.stepId(), stepKey, from, to, eventType, null, errorClass);
+        tenantId, runId, current.stepId(), stepKey, from, to, eventType, actor, errorClass);
     recordStepTransitionMetrics(to);
     return to;
+  }
+
+  /**
+   * Validate the caller's claimed {@code lease_epoch} against the row's fence, refusing the
+   * transition ({@code 409}) when they disagree: the caller claimed a lease that has since been
+   * re-taken (invariant 5, ADR-011 fencing). A non-positive claimed epoch is a programming error
+   * and is rejected as {@code IllegalArgumentException}.
+   */
+  private static void requireClaimedEpoch(
+      int expectedLeaseEpoch, int currentLeaseEpoch, String subject) {
+    if (expectedLeaseEpoch < 1) {
+      throw new IllegalArgumentException(
+          "expectedLeaseEpoch must be >= 1 (the claimed lease_epoch), got " + expectedLeaseEpoch);
+    }
+    if (currentLeaseEpoch != expectedLeaseEpoch) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT,
+          subject
+              + " is no longer owned by this worker (claimed lease epoch "
+              + expectedLeaseEpoch
+              + ", current "
+              + currentLeaseEpoch
+              + ")");
+    }
   }
 
   /**

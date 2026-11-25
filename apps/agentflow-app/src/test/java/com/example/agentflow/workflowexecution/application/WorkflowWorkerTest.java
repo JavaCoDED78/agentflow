@@ -95,7 +95,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -120,7 +120,7 @@ class WorkflowWorkerTest {
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     // transitionRun is called twice: the start of the lease (RUNNING) and the final reconcile
     verify(transitionService, times(2))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     List<WorkflowRunState> runStates = runState.getAllValues();
     assertThat(runStates).contains(WorkflowRunState.RUNNING);
     // the final reconcile moves the run to SUCCEEDED once every step succeeded
@@ -154,7 +154,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -186,7 +186,7 @@ class WorkflowWorkerTest {
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     // transitionRun is called twice: the start of the lease (RUNNING) and the final reconcile
     verify(transitionService, times(2))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     List<WorkflowRunState> runStates = runState.getAllValues();
     assertThat(runStates).contains(WorkflowRunState.RUNNING);
     // the run fails because a step permanently failed and its dependent was skipped
@@ -224,7 +224,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -244,7 +244,7 @@ class WorkflowWorkerTest {
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     // transitionRun is called twice: the start of the lease (RUNNING) and the final reconcile
     verify(transitionService, times(2))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     List<WorkflowRunState> runStates = runState.getAllValues();
     assertThat(runStates).contains(WorkflowRunState.RUNNING);
     // the final reconcile moves the run to SUCCEEDED once every step succeeded
@@ -284,7 +284,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -328,7 +328,7 @@ class WorkflowWorkerTest {
     int processed = worker.pollOnce(UUID.randomUUID());
 
     assertThat(processed).isEqualTo(0);
-    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any());
+    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any(), anyInt());
     verify(runRepository, never()).findRun(any(), any());
   }
 
@@ -345,7 +345,7 @@ class WorkflowWorkerTest {
 
     assertThat(processed).isEqualTo(0);
     verify(runRepository, never()).findRun(any(), any());
-    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any());
+    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any(), anyInt());
   }
 
   // ---------------------------------------------------------------------------
@@ -379,7 +379,8 @@ class WorkflowWorkerTest {
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
     // the 8-arg (fault) overload mutates the observed state like the 6-arg one does
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+    when(transitionService.transitionStep(
+            any(), any(), anyString(), any(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -412,7 +413,7 @@ class WorkflowWorkerTest {
     // start)
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService, times(1))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.RUNNING);
     // the classifier produced the transient class and the worker recorded it on the fault
     // transition
@@ -426,7 +427,8 @@ class WorkflowWorkerTest {
             any(),
             eq("step.retry_wait"),
             errorClass.capture(),
-            reason.capture());
+            reason.capture(),
+            anyInt());
     assertThat(errorClass.getValue()).isEqualTo("transient_infra");
     assertThat(reason.getValue()).contains("connection refused");
   }
@@ -457,7 +459,8 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+    when(transitionService.transitionStep(
+            any(), any(), anyString(), any(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -486,14 +489,21 @@ class WorkflowWorkerTest {
     // the run is reconciled to FAILED because a step permanently failed
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService, times(2))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     assertThat(runState.getAllValues().get(runState.getAllValues().size() - 1))
         .isEqualTo(WorkflowRunState.FAILED);
     // the classifier produced a permanent class and the worker recorded it on the fault transition
     ArgumentCaptor<String> errorClass = ArgumentCaptor.forClass(String.class);
     verify(transitionService)
         .transitionStep(
-            any(), any(), anyString(), any(), eq("step.failed"), errorClass.capture(), any());
+            any(),
+            any(),
+            anyString(),
+            any(),
+            eq("step.failed"),
+            errorClass.capture(),
+            any(),
+            anyInt());
     assertThat(errorClass.getValue()).isEqualTo("internal");
   }
 
@@ -524,7 +534,7 @@ class WorkflowWorkerTest {
                     .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
                     .collect(Collectors.toList()));
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -540,7 +550,7 @@ class WorkflowWorkerTest {
     // a cancelled run never starts: the only run transition is the drain closing it to CANCELLED
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService, times(1))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.CANCELLED);
   }
 
@@ -575,7 +585,7 @@ class WorkflowWorkerTest {
         .thenReturn(Collections.singletonMap("a", "a-done"));
     assertThat(stepRepository.findStepOutputs(tenant, runId)).containsEntry("a", "a-done");
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -593,7 +603,7 @@ class WorkflowWorkerTest {
     // the run closes to CANCELLED once every step is terminal
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService, times(1))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     assertThat(runState.getAllValues()).containsExactly(WorkflowRunState.CANCELLED);
   }
 
@@ -641,7 +651,7 @@ class WorkflowWorkerTest {
     when(stepRepository.findStepOutputs(tenant, runId))
         .thenReturn(Map.of("a", "{\"summary\":\"the produced summary\"}"));
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -721,13 +731,14 @@ class WorkflowWorkerTest {
     when(stepRepository.findStepOutputs(tenant, runId))
         .thenReturn(Map.of("a", "{\"summary\":\"the produced summary\"}"));
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
               return inv.getArgument(3);
             });
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+    when(transitionService.transitionStep(
+            any(), any(), anyString(), any(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -761,12 +772,19 @@ class WorkflowWorkerTest {
     ArgumentCaptor<String> errorClass = ArgumentCaptor.forClass(String.class);
     verify(transitionService)
         .transitionStep(
-            any(), any(), anyString(), any(), eq("step.failed"), errorClass.capture(), any());
+            any(),
+            any(),
+            anyString(),
+            any(),
+            eq("step.failed"),
+            errorClass.capture(),
+            any(),
+            anyInt());
     assertThat(errorClass.getValue()).isEqualTo("validation");
     // the run is reconciled to FAILED because a step permanently failed
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService, times(2))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     assertThat(runState.getAllValues().get(runState.getAllValues().size() - 1))
         .isEqualTo(WorkflowRunState.FAILED);
   }
@@ -807,7 +825,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -856,12 +874,13 @@ class WorkflowWorkerTest {
     // ran READY -> RUNNING -> WAITING_FOR_APPROVAL
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService, times(2))
-        .transitionRun(any(), any(), runState.capture(), anyString(), any());
+        .transitionRun(any(), any(), runState.capture(), anyString(), any(), anyInt());
     assertThat(runState.getAllValues())
         .containsExactly(WorkflowRunState.RUNNING, WorkflowRunState.WAITING_FOR_APPROVAL);
     ArgumentCaptor<WorkflowStepState> stepTo = ArgumentCaptor.forClass(WorkflowStepState.class);
     verify(transitionService, times(3))
-        .transitionStep(any(), any(), eq("send-report"), stepTo.capture(), anyString(), any());
+        .transitionStep(
+            any(), any(), eq("send-report"), stepTo.capture(), anyString(), any(), anyInt());
     assertThat(stepTo.getAllValues())
         .containsExactly(
             WorkflowStepState.READY,
@@ -931,8 +950,9 @@ class WorkflowWorkerTest {
 
     // no progress, no state machine moves, no gated side effect — the pause is left durable
     assertThat(processed).isZero();
-    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any());
-    verify(transitionService, never()).transitionStep(any(), any(), any(), any(), any(), any());
+    verify(transitionService, never()).transitionRun(any(), any(), any(), any(), any(), anyInt());
+    verify(transitionService, never())
+        .transitionStep(any(), any(), any(), any(), any(), any(), anyInt());
     verify(stepRepository, never()).createStep(any(), any(), anyString(), anyInt(), any());
     assertThat(downstreamRuns).isEmpty();
     // the accidental claim is released again, so the run stays claimable for the resume (S11-04)
@@ -968,7 +988,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -996,14 +1016,20 @@ class WorkflowWorkerTest {
     // ... WITHOUT a run.started: the run never paused, so the re-drive is invisible on the run's
     // transition history; the only run-level moves are the resume's own SUCCEEDED conclusion
     verify(transitionService, never())
-        .transitionRun(any(), any(), eq(WorkflowRunState.RUNNING), anyString(), any());
+        .transitionRun(any(), any(), eq(WorkflowRunState.RUNNING), anyString(), any(), anyInt());
     verify(transitionService)
         .transitionRun(
-            tenant, runId, WorkflowRunState.SUCCEEDED, "run.finished", "agentflow-worker");
+            eq(tenant),
+            eq(runId),
+            eq(WorkflowRunState.SUCCEEDED),
+            eq("run.finished"),
+            eq("agentflow-worker"),
+            anyInt());
     // the step ran READY -> RUNNING -> SUCCEEDED under its own step.* events
     ArgumentCaptor<String> stepEvents = ArgumentCaptor.forClass(String.class);
     verify(transitionService, times(3))
-        .transitionStep(eq(tenant), eq(runId), eq("extract"), any(), stepEvents.capture(), any());
+        .transitionStep(
+            eq(tenant), eq(runId), eq("extract"), any(), stepEvents.capture(), any(), anyInt());
     assertThat(stepEvents.getAllValues())
         .containsExactly("step.ready", "step.running", "step.succeeded");
   }
@@ -1037,7 +1063,7 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
@@ -1081,7 +1107,8 @@ class WorkflowWorkerTest {
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
     doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+    when(transitionService.transitionStep(
+            any(), any(), anyString(), any(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));

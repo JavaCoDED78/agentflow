@@ -4,11 +4,49 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-06 — concurrent lease claims](#s14-06--concurrent-lease-claims)
 - [S14-05 — broker restart and publisher crash](#s14-05--broker-restart-and-publisher-crash)
 - [S14-04 — duplicates and reordered events](#s14-04--duplicates-and-reordered-events)
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-06 — concurrent lease claims
+
+### What changed
+
+One new integration suite, [`WorkflowWorkerConcurrencyIT`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/workflowexecution/application/WorkflowWorkerConcurrencyIT.java) (2 tests, Testcontainers — real PostgreSQL `pgvector/pgvector:0.8.6-pg18`, direct construction — the harness pattern of `WorkflowWorkerCrashRecoveryIT`), closing the concurrent-lease-claim half of the Sprint 14 acceptance criterion ("only the current lease owner can commit a result"):
+
+- **worker_claim_is_atomic_and_only_one_owner_wins** — two independent `WorkflowWorker` instances race the same claimable run; exactly one wins the claim, the other gets nothing (its `claim` returns -1), and the winner's `lease_owner`/`lease_epoch` is recorded. This is the run-level half of the guarantee and is also covered by `RunLeaseClaimIT` (5 tests) at the repository boundary.
+- **a_stale_owner_cannot_commit_a_result_after_another_worker_reclaims_the_run** — the stale owner is held mid-handler on a `CountDownLatch` while its lease lapses; a second worker re-claims the run (its own atomic claim bumps the run *and every live step* fence); the stale owner is released and must not commit anything: the step transition, the checkpoint write and the run transition are all refused — the run is still owned by the second worker, the checkpoint never landed, no second `workflow_events` fact exists, and the run is never reconciled by the stale owner.
+
+The production fix that makes the second test pass closes a real gap the new test exposed. The atomic claim in `WorkflowRunRepository.claim` now bumps the run's `lease_epoch` **and every live step's `lease_epoch` in the same transaction** (the 6-arg repository transition is fenced by the step row's `lease_epoch`, so a step row that survived a re-claim would otherwise silently accept a stale write). Every worker transition now passes the **claimed** `lease_epoch` — not the row's freshly read one — into the state-machine service (`RunStateMachineService.transitionRun/Step`, clean and fault variants, run and step level); the service refuses the transition (`409`) when the claimed epoch no longer matches the row's fence — checked *before* the conditional update — and uses the claimed epoch for the update itself, so a write on a moved fence can never land. The checkpoint write (`CheckpointAdapter`) already fenced on the claimed epoch at the SQL layer (the row's `lease_epoch` is part of `saveCheckpoint`'s guard) and is now exercised here at the worker boundary.
+
+Unit-level fencing pins (`RunStateMachineServiceTest`, +12 tests): the claimed-epoch clean/fault variants fence the conditional update on the claimed epoch (verified via the repository spy); a stale claim (fence moved) is refused with `409` before the update and before the event append; a non-positive claimed epoch is an `IllegalArgumentException`; the fault variant's 8-arg conditional update is fenced on the claim (verified via the 8-arg spy). The fresh-read variants are unchanged — they fence on the row's freshly read epoch and reject the same moved-fence case via the repository's own zero-rows conflict.
+
+### Why
+
+`S14-06` is the P0 Sprint-14 task: "запустить две worker replicas; одновременно claim один run; задержать heartbeat старого owner; проверить fencing epoch на write". Two gaps the existing suites did not cover: (1) the atomic claim did not bump the steps' fence — a step row surviving a re-claim kept the old epoch and would accept a stale write through the repository's own guard; (2) the worker's transition calls fenced on the freshly read row epoch rather than the claimed one — a write that won the row read but lost the claim window could still commit. The claim now bumps both in one statement, and the worker carries its claim everywhere it writes — clean updates, fault updates, the checkpoint and the run/step transitions alike.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:integrationTest --tests 'com.example.agentflow.workflowexecution.application.WorkflowWorkerConcurrencyIT'` — BUILD SUCCESSFUL, **2 tests, 0 failures, 0 errors** (JUnit XML `tests="2" failures="0" errors="0"`, fresh timestamp on this run). The RED variant of the stale-owner test (before the fix) failed exactly at the first stale-write assertion (`the stale owner's late commit must be refused`), confirming the test exercises the gap.
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.workflowexecution.*'` — BUILD SUCCESSFUL (all workflowexecution unit suites, incl. the +12 new fencing tests).
+- `./gradlew :apps:agentflow-app:integrationTest --tests 'com.example.agentflow.workflowexecution.*'` — BUILD SUCCESSFUL, **14 suites / 52 tests, 0 failures, 0 errors**.
+- `./gradlew :apps:agentflow-app:check` — BUILD SUCCESSFUL, EXIT=0 (8 tasks).
+- `./gradlew :apps:agentflow-app:integrationTest` — BUILD SUCCESSFUL in 4m54s, **40 suites / 186 tests, 0 failures, 0 errors, 0 skipped** (39/184 → 40/186, +1 suite/+2 tests; XML counted).
+
+### Docs
+
+- `docs/devlog/sprint-14-resilience.md` — this file (S14-06 section + contents line).
+- `docs/testing/failure-matrix.md` — worker evidence line (the new suite).
+- `CHANGELOG.md` — Unreleased / Added entry.
+
+### Scope / follow-up
+
+The two racing workers in the first test are in-process instances (no real deploy) — the honest limit of this task's coverage: the run-level guarantee is pinned at the repository boundary (`RunLeaseClaimIT`, 5 tests) and the step-level guarantee is pinned at the worker boundary (this suite). The heartbeat-kill / lease-expire half of the acceptance criterion is exercised in the second test by the blocked handler + the lapse of the lease, and the full kill-mid-step / restart lifecycle remains covered by `WorkflowWorkerCrashRecoveryIT` (the S07/S14 story). `S14-07` (PostgreSQL outage / unknown commit) and the rest of the Sprint 14 thread remain out of scope.
 
 ---
 

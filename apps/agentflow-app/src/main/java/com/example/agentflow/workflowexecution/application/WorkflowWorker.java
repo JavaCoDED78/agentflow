@@ -417,7 +417,7 @@ public class WorkflowWorker implements DisposableBean {
     // re-claimed after its owner's lease expired — is driven without the run.started transition:
     // the state machine forbids RUNNING -> RUNNING, and the run is genuinely owned and executable.
     if (!WorkflowRunState.RUNNING.equals(run.status())
-        && !transitionRun(tenantId, runId, WorkflowRunState.RUNNING, "run.started")) {
+        && !transitionRun(tenantId, runId, WorkflowRunState.RUNNING, "run.started", epoch)) {
       return false;
     }
     materializeSteps(tenantId, runId, graph, epoch);
@@ -427,7 +427,7 @@ public class WorkflowWorker implements DisposableBean {
     RunExecutionMonitor monitor = new RunExecutionMonitor(executionLimits, clock);
     try {
       executeUntilQuiesced(tenantId, runId, graph, owner, epoch, monitor);
-      reconcileRun(tenantId, runId);
+      reconcileRun(tenantId, runId, epoch);
     } catch (RunExecutionLimitExceeded limitEx) {
       // The worker already failed the current step and closed the run to a documented, controlled
       // {@code FAILED} in {@link #failRunDueToLimit}: count the run as progressed this poll and do
@@ -468,10 +468,15 @@ public class WorkflowWorker implements DisposableBean {
           || state == WorkflowStepState.READY
           || state == WorkflowStepState.RETRY_WAIT) {
         transitionStep(
-            tenantId, runId, row.stepKey(), WorkflowStepState.CANCELLED, "step.cancelled");
+            tenantId,
+            runId,
+            row.stepKey(),
+            WorkflowStepState.CANCELLED,
+            "step.cancelled",
+            leaseEpoch);
       }
     }
-    reconcileRun(tenantId, runId);
+    reconcileRun(tenantId, runId, leaseEpoch);
   }
 
   /**
@@ -548,11 +553,13 @@ public class WorkflowWorker implements DisposableBean {
     // state machine before any new step starts, so this pass's executions never outrun a
     // downstream cancellation (invariant 4 — every change through the single transition service).
     for (String stepKey : resolution.cancelled()) {
-      transitionStep(tenantId, runId, stepKey, WorkflowStepState.CANCELLED, "step.cancelled");
+      transitionStep(
+          tenantId, runId, stepKey, WorkflowStepState.CANCELLED, "step.cancelled", leaseEpoch);
       progressed = true;
     }
     for (String stepKey : resolution.skipped()) {
-      transitionStep(tenantId, runId, stepKey, WorkflowStepState.SKIPPED, "step.skipped");
+      transitionStep(
+          tenantId, runId, stepKey, WorkflowStepState.SKIPPED, "step.skipped", leaseEpoch);
       progressed = true;
     }
     // Ready steps run sequentially, in the resolver's deterministic topological order (S08-11) —
@@ -590,8 +597,8 @@ public class WorkflowWorker implements DisposableBean {
       UUID owner,
       int leaseEpoch,
       RunExecutionMonitor monitor) {
-    transitionStep(tenantId, runId, stepKey, WorkflowStepState.READY, "step.ready");
-    transitionStep(tenantId, runId, stepKey, WorkflowStepState.RUNNING, "step.running");
+    transitionStep(tenantId, runId, stepKey, WorkflowStepState.READY, "step.ready", leaseEpoch);
+    transitionStep(tenantId, runId, stepKey, WorkflowStepState.RUNNING, "step.running", leaseEpoch);
     WorkflowNode node = nodes.get(stepKey);
     // S11-03 — the HUMAN_APPROVAL boundary: a HUMAN_APPROVAL node stops the step and the run at a
     // side-effect boundary. It records the durable approval (the checkpoint of where execution
@@ -613,7 +620,7 @@ public class WorkflowWorker implements DisposableBean {
     try {
       enforcePreStepLimits(monitor);
     } catch (RunExecutionLimitExceeded limitEx) {
-      failRunDueToLimit(tenantId, runId, stepKey, limitEx);
+      failRunDueToLimit(tenantId, runId, stepKey, limitEx, leaseEpoch);
       throw limitEx;
     }
     // Heartbeat (S07-04, the gap-b fix): while this step's handler runs — it may outlive the lease
@@ -647,19 +654,21 @@ public class WorkflowWorker implements DisposableBean {
         // the run into a documented, controlled FAILED (independent of the storage-only checkpoint
         // inline bound).
         enforceOutputSize(monitor, result.output());
-        transitionStep(tenantId, runId, stepKey, WorkflowStepState.SUCCEEDED, "step.succeeded");
+        transitionStep(
+            tenantId, runId, stepKey, WorkflowStepState.SUCCEEDED, "step.succeeded", leaseEpoch);
         checkpointAdapter.saveCheckpoint(
             tenantId, runId, stepKey, leaseEpoch, STEP_OUTPUT_SCHEMA_VERSION, result.output());
       } else {
         // A non-throwing FAILED is a decided domain outcome: permanent, no fault to classify.
-        transitionStep(tenantId, runId, stepKey, WorkflowStepState.FAILED, "step.failed");
+        transitionStep(
+            tenantId, runId, stepKey, WorkflowStepState.FAILED, "step.failed", leaseEpoch);
       }
     } catch (RunExecutionLimitExceeded limitEx) {
       // A per-run limit was exceeded: close the run and the current step to a documented,
       // controlled
       // FAILED (S11-13), then unwind so the poll loop starts no further step for this run this
       // poll.
-      failRunDueToLimit(tenantId, runId, stepKey, limitEx);
+      failRunDueToLimit(tenantId, runId, stepKey, limitEx, leaseEpoch);
       throw limitEx;
     } catch (Throwable failure) {
       // S07-11: classify the fault the handler threw. Retry transient infra / provider faults;
@@ -678,7 +687,7 @@ public class WorkflowWorker implements DisposableBean {
                 RunExecutionLimits.Limit.RETRIES,
                 executionLimits.maxRetries(),
                 monitor.retriesUsed());
-        failRunDueToLimit(tenantId, runId, stepKey, limitEx);
+        failRunDueToLimit(tenantId, runId, stepKey, limitEx, leaseEpoch);
         throw limitEx;
       }
       if (next == WorkflowStepState.RETRY_WAIT) {
@@ -692,7 +701,8 @@ public class WorkflowWorker implements DisposableBean {
           next,
           failureInfo.errorClass().errorClass(),
           failureInfo.safeReason(),
-          "step." + next.name().toLowerCase(Locale.ROOT));
+          "step." + next.name().toLowerCase(Locale.ROOT),
+          leaseEpoch);
     } finally {
       // S13-11: record the step-handler duration (one sample per handler invocation).
       stepDuration.record(Duration.between(stepStartedAt, clock.instant()));
@@ -755,7 +765,11 @@ public class WorkflowWorker implements DisposableBean {
    * so the next poll reconciles the run to {@code FAILED}.
    */
   private void failRunDueToLimit(
-      UUID tenantId, UUID runId, String stepKey, RunExecutionLimitExceeded limitEx) {
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      RunExecutionLimitExceeded limitEx,
+      int leaseEpoch) {
     transitionStepError(
         tenantId,
         runId,
@@ -763,8 +777,10 @@ public class WorkflowWorker implements DisposableBean {
         WorkflowStepState.FAILED,
         limitEx.errorClass(),
         limitEx.safeReason(),
-        "step.failed");
-    transitionRunError(tenantId, runId, WorkflowRunState.FAILED, "run.limit-exceeded", limitEx);
+        "step.failed",
+        leaseEpoch);
+    transitionRunError(
+        tenantId, runId, WorkflowRunState.FAILED, "run.limit-exceeded", limitEx, leaseEpoch);
   }
 
   /**
@@ -801,13 +817,22 @@ public class WorkflowWorker implements DisposableBean {
     // Park the run first (the higher-level pause); if the run's lease moved, the run is not ours
     // and the pause changes nothing — the next poll recovers (invariant 5).
     if (!transitionRun(
-        tenantId, runId, WorkflowRunState.WAITING_FOR_APPROVAL, "run.approval-needed")) {
+        tenantId,
+        runId,
+        WorkflowRunState.WAITING_FOR_APPROVAL,
+        "run.approval-needed",
+        leaseEpoch)) {
       return;
     }
     // Park the step; the transition service concludes the step's in-flight attempt (leaving
     // RUNNING), so no attempt lifecycle marker is left dangling (invariant 4).
     transitionStep(
-        tenantId, runId, stepKey, WorkflowStepState.WAITING_FOR_APPROVAL, "step.approval-needed");
+        tenantId,
+        runId,
+        stepKey,
+        WorkflowStepState.WAITING_FOR_APPROVAL,
+        "step.approval-needed",
+        leaseEpoch);
     log.info(
         "run {} paused at the human-approval boundary: step={} action={}", runId, stepKey, action);
     // Release the run's lease (best-effort): the run is paused, not owned by a live worker, so
@@ -858,7 +883,7 @@ public class WorkflowWorker implements DisposableBean {
   }
 
   /** Reconcile the run state once its steps are quiescent (S07-08). */
-  private void reconcileRun(UUID tenantId, UUID runId) {
+  private void reconcileRun(UUID tenantId, UUID runId, int leaseEpoch) {
     List<StepStatusRow> statuses = stepRepository.findStepStatuses(tenantId, runId);
     if (statuses.stream().anyMatch(s -> !s.status().isTerminal())) {
       // Work still pending (an approval pause, a retry backoff, or simply not yet ready): leave the
@@ -876,13 +901,13 @@ public class WorkflowWorker implements DisposableBean {
             .map(status -> WorkflowRunState.CANCEL_REQUESTED.equals(status))
             .orElse(false);
     if (cancelling) {
-      transitionRun(tenantId, runId, WorkflowRunState.CANCELLED, "run.cancelled");
+      transitionRun(tenantId, runId, WorkflowRunState.CANCELLED, "run.cancelled", leaseEpoch);
       return;
     }
     if (allSucceeded) {
-      transitionRun(tenantId, runId, WorkflowRunState.SUCCEEDED, "run.finished");
+      transitionRun(tenantId, runId, WorkflowRunState.SUCCEEDED, "run.finished", leaseEpoch);
     } else {
-      transitionRun(tenantId, runId, WorkflowRunState.FAILED, "run.failed");
+      transitionRun(tenantId, runId, WorkflowRunState.FAILED, "run.failed", leaseEpoch);
     }
   }
 
@@ -942,8 +967,13 @@ public class WorkflowWorker implements DisposableBean {
    * progress in the outer transaction (invariant 4), so the run is retried on the next poll.
    */
   private void transitionStep(
-      UUID tenantId, UUID runId, String stepKey, WorkflowStepState to, String eventType) {
-    transitionService.transitionStep(tenantId, runId, stepKey, to, eventType, actor);
+      UUID tenantId,
+      UUID runId,
+      String stepKey,
+      WorkflowStepState to,
+      String eventType,
+      int leaseEpoch) {
+    transitionService.transitionStep(tenantId, runId, stepKey, to, eventType, actor, leaseEpoch);
   }
 
   /**
@@ -960,9 +990,10 @@ public class WorkflowWorker implements DisposableBean {
       WorkflowStepState to,
       String errorClass,
       String safeReason,
-      String eventType) {
+      String eventType,
+      int leaseEpoch) {
     transitionService.transitionStep(
-        tenantId, runId, stepKey, to, eventType, errorClass, safeReason);
+        tenantId, runId, stepKey, to, eventType, errorClass, safeReason, leaseEpoch);
   }
 
   /**
@@ -970,9 +1001,10 @@ public class WorkflowWorker implements DisposableBean {
    * tenant / missing run ({@code 404}) or a lost lease fence ({@code 409}), in which case the run
    * is not ours this poll.
    */
-  private boolean transitionRun(UUID tenantId, UUID runId, WorkflowRunState to, String eventType) {
+  private boolean transitionRun(
+      UUID tenantId, UUID runId, WorkflowRunState to, String eventType, int leaseEpoch) {
     try {
-      transitionService.transitionRun(tenantId, runId, to, eventType, actor);
+      transitionService.transitionRun(tenantId, runId, to, eventType, actor, leaseEpoch);
       return true;
     } catch (ResponseStatusException e) {
       return false;
@@ -991,10 +1023,18 @@ public class WorkflowWorker implements DisposableBean {
       UUID runId,
       WorkflowRunState to,
       String eventType,
-      RunExecutionLimitExceeded limitEx) {
+      RunExecutionLimitExceeded limitEx,
+      int leaseEpoch) {
     try {
       transitionService.transitionRun(
-          tenantId, runId, to, eventType, actor, limitEx.errorClass(), limitEx.safeReason());
+          tenantId,
+          runId,
+          to,
+          eventType,
+          actor,
+          limitEx.errorClass(),
+          limitEx.safeReason(),
+          leaseEpoch);
       return true;
     } catch (ResponseStatusException e) {
       log.debug(
