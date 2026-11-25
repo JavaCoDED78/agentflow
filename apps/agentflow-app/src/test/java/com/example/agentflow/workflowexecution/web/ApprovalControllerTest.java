@@ -24,10 +24,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Verifies the approval-decision endpoint against {@link ApprovalController} in isolation with
@@ -205,6 +207,70 @@ class ApprovalControllerTest {
                 .header("Idempotency-Key", "not-a-uuid")
                 .content("{\"decision\":\"approve\"}"))
         .andExpect(status().isBadRequest());
+  }
+
+  /**
+   * A cross-tenant approval is reported exactly like a missing one: {@code 404} with {@code
+   * error_class: not_found}, and the body carries nothing that identifies the resource — not the
+   * approval id, not the run, not the decision (the 403/404 masking policy, invariant 1). The
+   * tenant-scoped lookup misses, so the caller cannot tell a foreign approval from a non-existent
+   * one by the status or the problem body.
+   */
+  @Test
+  void approve_cross_tenant_approval_is_not_found_identical_to_missing() throws Exception {
+    when(approvalService.approve(
+            eq(TENANT), eq("local"), eq(RUN), eq(APPROVAL), any(), any(), any()))
+        .thenThrow(
+            new ResponseStatusException(
+                HttpStatus.NOT_FOUND, "approval " + APPROVAL + " was not found for this tenant"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/runs/{runId}/approvals/{approvalId}", RUN, APPROVAL)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"decision\":\"approve\"}"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class").value("not_found"))
+        .andExpect(jsonPath("$.approvalId").doesNotExist())
+        .andExpect(jsonPath("$.runId").doesNotExist())
+        .andExpect(jsonPath("$.stepKey").doesNotExist())
+        .andExpect(jsonPath("$.decisionActor").doesNotExist())
+        .andExpect(jsonPath("$.decisionComment").doesNotExist());
+
+    // the service received the configured tenant: the endpoint never passes anything from the
+    // request
+    verify(approvalService)
+        .approve(eq(TENANT), eq("local"), eq(RUN), eq(APPROVAL), any(), any(), any());
+  }
+
+  /**
+   * The same masking applies to the reject path: a cross-tenant approval cannot be rejected either.
+   * The service raises a {@code 404} (the tenant-scoped lookup misses), so the caller gets the
+   * identical not-found problem as for a missing approval, without the decision being visible.
+   */
+  @Test
+  void reject_cross_tenant_approval_is_not_found_identical_to_missing() throws Exception {
+    when(approvalService.reject(
+            eq(TENANT), eq("local"), eq(RUN), eq(APPROVAL), any(), any(), any()))
+        .thenThrow(
+            new ResponseStatusException(
+                HttpStatus.NOT_FOUND, "approval " + APPROVAL + " was not found for this tenant"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/runs/{runId}/approvals/{approvalId}", RUN, APPROVAL)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"decision\":\"reject\"}"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.error_class").value("not_found"))
+        .andExpect(jsonPath("$.approvalId").doesNotExist())
+        .andExpect(jsonPath("$.runId").doesNotExist())
+        .andExpect(jsonPath("$.stepKey").doesNotExist())
+        .andExpect(jsonPath("$.decisionActor").doesNotExist())
+        .andExpect(jsonPath("$.decisionComment").doesNotExist());
+
+    verify(approvalService)
+        .reject(eq(TENANT), eq("local"), eq(RUN), eq(APPROVAL), any(), any(), any());
   }
 
   private static ApprovalDecisionDto decided() {
