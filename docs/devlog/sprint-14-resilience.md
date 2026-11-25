@@ -4,10 +4,45 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-05 — broker restart and publisher crash](#s14-05--broker-restart-and-publisher-crash)
 - [S14-04 — duplicates and reordered events](#s14-04--duplicates-and-reordered-events)
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-05 — broker restart and publisher crash
+
+### What changed
+
+One new integration suite, [`BrokerRestartPublisherCrashIT`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/messaging/worker/BrokerRestartPublisherCrashIT.java) (2 tests, Testcontainers — real PostgreSQL `pgvector/pgvector:0.8.6-pg18` + the real `apache/kafka:4.3.1` container, stopped and started mid-test, no hand-set row), closing the broker-restart / publisher-crash half of the Sprint 14 acceptance criterion — the event is **eventually delivered** and the duplicate is **handled idempotently** — against a live broker rather than a dead port:
+
+- **`broker_restart_at_the_moment_of_publication_delivers_the_event_after_recovery`** — the broker is stopped while a publish attempt is in flight. The send is gated on a latch, so it provably happens while Kafka is down: the publisher thread reaches the send (armed), `kafka.stop()` runs, then the send is released. The producer is pointed at the dead bootstrap, so the attempt fails fast (`retries=0`, short `request.timeout.ms` / `connection.timeout.ms` — the S06-14 dead-port posture, but against the real stopped container) and is classified a retryable transient fault. The row survives the restart as a durable `FAILED` (`attempts=1`, never lost, never falsely `SENT`). After `kafka.start()` (a fresh container), the stale `FAILED` row — `next_attempt_at` aged into the past — is re-selected, claimed and delivered to the fresh broker: `SENT`, exactly one copy on the broker, inbox-deduped, exactly one business transition, outbox fully drained.
+- **`publisher_crash_after_broker_ack_before_db_update_republishes_as_duplicate`** — the publisher delivers to the real broker through the production `MessageDeliverer` (a real send, broker ack) and is then simulated as crashed: the send happens, then the poll throws in-process — the row is left `CLAIMED` by the production claim path itself, not by a hand-edit (the S06-14 test models the same window by hand-setting the row back to `CLAIMED`). The broker holds one copy; `claimed_at` is aged a day to model the elapsed time before recovery. The stale claim is re-selected and re-published — a duplicate, never a loss: the broker ends with two copies, the inbox dedups both to a single business transition (`PROCESSED` then `OTHER_CLAIMED`, one transition, one `PROCESSED` inbox row), outbox fully drained.
+
+Both tests drive the production `OutboxPublisherService` and `InboxDedupService` paths (the claim / publish / outcome state machine, not a test-local copy), with a fresh tenant and topic per test — so the two tests are isolated on the shared containers — and the real Flyway-applied schema (`classpath:migrations`, the same image as CI). No production change — test-only task.
+
+### Why
+
+`S14-05` is the P0 Sprint-14 task: "перезапустить Kafka в момент публикации; остановить publisher после broker ack до database update; восстановить сервис и проверить eventual delivery". The S06-14 outage test proves the same guarantee against a **dead port** (the producer never talks to a real broker), and the S06-10 crash-window test hand-edits the row after a full `pollOnce()` succeeded. `S14-05` closes the two gaps: a **real broker restart at the moment of publication** — the container is actually stopped while the send is in flight, the attempt provably happens against the dead broker, and the recovery pass delivers to a fresh broker; and a **crash in the real window** — the publisher dies after the broker ack and before the outcome update, leaving the row `CLAIMED` by the production path itself (the recovery pass re-claims the stale claim through the S06-08 stale-claim bound, exercised without a hand-edit).
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:integrationTest --tests '*BrokerRestartPublisherCrashIT*'` — BUILD SUCCESSFUL, **2 tests, 0 failures, 0 errors** (JUnit XML: `tests="2" skipped="0" failures="0" errors="0"`, fresh `timestamp` on this run).
+- Sibling suites in the package green in the same run window: `ReliabilityScenarioIT` 3/0, `KafkaMessageDelivererIT` 3/0.
+- `./gradlew :apps:agentflow-app:integrationTest --rerun-tasks` — BUILD SUCCESSFUL in 5m22s, **39 suites / 184 tests, 0 failures, 0 errors, 0 skipped** (38/182 → 39/184; full XML counted with a script).
+- `./gradlew :apps:agentflow-app:check --rerun-tasks` — BUILD SUCCESSFUL in 1m07s (8/8 tasks executed, not cached): unit + architecture + formatting (`spotlessCheck`) + OpenAPI baseline re-run, EXIT=0.
+
+### Docs
+
+- `CHANGELOG.md` — Unreleased / Added entry (newest-first).
+- `docs/devlog/sprint-14-resilience.md` — this file (S14-05 section + contents line).
+- `docs/testing/failure-matrix.md` — Kafka row evidence (the new suite).
+
+### Scope / follow-up
+
+No DLQ scenario is exercised here (the failure is transient/ambiguous, retried at bounded backoff — the DLQ path is `S06-11`, out of scope). The crash in the second test is simulated in-process (the poll throws after the broker ack), not a real process `kill -9` — the honest limit of this task's coverage: the durable row is left exactly as a real crash would leave it (`CLAIMED`, stale `claimed_at`, `published_at` never stamped), and the recovery pass re-claims it through the production stale-claim bound. The first test's restart half is fully real — the live `apache/kafka:4.3.1` container is stopped and started mid-test, and the send is made against the dead bootstrap. `S14-07` (PostgreSQL outage / unknown commit) and the rest of the Sprint 14 thread remain out of scope.
 
 ---
 
