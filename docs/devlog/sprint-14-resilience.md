@@ -4,9 +4,44 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-04 — duplicates and reordered events](#s14-04--duplicates-and-reordered-events)
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-04 — duplicates and reordered events
+
+### What changed
+
+One new integration suite, [`DuplicateAndReorderedEventsIT`](../../apps/agentflow-app/src/integrationTest/java/com/example/agentflow/workflowexecution/application/DuplicateAndReorderedEventsIT.java) (3 tests, Testcontainers on real `pgvector/pgvector:0.8.6-pg18`, direct construction — the same pattern as `InboxDedupConcurrencyIT` / `WorkflowTransitionIntegrationTest`), closing the duplicate/reordered-event half of the Sprint 14 acceptance criterion — **no double business effects and no forbidden transitions** under at-least-once delivery (ADR-003):
+
+- **`same_event_id_delivered_repeatedly_runs_the_business_action_exactly_once`** — the same `event_id` delivered five times sequentially through the production `InboxDedupService` (with the real `RunStateMachineService` as the business action). The first claim proceeds, the remaining four are `OTHER_CLAIMED`; the business effect runs exactly once (one transition + one `workflow_events` history row + one `PROCESSED` inbox row, asserted via the production read paths), and the run ends `RUNNING`.
+- **`events_of_one_run_delivered_out_of_order_never_apply_a_forbidden_transition`** — the two events of one run (`run.started`, `run.succeeded`) delivered in reverse order. The terminal event arrives first (`QUEUED -> SUCCEEDED`, no edge) and is refused by the **production** domain gate (the 400 path of `RunStateMachineService`, which throws before any write); the inbox row is held `FAILED` with the bounded retry recorded (`attempts=2` for `maxAttempts=2`), never `PROCESSED`. The legal event then applies (`QUEUED -> RUNNING`), so the run ends `RUNNING` with exactly one history row — the refused event left nothing behind.
+- **`events_of_one_run_delivered_in_order_apply_both_transitions_and_reach_the_terminal_state`** — the valid counterpart: both events delivered in order, both apply, the run reaches the terminal `SUCCEEDED` state, history has exactly two rows (`run.started` + `run.succeeded`), both inbox rows `PROCESSED`. This is also the proof that the inbox boundary drives a complete run end to end, not just the refusal path.
+
+Events are modelled at the **inbox boundary** (the seam production consumers use), not at the broker: an event of a run is the transition its envelope carries, each delivered through a fresh claim — the broker-level partition-ordering question is orthogonal to the guards under test (Kafka preserves per-partition order; it does not create out-of-order delivery within a partition). The business action is the production `RunStateMachineService`, so the guard is the production gate, not a test-local re-check. No production change — test-only task.
+
+### Why
+
+`S14-04` is the P0 Sprint-14 task: "доставить один event ID многократно; перемешать события одного run; проверить inbox uniqueness и transition guards — нет двойных business effects и запрещённых transitions". The existing S06 duplicate/concurrency suites prove a single duplicate pair and a 4-thread race (one transition, one inbox row); `S14-04` closes the three gaps the S06 tests do not cover: sequential multi-delivery of one event id, out-of-order delivery of a run's own events (an inbox consumer must never apply a transition the run is not allowed to take), and the legal counterpart that proves the guards do not over-reject.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:integrationTest --tests '*DuplicateAndReorderedEventsIT*'` — BUILD SUCCESSFUL, **3 tests, 0 failures, 0 errors** (JUnit XML confirmed: `tests="3" skipped="0" failures="0" errors="0"`, fresh `timestamp` on this run).
+- `./gradlew :apps:agentflow-app:check --rerun-tasks` — EXIT=0, BUILD SUCCESSFUL (48s, 8 tasks: unit + architecture + spotless + OpenAPI baseline re-run, not cached).
+- `./gradlew :apps:agentflow-app:integrationTest` — BUILD SUCCESSFUL, **38 suites / 182 tests, 0 failures, 0 errors, 0 skipped** (37/179 → 38/182: +1 suite, +3 tests; full XML counted with a script, the new suite's XML confirmed separately above).
+- `spotlessCheck` green on the new file (`spotlessApply` run once after the first draft — the file was re-wrapped, re-run green).
+
+### Docs
+
+- `CHANGELOG.md` — Unreleased / Added entry.
+- `docs/devlog/sprint-14-resilience.md` — this file (S14-04 section + contents line; the S14-03 follow-up note that named S14-04 as out of scope is left as-is — it records the state of S14-03, not of S14-04).
+
+### Scope / follow-up
+
+No broker-level reordering is asserted — per-partition order is a Kafka guarantee, and the consistency guarantee under test lives at the inbox/transition seam where the guards are. Step-level event reordering is not separately exercised (the step state machine is guarded by the same domain-gate + conditional-update + fence pattern, covered by the S07/S14-06 worker-concurrency tests). `S14-05` (broker restart / publisher crash) and the rest of the Sprint 14 thread remain out of scope.
 
 ---
 
