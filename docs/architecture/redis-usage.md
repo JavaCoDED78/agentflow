@@ -113,17 +113,21 @@ so an unavailable Redis can never drop a pod from rotation.
 
 ## 5. Metrics and observability
 
-Everything observable about Redis is deliberately small and label-free (invariant 9):
+Everything observable about Redis is deliberately small (invariant 9) — only closed label value sets,
+never a tenant / user / run / document id. The S13-22 catalogue entry (machine-checked by the
+`TelemetryPrivacyTest` catalogue walk):
 
 | Signal | Where | Notes |
 |---|---|---|
 | `redis` health group | `/actuator/health/cache` (HTTP) · `RedisHealthIndicator` | `UP` with the `PONG`, `DOWN` on any failure; not in readiness/liveness |
-| `agentflow.redis.rate_limit.fallback_open` (Counter) | Micrometer, registered by `RedisRateLimiter` | one increment per Redis failure, no tenant / principal / id in the label |
+| `agentflow.redis.command.latency.seconds` (Timer) | Micrometer, registered by `RedisRateLimiter` | one sample per Redis command (just before the command through its conclusion), labels `operation` (`rate_limit`) and `result` (`succeeded` / `failed`); `percentiles-histogram` opt-in so p95 is renderable |
+| `agentflow.redis.command.errors.total` (Counter) | Micrometer, registered by `RedisRateLimiter` | one increment per failed Redis command, label `operation` (`rate_limit`) |
+| `agentflow.redis.rate_limit.decision.total` (Counter) | Micrometer, registered by `RedisRateLimiter` | one increment per throttled-group decision, labels `group` (lowercase enum name: `create_run` / `upload` / `search_debug` / `ops`) and `result` (`allowed` / `limited` / `fallback`) |
+| `agentflow.redis.rate_limit.fallback_open` (Counter) | Micrometer, registered by `RedisRateLimiter` | one increment per Redis failure, no label |
 
-Follow-ups (S13-22): Redis latency / command-error metrics, rate-limit decision outcomes
-(allowed / limited / fallback), the fail-open fallback counter surfaced to the dashboard and an
-alert ("Redis unavailable") with the runbook linked. Do not add tenant / user / run / document
-identifiers as labels.
+The `agentflow.redis.*` signals feed the API/JVM/DB dashboard (panels 13–16) and the
+`redis-unavailable` alert (`agentflow-redis-unavailable`, warning: `rate(agentflow_redis_command_errors_total[5m]) > 0` for 5m — see `docs/runbooks/redis-outage.md`).
+Do not add tenant / user / run / document identifiers as labels.
 
 ## 6. Configuration reference
 
@@ -171,7 +175,7 @@ Checked live (app booted against the `local` profile with a real Redis):
 - The `redis` contributor through `HealthEndpoint` (the orchestrator probe path, S12-17) is `DOWN`
   while readiness is `UP` — `RedisHealthIndicatorReadinessIsolationTest`.
 - The rate-limit fail-open is proven against a real `redis:8.10.2` container —
-  `RedisRateLimiterIT` (`globalLimitIsGlobalAcrossTwoInstances`, `failsOpenWhenRedisIsUnavailable`).
+  `RedisRateLimiterIT` (`two_limiter_instances_observe_a_single_global_limit`, `fails_open_to_the_in_memory_limiter_when_redis_is_unreachable`).
 
 ## 8. Related
 

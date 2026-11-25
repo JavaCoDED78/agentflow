@@ -60,7 +60,7 @@ class RateLimitInterceptorTest {
   }
 
   @Test
-  void rejectsTheRequestAfterTheBudgetIsExceeded() {
+  void rejects_the_request_after_the_budget_is_exceeded() {
     RateLimitInterceptor interceptor = interceptor(3);
 
     assertThat(interceptor.preHandle(postRunRequest(), null, null)).isTrue();
@@ -75,7 +75,7 @@ class RateLimitInterceptorTest {
   }
 
   @Test
-  void allowsEveryRequestWhenTheGroupHasNoBudget() {
+  void allows_every_request_when_the_group_has_no_budget() {
     // CREATE_RUN is absent from the policy -> unthrottled -> every request passes.
     RateLimitPolicy policy = new RateLimitPolicy(true, Map.of());
     limiter = new InMemoryRateLimiter(policy, Clock.fixed(BASE, UTC), 10_000);
@@ -89,7 +89,7 @@ class RateLimitInterceptorTest {
   }
 
   @Test
-  void doesNotThrottleNonPostMethodsToTheRunEndpoint() {
+  void does_not_throttle_non_post_methods_to_the_run_endpoint() {
     RateLimitInterceptor interceptor = interceptor(1);
     HttpServletRequest request = mock(HttpServletRequest.class);
     when(request.getMethod()).thenReturn("GET");
@@ -99,7 +99,7 @@ class RateLimitInterceptorTest {
   }
 
   @Test
-  void doesNotThrottleEndpointsThatMapToNoGroup() {
+  void does_not_throttle_endpoints_that_map_to_no_group() {
     RateLimitInterceptor interceptor = interceptor(1);
     // Health / actuator path matches no declared binding, so it is never throttled.
     HttpServletRequest request = mock(HttpServletRequest.class);
@@ -110,7 +110,7 @@ class RateLimitInterceptorTest {
   }
 
   @Test
-  void enforcesSeparateBudgetsPerTenant() {
+  void enforces_separate_budgets_per_tenant() {
     limiter =
         new InMemoryRateLimiter(
             policy(1, RateLimitGroup.CREATE_RUN), Clock.fixed(BASE, UTC), 10_000);

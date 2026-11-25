@@ -181,9 +181,9 @@ The in-memory limiter throttles per JVM, so a multi-replica deployment could eac
 
 ### Acceptance
 
-- The Redis `RateLimiter` counts one global budget across instances: two limiter instances wired to one Redis serve exactly the budget (60) of 120 calls (`RedisRateLimiterIT#globalLimitIsGlobalAcrossTwoInstances`).
+- The Redis `RateLimiter` counts one global budget across instances: two limiter instances wired to one Redis serve exactly the budget (60) of 120 calls (`RedisRateLimiterIT#two_limiter_instances_observe_a_single_global_limit`).
 - Per-window reset: the counter is per window (window index in the key).
-- Fail-open: on a throwing template the adapter returns the in-memory result and increments the `fallback_open` meter (`RedisRateLimiterTest`, `RedisRateLimiterIT#failsOpenWhenRedisIsUnavailable`).
+- Fail-open: on a throwing template the adapter returns the in-memory result and increments the `fallback_open` meter (`RedisRateLimiterTest`, `RedisRateLimiterIT#fails_open_to_the_in_memory_limiter_when_redis_is_unreachable`).
 - No secret / no high-cardinality label: the `fallback_open` meter carries only the metric name; the principal is hashed (SHA-256, first 12 bytes hex) before it is put in the key.
 - The adapter compiles and boots with Redis disabled (the in-memory adapter is produced instead).
 
@@ -195,7 +195,7 @@ Unit, DB-free, JUnit-XML-verified, **fresh this run**:
 
 Integration, real Redis, Testcontainers **fresh this run**:
 
-- `RedisRateLimiterIT` — `tests="2"` `failures="0"` `errors="0"` `skipped="0"`: `globalLimitIsGlobalAcrossTwoInstances` (two instances on one `redis:8.10.2` serve exactly 60 of 120) and `failsOpenWhenRedisIsUnavailable` (an unreachable port fails open to the in-memory limiter and the `fallback_open` meter counts 2).
+- `RedisRateLimiterIT` — `tests="2"` `failures="0"` `errors="0"` `skipped="0"`: `two_limiter_instances_observe_a_single_global_limit` (two instances on one `redis:8.10.2` serve exactly 60 of 120) and `fails_open_to_the_in_memory_limiter_when_redis_is_unreachable` (an unreachable port fails open to the in-memory limiter and the `fallback_open` meter counts 2).
 
 `./gradlew :apps:agentflow-app:check --rerun-tasks` green — unit + architecture (`ArchitectureBoundaryTest` — `RedisRateLimiter` is in `common.ratelimit`, importing only `common` / `common.redis`; the ALLOW map is unchanged) + no-cycles + formatting (`spotlessCheck`) + OpenAPI contract. The `RedisPasswordLeakTest` canary scan also passes.
 

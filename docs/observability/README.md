@@ -105,7 +105,7 @@ The catalogue covers (details in [`metrics.md`](metrics.md)):
 | Workflow execution | `workflowexecution` | `agentflow.workflowexecution.run.total{state}`, `run.duration.seconds`, `step.duration.seconds`, `step.retry.total`, `step.cancelled.total`, `lease.expired.total` |
 | Messaging | `messaging` | `agentflow.messaging.outbox.pending.events`, `outbox.oldest.age.seconds`, `outbox.publish.attempts.total{outcome}`, `outbox.publish.retries.total`, `consumer.lag.count`, `consumer.processing.failures.total{outcome}` |
 | AI/RAG | `ai` / `usage` / `knowledgebase` / `toolexecution` / `ingestion` | `agentflow.ai.provider.chat.latency.seconds` / `.errors.total{reason}` / `.tokens.*.total`, `agentflow.usage.estimated.cost.usd`, `agentflow.toolexecution.tool.duration.seconds{outcome}`, `agentflow.knowledgebase.retrieval.*`, `agentflow.ingestion.index.failures.total` |
-| Redis | `common` (`rate_limit`) | `agentflow.redis.rate_limit.fallback_open` |
+| Redis | `common` (`rate_limit`) | `agentflow.redis.command.latency.seconds{operation, result}`, `agentflow.redis.command.errors.total{operation}`, `agentflow.redis.rate_limit.decision.total{group, result}`, `agentflow.redis.rate_limit.fallback_open` |
 | Boot-native HTTP/JVM/DB-pool | `config` | `http_server_requests_seconds` (histogram opt-in), `jvm_*`, `process_cpu_usage`, `hikaricp_connections*` |
 
 The scrape-token section below is the one operational command for this family (a placeholder token cannot scrape).
@@ -152,14 +152,15 @@ The alert rules live in [`infra/observability/grafana/provisioning/alerting/agen
 | `agentflow-expired-leases` | AgentFlow expired leases (stuck runs) | warning | 5m | `rate(agentflow_workflowexecution_lease_expired_total[5m]) > 0` | [`expired-leases.md`](../runbooks/expired-leases.md) |
 | `agentflow-provider-failures` | AgentFlow provider failures | warning | 5m | `rate(agentflow_ai_provider_chat_errors_total[5m]) + rate(agentflow_ai_provider_embedding_errors_total[5m]) > 0` | [`provider-failures.md`](../runbooks/provider-failures.md) |
 | `agentflow-ingestion-failures` | AgentFlow ingestion failures | warning | 5m | `rate(agentflow_ingestion_index_failures_total[5m]) > 0` | [`ingestion-failures.md`](../runbooks/ingestion-failures.md) |
+| `agentflow-redis-unavailable` | AgentFlow Redis unavailable | warning | 5m | `rate(agentflow_redis_command_errors_total[5m]) > 0` | [`redis-outage.md`](../runbooks/redis-outage.md) |
 
 Every rule carries:
 
 - **Owner:** engineering (on-call) — every runbook header declares it.
 - **Action:** the runbook — each one walks the symptoms, the honest local-dev state, the `curl`/dashboard diagnostics, the causes and the safe mitigations, the recovery criterion and the escalation note; see [`../runbooks/README.md`](../runbooks/README.md) for the index.
-- **noDataState:** `Alerting` for the scrape-target-down rule (a target vanishing from discovery is as alertable as `up == 0`); `OK` for the seven operational rules (silent on missing series — pages only on a real breach). `execErrState: Error` everywhere.
+- **noDataState:** `Alerting` for the scrape-target-down rule (a target vanishing from discovery is as alertable as `up == 0`); `OK` for the eight operational rules (silent on missing series — pages only on a real breach). `execErrState: Error` everywhere.
 
-**SLO status — honestly.** There are no SLO definitions yet: the alert thresholds in the table above are baseline values (S13-17), not SLOs. SLO definitions land with the SLO work (`S14-16` / `S16-14`); the runbooks reference the `for` guard as the recovery-criterion anchor until then. The local API boot honestly produces no workflow/messaging/AI series — the operational rules stay `inactive`/`Normal (NoData)` and the scrape rule honestly fires (the local API boot is not scraped). This is documented, not a defect.
+**SLO status — honestly.** There are no SLO definitions yet: the alert thresholds in the table above are baseline values (S13-17), not SLOs. SLO definitions land with the SLO work (`S14-16` / `S16-14`); the runbooks reference the `for` guard as the recovery-criterion anchor until then. The local API boot honestly produces no workflow/messaging/AI series — the operational rules stay `inactive`/`Normal (NoData)` for those, the Redis-unavailable rule stays `inactive`/`Normal (NoData)` while Redis is reachable (the error counter is never registered until a command fails) and the scrape rule honestly fires (the local API boot is not scraped). This is documented, not a defect.
 
 The `agentflow-scrape-target-down` rule is the one P0-style operational rule wired to the stack's own health: it fires when `up{job=~"agentflow-api|otel-collector"}` is below 1 for more than 1 m. The two `critical` operational rules (API 5xx, DB saturation) are the user-facing health signals.
 
@@ -214,7 +215,7 @@ When the stack is broken, the order of checks is:
 1. **Health** — `docker compose --file infra/compose/docker-compose.yml --profile observability ps` (the five services report healthy; a distroless service fails the check via its config-verify binary, so a broken config edit fails loudly).
 2. **Collector** — `GET localhost:13133/ready` (`health_check` extension) and the collector's own metrics (`http://localhost:9090/api/v1/query?query=otelcol_process_uptime`).
 3. **Scrape** — `http://localhost:9090/api/v1/targets` (both jobs `UP`; `agentflow-api` DOWN while the app is not running is the honest local state), and `http://localhost:9090/api/v1/query?query=up{job="otel-collector"}`.
-4. **Grafana** — `GET /api/datasources` (all five, `readOnly: true`), `GET /api/v1/provisioning/alert-rules` (all eight rules present), `GET /api/dashboards/uid/<uid>` (provisioned).
+4. **Grafana** — `GET /api/datasources` (all five, `readOnly: true`), `GET /api/v1/provisioning/alert-rules` (all nine rules present), `GET /api/dashboards/uid/<uid>` (provisioned).
 5. **Backends** — Tempo search `GET localhost:3200/api/search?tags=service.name=agentflow-smoke`; Loki `GET localhost:3100/loki/api/v1/labels` (only `service_name` / `deployment_environment`); Prometheus UI `http://localhost:9090/targets`.
 6. **Clean re-provision** — `bash scripts/observability-clean-start-test.sh` drops the state volumes, brings the stack up and verifies the surfaces from Git (28 checks).
 
