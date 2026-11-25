@@ -1,6 +1,7 @@
 package com.example.agentflow.workflowexecution.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
@@ -355,6 +356,207 @@ class RunStateMachineServiceTest {
                     null));
 
     assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Claimed-epoch (fencing) variants - the worker's write boundary (S14-06)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void transition_run_claimed_epoch_fences_the_conditional_update_on_the_claimed_epoch() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    when(runRepository.findState(tenant, runId))
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 3, 4)));
+
+    // the claimed epoch matches the row: the update is fenced on the claim
+    service.transitionRun(
+        tenant, runId, WorkflowRunState.SUCCEEDED, "run.finished", "agentflow-worker", 4);
+
+    verify(runRepository)
+        .transition(runId, tenant, WorkflowRunState.RUNNING, 3, 4, WorkflowRunState.SUCCEEDED);
+  }
+
+  @Test
+  void transition_run_claimed_epoch_conflict_is_a_409_before_the_conditional_update() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    // a competing worker re-claimed the run and bumped the fence: the stale owner's write must be
+    // refused before any update runs - the claim returned 3, the row now fences on 4
+    when(runRepository.findState(tenant, runId))
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 3, 4)));
+
+    ResponseStatusException ex =
+        expectException(
+            () ->
+                service.transitionRun(
+                    tenant,
+                    runId,
+                    WorkflowRunState.SUCCEEDED,
+                    "run.finished",
+                    "agentflow-worker",
+                    3));
+
+    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), anyInt(), any());
+    verify(eventService, never()).append(any(), any(), any(), any(), any());
+    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+  }
+
+  @Test
+  void transition_run_claimed_epoch_not_positive_is_an_illegal_argument() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    when(runRepository.findState(tenant, runId))
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 3, 4)));
+
+    assertThatThrownBy(
+            () ->
+                service.transitionRun(
+                    tenant,
+                    runId,
+                    WorkflowRunState.SUCCEEDED,
+                    "run.finished",
+                    "agentflow-worker",
+                    0))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), anyInt(), any());
+  }
+
+  @Test
+  void
+      transition_run_fault_variant_claimed_epoch_conflict_is_a_409_before_the_conditional_update() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    when(runRepository.findState(tenant, runId))
+        .thenReturn(Optional.of(new RunStateSnapshot(WorkflowRunState.RUNNING, 3, 4)));
+
+    ResponseStatusException ex =
+        expectException(
+            () ->
+                service.transitionRun(
+                    tenant,
+                    runId,
+                    WorkflowRunState.FAILED,
+                    "run.limit-exceeded",
+                    "agentflow-worker",
+                    "limit_exceeded",
+                    "run past wall clock",
+                    3));
+
+    verify(runRepository, never()).transition(any(), any(), any(), anyInt(), anyInt(), any());
+    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+  }
+
+  @Test
+  void transition_step_claimed_epoch_fences_the_conditional_update_on_the_claimed_epoch() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID stepId = UUID.randomUUID();
+    String stepKey = "tool_call";
+    when(stepRepository.findState(tenant, runId, stepKey))
+        .thenReturn(
+            Optional.of(new StepStateSnapshot(stepId.toString(), WorkflowStepState.RUNNING, 4)));
+
+    service.transitionStep(
+        tenant,
+        runId,
+        stepKey,
+        WorkflowStepState.SUCCEEDED,
+        "step.succeeded",
+        "agentflow-worker",
+        4);
+
+    verify(stepRepository)
+        .transition(
+            runId, tenant, stepKey, WorkflowStepState.RUNNING, 4, WorkflowStepState.SUCCEEDED);
+  }
+
+  @Test
+  void transition_step_claimed_epoch_conflict_is_a_409_before_the_conditional_update_and_event() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID stepId = UUID.randomUUID();
+    String stepKey = "tool_call";
+    // the re-claim bumped the fence: the stale owner's write is refused before any update runs
+    when(stepRepository.findState(tenant, runId, stepKey))
+        .thenReturn(
+            Optional.of(new StepStateSnapshot(stepId.toString(), WorkflowStepState.RUNNING, 4)));
+
+    ResponseStatusException ex =
+        expectException(
+            () ->
+                service.transitionStep(
+                    tenant,
+                    runId,
+                    stepKey,
+                    WorkflowStepState.SUCCEEDED,
+                    "step.succeeded",
+                    "agentflow-worker",
+                    3));
+
+    verify(stepRepository, never()).transition(any(), any(), any(), any(), anyInt(), any());
+    verify(eventService, never()).append(any(), any(), any(), any(), any());
+    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+  }
+
+  @Test
+  void
+      transition_step_fault_variant_claimed_epoch_fences_the_conditional_update_on_the_claimed_epoch() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID stepId = UUID.randomUUID();
+    String stepKey = "tool_call";
+    String errorToken = ErrorClass.TRANSIENT_INFRA.errorClass();
+    when(stepRepository.findState(tenant, runId, stepKey))
+        .thenReturn(
+            Optional.of(new StepStateSnapshot(stepId.toString(), WorkflowStepState.RUNNING, 4)));
+
+    service.transitionStep(
+        tenant,
+        runId,
+        stepKey,
+        WorkflowStepState.RETRY_WAIT,
+        "step.retry_wait",
+        errorToken,
+        "connection refused",
+        4);
+
+    verify(stepRepository)
+        .transition(
+            runId,
+            tenant,
+            stepKey,
+            WorkflowStepState.RUNNING,
+            4,
+            WorkflowStepState.RETRY_WAIT,
+            errorToken,
+            "connection refused");
+  }
+
+  @Test
+  void transition_step_claimed_epoch_not_positive_is_an_illegal_argument() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    String stepKey = "tool_call";
+    when(stepRepository.findState(tenant, runId, stepKey))
+        .thenReturn(
+            Optional.of(
+                new StepStateSnapshot(UUID.randomUUID().toString(), WorkflowStepState.RUNNING, 4)));
+
+    assertThatThrownBy(
+            () ->
+                service.transitionStep(
+                    tenant,
+                    runId,
+                    stepKey,
+                    WorkflowStepState.SUCCEEDED,
+                    "step.succeeded",
+                    "agentflow-worker",
+                    0))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    verify(stepRepository, never()).transition(any(), any(), any(), any(), anyInt(), any());
   }
 
   // Runs the transition and returns the thrown ResponseStatusException, or fails if none is thrown.

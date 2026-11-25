@@ -103,7 +103,8 @@ class WorkflowWorkerLimitsTest {
             eq(WorkflowStepState.FAILED),
             eq("step.failed"),
             eq("limit_exceeded"),
-            any());
+            any(),
+            anyInt());
     verifyRunFailed("run.limit-exceeded");
   }
 
@@ -139,7 +140,8 @@ class WorkflowWorkerLimitsTest {
             eq(WorkflowStepState.FAILED),
             eq("step.failed"),
             eq("limit_exceeded"),
-            any());
+            any(),
+            anyInt());
     verifyRunFailed("run.limit-exceeded");
   }
 
@@ -181,7 +183,8 @@ class WorkflowWorkerLimitsTest {
             eq(WorkflowStepState.FAILED),
             eq("step.failed"),
             eq("limit_exceeded"),
-            any());
+            any(),
+            anyInt());
     verifyRunFailed("run.limit-exceeded");
   }
 
@@ -216,7 +219,8 @@ class WorkflowWorkerLimitsTest {
             eq(WorkflowStepState.FAILED),
             eq("step.failed"),
             eq("limit_exceeded"),
-            any());
+            any(),
+            anyInt());
     verifyRunFailed("run.limit-exceeded");
   }
 
@@ -251,7 +255,8 @@ class WorkflowWorkerLimitsTest {
             eq(WorkflowStepState.FAILED),
             eq("step.failed"),
             eq("limit_exceeded"),
-            any());
+            any(),
+            anyInt());
     verifyRunFailed("run.limit-exceeded");
   }
 
@@ -288,7 +293,8 @@ class WorkflowWorkerLimitsTest {
             eq(WorkflowStepState.FAILED),
             eq("step.failed"),
             eq("limit_exceeded"),
-            any());
+            any(),
+            anyInt());
     verifyRunFailed("run.limit-exceeded");
   }
 
@@ -326,7 +332,8 @@ class WorkflowWorkerLimitsTest {
     assertThat(stepState).containsEntry("a", WorkflowStepState.SUCCEEDED);
     assertThat(stepState).containsEntry("b", WorkflowStepState.SUCCEEDED);
     verify(transitionService, never())
-        .transitionStep(any(), any(), anyString(), any(), any(), eq("limit_exceeded"), any());
+        .transitionStep(
+            any(), any(), anyString(), any(), any(), eq("limit_exceeded"), any(), anyInt());
   }
 
   // ---------------------------------------------------------------------------
@@ -419,7 +426,14 @@ class WorkflowWorkerLimitsTest {
     ArgumentCaptor<WorkflowRunState> runState = ArgumentCaptor.forClass(WorkflowRunState.class);
     verify(transitionService)
         .transitionRun(
-            any(), any(), runState.capture(), eq(eventType), any(), eq("limit_exceeded"), any());
+            any(),
+            any(),
+            runState.capture(),
+            eq(eventType),
+            any(),
+            eq("limit_exceeded"),
+            any(),
+            anyInt());
     assertThat(runState.getValue()).isEqualTo(WorkflowRunState.FAILED);
   }
 
@@ -468,13 +482,15 @@ class WorkflowWorkerLimitsTest {
       doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
       // the clean (6-arg) and error (7-arg) step transitions both mutate the observed state, so a
       // transition persists and the next pass re-reads it — exactly as a real transaction does
-      when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+      when(transitionService.transitionStep(
+              any(), any(), anyString(), any(), any(), any(), anyInt()))
           .thenAnswer(
               inv -> {
                 stepState.put(inv.getArgument(2), inv.getArgument(3));
                 return inv.getArgument(3);
               });
-      when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), any()))
+      when(transitionService.transitionStep(
+              any(), any(), anyString(), any(), any(), any(), any(), anyInt()))
           .thenAnswer(
               inv -> {
                 stepState.put(inv.getArgument(2), inv.getArgument(3));

@@ -176,17 +176,29 @@ public class WorkflowRunRepository {
    *
    * <p>The whole operation is one conditional {@code UPDATE ... RETURNING lease_epoch}: it sets
    * {@code lease_owner} to {@code workerId}, {@code lease_until} to {@code leaseUntil} and bumps
-   * {@code lease_epoch} (the fencing counter, ADR-011) in a single statement. The {@code WHERE}
-   * makes it atomic and tenant-scoped (invariant 1) and only matches a run that is claimable — not
-   * in a terminal state and whose lease is absent or expired:
+   * {@code lease_epoch} (the fencing counter, ADR-011) in a single statement, and in the same
+   * statement bumps the {@code lease_epoch} of every step row of the run — otherwise a step row a
+   * stale worker materialized would keep a stale fence and a fenced write would never match. The
+   * step bump is scoped to the claimed run ({@code WHERE run_id = ?}) and only fires when the run
+   * itself was claimed ({@code EXISTS (SELECT 1 FROM claimed)}), so a zero-row claim changes
+   * nothing. The {@code WHERE} makes it atomic and tenant-scoped (invariant 1) and only matches a
+   * run that is claimable — not in a terminal state and whose lease is absent or expired:
    *
    * <pre>{@code
-   * UPDATE workflow_runs
-   * SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1
-   * WHERE id = ? AND tenant_id = ?
-   *   AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
-   *   AND (lease_owner IS NULL OR lease_until < now())
-   * RETURNING lease_epoch
+   * WITH claimed AS (
+   *   UPDATE workflow_runs
+   *   SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1
+   *   WHERE id = ? AND tenant_id = ?
+   *     AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+   *     AND (lease_owner IS NULL OR lease_until < now())
+   *   RETURNING lease_epoch
+   * ), steps_bumped AS (
+   *   UPDATE workflow_step_runs
+   *   SET lease_epoch = (SELECT lease_epoch FROM claimed)
+   *   WHERE run_id = ? AND EXISTS (SELECT 1 FROM claimed)
+   *   RETURNING 1
+   * )
+   * SELECT lease_epoch FROM claimed
    * }</pre>
    *
    * <p>Because the conditional update holds the row lock for its duration, two workers racing on
@@ -208,18 +220,27 @@ public class WorkflowRunRepository {
       UUID tenantId, UUID runId, UUID workerId, OffsetDateTime leaseUntil) {
     List<Integer> epochs =
         jdbc.query(
-            "UPDATE "
+            "WITH claimed AS ("
+                + "UPDATE "
                 + TABLE
                 + " SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1"
                 + " WHERE id = ? AND tenant_id = ?"
                 + " AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')"
                 + " AND (lease_owner IS NULL OR lease_until < now())"
-                + " RETURNING lease_epoch",
+                + " RETURNING lease_epoch"
+                + "), steps_bumped AS ("
+                + "UPDATE workflow_step_runs"
+                + " SET lease_epoch = (SELECT lease_epoch FROM claimed)"
+                + " WHERE run_id = ? AND EXISTS (SELECT 1 FROM claimed)"
+                + " RETURNING 1"
+                + ")"
+                + " SELECT lease_epoch FROM claimed",
             (rs, rowNum) -> rs.getInt("lease_epoch"),
             workerId,
             leaseUntil,
             runId,
-            tenantId);
+            tenantId,
+            runId);
     return epochs.isEmpty() ? Optional.empty() : Optional.of(epochs.get(0));
   }
 

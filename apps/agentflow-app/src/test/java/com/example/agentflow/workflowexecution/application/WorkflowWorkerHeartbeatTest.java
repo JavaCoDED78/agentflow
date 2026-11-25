@@ -2,6 +2,7 @@ package com.example.agentflow.workflowexecution.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
@@ -87,7 +88,7 @@ class WorkflowWorkerHeartbeatTest {
                     .map(e -> new StepStatusRow(e.getKey(), e.getValue(), EPOCH))
                     .collect(Collectors.toList()));
     when(stepRepository.findStepOutputs(any(), any())).thenReturn(Map.of());
-    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any()))
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
         .thenAnswer(
             inv -> {
               stepState.put(inv.getArgument(2), inv.getArgument(3));
