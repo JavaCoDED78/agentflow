@@ -21,7 +21,9 @@ public final class ExtractionError {
     /** The document is password protected and could not be decrypted. */
     ENCRYPTED,
     /** The document is corrupt / malformed and could not be read. */
-    CORRUPT
+    CORRUPT,
+    /** The extraction exceeded the configured time bound (S14-10). */
+    TIMEOUT
   }
 
   private final Code code;
