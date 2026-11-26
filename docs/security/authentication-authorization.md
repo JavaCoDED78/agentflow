@@ -60,7 +60,12 @@ describes *what each flow is for* and *what the Resource Server checks*.
 | Machine-to-machine | `agentflow-service` (confidential) | Client Credentials | A service, a script, a test harness calling the API without a signed-in user | Client secret (kept in the git-ignored `.env`, never committed) |
 | User login | `agentflow-web` (public SPA) | Authorization Code + PKCE | A human in a browser | Nothing — no client secret; the code is exchanged with the PKCE verifier |
 
-Keycloak (`quay.io/keycloak:26.8.1`, the `identity` Compose profile) imports the realm
+For `curl` and tests the same flow is performed headlessly by
+[`scripts/get-user-token.py`](../../scripts/get-user-token.py) (S04-18) — the realm has no
+password grant and no dev/test-only client; test users (`tenant-a-member`, …) and the two
+test tenants are documented in [`docs/security/test-users.md`](test-users.md).
+
+Keycloak (`quay.io/keycloak:26.8.2`, the `identity` Compose profile) imports the realm
 declaratively from
 [`infra/compose/keycloak/realm-agentflow.json`](../../infra/compose/keycloak/realm-agentflow.json)
 (`S01-15`) and stamps both token kinds with the `agentflow-api` audience via the realm
