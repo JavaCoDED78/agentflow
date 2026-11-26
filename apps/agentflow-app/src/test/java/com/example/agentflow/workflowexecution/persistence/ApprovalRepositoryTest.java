@@ -366,7 +366,12 @@ class ApprovalRepositoryTest {
     OffsetDateTime cutoff = OffsetDateTime.parse("2026-11-14T12:00:00Z");
     OverdueApprovalRow row =
         new OverdueApprovalRow(
-            UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "send-report", 3);
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            "send-report",
+            3,
+            "requester@acme.example");
     List<OverdueApprovalRow> rows = new ArrayList<>(Collections.singletonList(row));
     ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<RowMapper> mapper = ArgumentCaptor.forClass(RowMapper.class);
@@ -378,6 +383,7 @@ class ApprovalRepositoryTest {
     when(rs.getObject("run_id", UUID.class)).thenReturn(row.runId());
     when(rs.getString("step_key")).thenReturn(row.stepKey());
     when(rs.getInt("version")).thenReturn(row.version());
+    when(rs.getString("requester")).thenReturn(row.requester());
 
     assertThat(repo.findOverduePending(cutoff, 16)).containsExactly(row);
     // the scan carries the rows back with their tenant: the sweep fans out per tenant through the
@@ -385,9 +391,11 @@ class ApprovalRepositoryTest {
     // expiry, ordered oldest-first and bounded so one pass fails a limited batch
     assertThat(sql.getValue())
         .contains("FROM approvals")
+        .contains("LEFT JOIN workflow_runs")
+        .contains("created_by AS requester")
         .contains("status = 'PENDING'")
-        .contains("expiry IS NOT NULL AND expiry < ?")
-        .contains("ORDER BY expiry ASC LIMIT ?");
+        .contains("a.expiry IS NOT NULL AND a.expiry < ?")
+        .contains("ORDER BY a.expiry ASC LIMIT ?");
     assertThat(args.getValue()[0]).isEqualTo(cutoff);
     assertThat(args.getValue()[1]).isEqualTo(16);
 
@@ -398,6 +406,7 @@ class ApprovalRepositoryTest {
     assertThat(mapped.runId()).isEqualTo(row.runId());
     assertThat(mapped.stepKey()).isEqualTo("send-report");
     assertThat(mapped.version()).isEqualTo(3);
+    assertThat(mapped.requester()).isEqualTo("requester@acme.example");
   }
 
   @Test

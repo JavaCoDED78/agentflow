@@ -242,7 +242,8 @@ class ApprovalDecisionWriteIT {
   @Test
   void find_overdue_pending_returns_only_overdue_pending_oldest_first() {
     OffsetDateTime now = OffsetDateTime.now();
-    Seeded overdueOlder = seedApproval("scan-older", now.minusHours(2), "PENDING");
+    Seeded overdueOlder =
+        seedApproval("scan-older", now.minusHours(2), "PENDING", "requester@acme.example");
     Seeded overdueNewer = seedApproval("scan-newer", now.minusHours(1), "PENDING");
     seedApproval("scan-no-expiry", null, "PENDING");
     seedApproval("scan-future", now.plusHours(1), "PENDING");
@@ -257,6 +258,11 @@ class ApprovalDecisionWriteIT {
     assertThat(first.runId()).isEqualTo(overdueOlder.run);
     assertThat(first.stepKey()).isEqualTo("scan-older");
     assertThat(first.version()).isEqualTo(0);
+    // S07-18: the sweep projection carries the run's requester (the user who initiated the run,
+    // kept on workflow_runs.created_by) so the system audit record can attribute the run; a run
+    // begun without an actor answers a null requester rather than a fabricated one.
+    assertThat(first.requester()).isEqualTo("requester@acme.example");
+    assertThat(overdue.get(1).requester()).isNull();
   }
 
   // --- seeding ----------------------------------------------------------------------------------
@@ -264,6 +270,11 @@ class ApprovalDecisionWriteIT {
   private record Seeded(UUID tenant, UUID run, UUID approval) {}
 
   private Seeded seedApproval(String stepKey, OffsetDateTime expiry, String status) {
+    return seedApproval(stepKey, expiry, status, null);
+  }
+
+  private Seeded seedApproval(
+      String stepKey, OffsetDateTime expiry, String status, String createdBy) {
     UUID tenant = UUID.randomUUID();
     UUID run = UUID.randomUUID();
     UUID approval = UUID.randomUUID();
@@ -284,11 +295,12 @@ class ApprovalDecisionWriteIT {
         "{\"nodes\":[]}",
         "c");
     jdbc.update(
-        "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt)"
-            + " VALUES (?, ?, ?, 'QUEUED', 1)",
+        "INSERT INTO workflow_runs (id, tenant_id, workflow_version_id, status, attempt, created_by)"
+            + " VALUES (?, ?, ?, 'QUEUED', 1, ?)",
         run,
         tenant,
-        version);
+        version,
+        createdBy);
     jdbc.update(
         "INSERT INTO approvals (id, tenant_id, run_id, step_key, status, action,"
             + " payload_fingerprint, requester, expiry, decision_actor, decision_comment,"

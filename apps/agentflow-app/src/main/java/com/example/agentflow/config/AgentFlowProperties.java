@@ -697,6 +697,19 @@ public class AgentFlowProperties {
     private String instanceId = null;
 
     /**
+     * Whether the worker will call protected APIs or external services through the
+     * machine-to-machine {@code agentflow-service} client (S04-02, S07-18). {@code false} by
+     * default: the worker performs no outbound call today (the deterministic handler is side-effect
+     * free), so it issues no token and holds none — the service identity it runs under is the
+     * stable {@code agentflow-worker} subject, never a user token. When {@code true}, the worker
+     * validates the M2M client secret at construction (read from the {@code
+     * AGENTFLOW_SERVICE_CLIENT_SECRET} environment variable, never from configuration or source)
+     * and refuses to start on a missing or blank secret. Bound from {@code
+     * agentflow.worker.service-client-enabled}.
+     */
+    private boolean serviceClientEnabled = false;
+
+    /**
      * Whether the stale-run recovery scheduler (S07-09) runs in this process. {@code false} by
      * default so the skeleton (and the API role) does not reclaim runs; the {@code workflow-worker}
      * role enables it, so the lease recovery lives only where a live worker can drive a re-claimed
@@ -948,6 +961,22 @@ public class AgentFlowProperties {
      */
     public void setInstanceId(String instanceId) {
       this.instanceId = instanceId;
+    }
+
+    /**
+     * @return whether the worker will call protected APIs or external services through the
+     *     machine-to-machine client (default {@code false})
+     */
+    public boolean isServiceClientEnabled() {
+      return serviceClientEnabled;
+    }
+
+    /**
+     * @param serviceClientEnabled whether the worker will call protected APIs or external services
+     *     through the machine-to-machine client (default {@code false})
+     */
+    public void setServiceClientEnabled(boolean serviceClientEnabled) {
+      this.serviceClientEnabled = serviceClientEnabled;
     }
 
     /**

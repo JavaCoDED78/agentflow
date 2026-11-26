@@ -186,6 +186,7 @@ The lease tuning is bound through `AgentFlowProperties.Worker` (`@ConfigurationP
 | `recovery-enabled` (`agentflow.worker.recovery-enabled`) | `false` | Whether the recovery scheduler runs. Enabled by the `workflow-worker` role, not "everywhere by default". |
 | `instance-id` (`agentflow.worker.instance-id`) | *generated UUID* | This worker's identity on `lease_owner`; a configured value must be a valid `UUID`. |
 | `loop-enabled` (`agentflow.worker.loop-enabled`) | `true` (worker role) | Whether the worker poll loop drives runs. |
+| `service-client-enabled` (`agentflow.worker.service-client-enabled`) | `false` | Whether the worker uses the machine-to-machine `agentflow-service` client (`S04-02`) for a future outbound call — validated up front: a missing/blank secret (read from the `AGENTFLOW_SERVICE_CLIENT_SECRET` environment variable, never configuration or source) refuses worker construction with a clear startup failure. No token is issued when the flag is off. |
 | `poll-interval-ms` (`agentflow.worker.poll-interval-ms`) | `5000` | The worker poll-loop cadence (at least 100 ms). |
 | `shutdown.timeout-seconds` (`agentflow.worker.shutdown.timeout-seconds`) | `30` | Bounded drain on shutdown; a stale run is reclaimed after it. |
 

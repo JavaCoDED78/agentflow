@@ -65,6 +65,9 @@ class ApprovalServiceTest {
   private static final UUID VERSION = UUID.randomUUID();
   private static final String STEP = "send-monthly-report";
   private static final String ACTOR = "approver@acme.example";
+  // the human who initiated the run this approval gates — kept on the run (created_by), and carried
+  // by the expiry audit record as the requester (S07-18)
+  private static final String REQUESTER = "runner@acme.example";
   // the exact gated payload the approval pins: the tool, its arguments and the display summary —
   // the fingerprint below is computed by the same production algorithm the worker pauses with
   private static final Map<String, Object> GATE_CONFIG =
@@ -802,7 +805,7 @@ class ApprovalServiceTest {
 
   @Test
   void expire_overdue_refuses_the_side_effect_under_the_system_actor() {
-    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0);
+    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0, REQUESTER);
 
     assertThat(service.expireOverdue(overdue)).isTrue();
 
@@ -813,23 +816,24 @@ class ApprovalServiceTest {
             eq(APPROVAL),
             eq(OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
             eq(0));
-    // An expiry is never a human decision: the audit row names the system actor and the EXPIRE
-    // verb, and the refusal event carries the EXPIRED cause.
+    // An expiry is never a human decision: the audit row names the stable service-principal actor
+    // (never a user token) and the requester (the user who initiated the run, kept on the run),
+    // the EXPIRE verb, and the refusal event carries the EXPIRED cause.
     verify(auditService)
         .record(
             eq(TENANT),
-            eq("agentflow-approval-expiry"),
+            eq(ServiceIdentity.WORKER_SERVICE_ACTOR),
             eq(AuditAction.EXPIRE),
             eq(AuditResourceType.APPROVAL),
             eq(APPROVAL),
-            eq("step=" + STEP));
+            eq("step=" + STEP + ",requester=" + REQUESTER));
     verify(transitionService)
         .transitionRun(
             eq(TENANT),
             eq(RUN),
             eq(WorkflowRunState.FAILED),
             eq("run.rejected"),
-            eq("agentflow-approval-expiry"));
+            eq(ServiceIdentity.WORKER_SERVICE_ACTOR));
     verify(transitionService)
         .transitionStep(
             eq(TENANT),
@@ -837,7 +841,7 @@ class ApprovalServiceTest {
             eq(STEP),
             eq(WorkflowStepState.FAILED),
             eq("run.rejected"),
-            eq("agentflow-approval-expiry"));
+            eq(ServiceIdentity.WORKER_SERVICE_ACTOR));
     ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
     verify(outboxService).enqueue(event.capture());
     assertThat(event.getValue().topic()).isEqualTo("agentflow.workflow.run-rejected.v1");
@@ -845,8 +849,24 @@ class ApprovalServiceTest {
   }
 
   @Test
+  void expire_overdue_omits_the_requester_segment_when_the_run_carries_none() {
+    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0, null);
+
+    assertThat(service.expireOverdue(overdue)).isTrue();
+
+    verify(auditService)
+        .record(
+            eq(TENANT),
+            eq(ServiceIdentity.WORKER_SERVICE_ACTOR),
+            eq(AuditAction.EXPIRE),
+            eq(AuditResourceType.APPROVAL),
+            eq(APPROVAL),
+            eq("step=" + STEP));
+  }
+
+  @Test
   void a_lost_expire_race_leaves_the_row_to_the_winner() {
-    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0);
+    OverdueApprovalRow overdue = new OverdueApprovalRow(APPROVAL, TENANT, RUN, STEP, 0, REQUESTER);
     doThrow(new ConflictException("a human decision won the race"))
         .when(approvalRepository)
         .expirePending(any(), any(), any(), any(), anyInt());
