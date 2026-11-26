@@ -7,11 +7,46 @@
   "revokeRefreshToken": false,
   "roles": {
     "realm": [
-      { "name": "workflow:read", "composite": false },
-      { "name": "workflow:write", "composite": false },
-      { "name": "workflow:approve", "composite": false },
-      { "name": "knowledge:read", "composite": false },
-      { "name": "tenant:admin", "composite": false }
+      {
+        "name": "workflow:read",
+        "description": "Read a workflow definition (list / get).",
+        "composite": false
+      },
+      {
+        "name": "workflow:write",
+        "description": "Create or edit a workflow definition draft.",
+        "composite": false
+      },
+      {
+        "name": "workflow:activate",
+        "description": "Activate an immutable workflow version.",
+        "composite": false
+      },
+      {
+        "name": "document:read",
+        "description": "Read a document or search the knowledge base (citations only from real chunks).",
+        "composite": false
+      },
+      {
+        "name": "document:write",
+        "description": "Upload a document to the knowledge base.",
+        "composite": false
+      },
+      {
+        "name": "run:execute",
+        "description": "Create a run, read run status/steps/result and cancel it.",
+        "composite": false
+      },
+      {
+        "name": "run:approve",
+        "description": "Approve or reject a human-approval step.",
+        "composite": false
+      },
+      {
+        "name": "ops:dlq",
+        "description": "Inspect and reprocess dead-letter queue messages.",
+        "composite": false
+      }
     ]
   },
   "clientScopes": [
@@ -24,36 +59,42 @@
           "name": "preferred-username",
           "protocol": "openid-connect",
           "consentRequired": false,
-          "protocolMapper": "oidc-usermodel-protocol-mapper",
+          "protocolMapper": "oidc-usermodel-property-mapper",
           "config": {
-            "user.model.property": "username",
-            "oidc.claim.name": "preferred_username",
-            "full.body.value": "true",
-            "multivalued": "false"
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
           }
         },
         {
           "name": "email",
           "protocol": "openid-connect",
           "consentRequired": false,
-          "protocolMapper": "oidc-usermodel-protocol-mapper",
+          "protocolMapper": "oidc-usermodel-property-mapper",
           "config": {
-            "user.model.property": "email",
-            "oidc.claim.name": "email",
-            "full.body.value": "true",
-            "multivalued": "false"
+            "user.attribute": "email",
+            "claim.name": "email",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
           }
         },
         {
           "name": "full-name",
           "protocol": "openid-connect",
           "consentRequired": false,
-          "protocolMapper": "oidc-usermodel-protocol-mapper",
+          "protocolMapper": "oidc-full-name-mapper",
           "config": {
-            "user.model.property": "fullName",
-            "oidc.claim.name": "name",
-            "full.body.value": "true",
-            "multivalued": "false"
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
           }
         },
         {
@@ -63,9 +104,27 @@
           "protocolMapper": "oidc-usermodel-attribute-mapper",
           "config": {
             "user.attribute": "tenant_id",
-            "oidc.claim.name": "tenant_id",
-            "full.body.value": "true",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true",
             "multivalued": "false"
+          }
+        },
+        {
+          "name": "realm-access-roles",
+          "protocol": "openid-connect",
+          "consentRequired": false,
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
           }
         },
         {
@@ -79,6 +138,41 @@
             "id.token.claim": "false"
           }
         }
+      ],
+      "fullScopeAllowed": false,
+      "roles": [
+        {
+          "name": "workflow:read",
+          "composite": false
+        },
+        {
+          "name": "workflow:write",
+          "composite": false
+        },
+        {
+          "name": "workflow:activate",
+          "composite": false
+        },
+        {
+          "name": "document:read",
+          "composite": false
+        },
+        {
+          "name": "document:write",
+          "composite": false
+        },
+        {
+          "name": "run:execute",
+          "composite": false
+        },
+        {
+          "name": "run:approve",
+          "composite": false
+        },
+        {
+          "name": "ops:dlq",
+          "composite": false
+        }
       ]
     }
   ],
@@ -91,9 +185,15 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["http://localhost:3000/*"],
-      "webOrigins": ["http://localhost:3000"],
-      "defaultClientScopes": ["agentflow"],
+      "redirectUris": [
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000"
+      ],
+      "defaultClientScopes": [
+        "agentflow"
+      ],
       "protocol": "openid-connect"
     },
     {
@@ -106,7 +206,9 @@
       "serviceAccountsEnabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "${AGENTFLOW_SERVICE_CLIENT_SECRET}",
-      "defaultClientScopes": ["agentflow"],
+      "defaultClientScopes": [
+        "agentflow"
+      ],
       "webOrigins": [],
       "protocol": "openid-connect"
     },
@@ -123,5 +225,18 @@
       "webOrigins": [],
       "protocol": "openid-connect"
     }
-  ]
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}],\"unmanagedAttributePolicy\":\"ADMIN_EDIT\"}"
+          ]
+        }
+      }
+    ]
+  }
 }

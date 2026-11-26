@@ -127,6 +127,31 @@ curl -sS "$TOKEN_ENDPOINT" \
 The `aud` of a user token is whatever the realm stamps for the caller — see the audience note
 below.
 
+## Flow B2 — user login without a browser (headless PKCE helper)
+
+`curl` and test harnesses get a user token the same way the SPA does — **Authorization Code
++ PKCE** — through the headless helper `scripts/get-user-token.py`. There is no password grant
+anywhere in the realm (S04-02) and no dev/test-only client. This is the **chosen method** for
+user tokens locally, and the reason the headless path is reproducible in both `curl` and the
+test runner.
+
+```bash
+# One command (password from the git-ignored local .env; never committed):
+export KEYCLOAK_TEST_PASSWORD=<local throwaway password>
+TOKEN=$(python3 scripts/get-user-token.py tenant-a-member)
+
+# Inspect the verified claims instead of the token:
+python3 scripts/get-user-token.py tenant-a-member --decode
+
+# Call the API:
+curl -sS http://localhost:8080/api/v1/workflows -H "Authorization: Bearer ***"
+```
+
+The helper refuses non-local Keycloak base URLs, reads the password only from the environment,
+and never prints the password. Test users are created and repaired by
+`scripts/create-test-users.py` (idempotent) and documented in
+[`docs/security/test-users.md`](../security/test-users.md) (S04-18).
+
 ## The audience claim — the most common local failure
 
 The Resource Server requires the token's `aud` claim to contain **`agentflow-api`**. In OIDC the
