@@ -228,6 +228,24 @@ The unit/integration split is explicit: `integrationTest` runs a separate source
 - **Readiness over sleeps** — waiting for an asynchronous condition is expressed as an explicit poll with a deadline and a real assertion (a bounded loop that fails with the state it saw), not a flat sleep with a hoped-for wait.
 - **Data isolation** — Kafka topics are freshly created per test (or per class) and message/outbox assertions are made against freshly seeded identifiers, never against a shared broker state.
 
+## Security
+
+The platform ships a blocking security gate that runs on every pull request and
+on pushes to `main` (`.github/workflows/security.yml`, `S14-11`): a **secret
+scan** (gitleaks over the full git history), a **dependency vulnerability scan**
+(Trivy over the dependency lockfiles) and, once the image exists, a **container
+image scan** (Trivy, dormant until `S15-01`). CRITICAL and HIGH findings fail
+the build unless they are covered by an unexpired, justified waiver in
+`security/waivers.json`; secret findings are never waived.
+
+```bash
+bash scripts/security/run-local-scans.sh   # local equivalent of the gate
+```
+
+The full policy (blocking severity, waiver registry schema, expiry semantics,
+tool versions) is in
+[`docs/security/scan-policy.md`](docs/security/scan-policy.md).
+
 ## Documentation map
 
 - General rules: [`AGENTS.md`](AGENTS.md)

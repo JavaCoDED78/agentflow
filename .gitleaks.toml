@@ -1,0 +1,35 @@
+# Gitleaks policy for AgentFlow (S14-11).
+#
+# Extends the built-in default rules (extended rules override the defaults).
+# Scanned by CI (.github/workflows/security.yml) and by
+# scripts/security/run-local-scans.sh over the full git history — a secret
+# hidden in history is still caught.
+#
+# The two allowlists below are the ONLY exclusions and they are narrow and
+# documented. Never allowlist a whole directory or a broad pattern — a
+# finding that could be a real secret must not be silenced.
+title = "AgentFlow gitleaks config"
+
+[extend]
+useDefault = true
+
+# Sanctioned test-fixture files carrying clearly-fake dummy values: the
+# traces/ids/secrets they assert against are test stand-ins, never real
+# credentials. Scoped to the exact files.
+[[allowlists]]
+description = "Test fixture files with clearly-fake dummy values (redaction/correlation assertions)"
+paths = [
+  '''apps/agentflow-app/src/test/java/com/example/agentflow/observability/CorrelationIdFilterTest.java''',
+  '''apps/agentflow-app/src/test/java/com/example/agentflow/common/SecretRedactorTest.java''',
+]
+
+# .env.example was committed with a local-dev-only minio access/secret
+# placeholder at commit 7c162de14e47835891df2732849c58a255dee941 (a literal
+# local-dev value, never a real credential, already removed from the current
+# .env.example). The allowlist is scoped to that one commit AND that one
+# path, so a future real secret in .env.example is still caught.
+[[allowlists]]
+description = "Historical local-dev placeholder in .env.example at commit 7c162de (local-dev only)"
+condition = "AND"
+commits = [ "7c162de14e47835891df2732849c58a255dee941" ]
+paths = [ '''.env.example''' ]

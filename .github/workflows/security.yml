@@ -1,0 +1,88 @@
+# Security scan gate (S14-11): dependency vulnerability scan, secret scan and
+# OCI image scan (Trivy + gitleaks), with a blocking severity policy and an
+# expiry-carrying waiver registry.
+#
+# Triggers on every pull request and on pushes to main.
+#
+# Blocking policy: CRITICAL and HIGH findings fail the build unless they are
+# covered by an unexpired, justified waiver in `security/waivers.json`.
+# Secret findings are never waived — they always fail.
+#
+# See docs/security/scan-policy.md for the full policy, the waiver procedure
+# and the local verification commands.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Pinned, stable tool versions. Bump these deliberately, with a verification
+  # re-run (see docs/security/scan-policy.md).
+  TRIVY_VERSION: "0.76.2"
+  GITLEAKS_VERSION: "8.30.1"
+
+jobs:
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Scan the full history — a secret hidden in history is still caught.
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -sSfL -o gitleaks.zip "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.zip"
+          unzip -o gitleaks.zip gitleaks
+          chmod +x gitleaks
+      - name: Scan the repository for secrets
+        # Fails on any leak (gitleaks exits 1 on findings). Never waived.
+        run: ./gitleaks git --redact --no-banner --config .gitleaks.toml .
+
+  dependency-scan:
+    name: dependency vuln scan (trivy fs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL -o trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          tar -xzf trivy.tar.gz trivy
+          chmod +x trivy
+      - name: Scan repository dependencies
+        # --exit-code 0: trivy always reports; the single gate is the waiver
+        # check below, so the report must reach it.
+        run: ./trivy fs --scanners vuln --no-progress --exit-code 0 --format json --output trivy-vulns.json .
+      - name: Apply the waiver gate
+        # Fails on any unwaived critical/high finding; also fails closed on a
+        # malformed or expired waiver registry.
+        run: python3 scripts/security/check-waivers.py --report trivy-vulns.json
+
+  container-scan:
+    name: OCI image scan (trivy image)
+    runs-on: ubuntu-latest
+    # The application image is not built yet (S15-01 creates the Dockerfile).
+    # This job stays dormant until one lands — the fs dependency scan above is
+    # the live blocking gate for now.
+    if: hashFiles('infra/docker/**/Dockerfile*') != ''
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install trivy
+        run: |
+          set -euo pipefail
+          curl -sSfL -o trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          tar -xzf trivy.tar.gz trivy
+          chmod +x trivy
+      - name: Build the OCI image
+        run: docker build -t agentflow:ci infra/docker
+      - name: Scan the image
+        run: ./trivy image --scanners vuln --no-progress --exit-code 0 --format json --output trivy-image.json agentflow:ci
+      - name: Apply the waiver gate
+        run: python3 scripts/security/check-waivers.py --report trivy-image.json

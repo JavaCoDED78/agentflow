@@ -4,6 +4,7 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-11 — dependency/secret/container scanning](#s14-11--dependencysecretcontainer-scanning)
 - [S14-10 — upload/parser abuse regression pack](#s14-10--uploadparser-abuse-regression-pack)
 - [S14-09 — provider error matrix](#s14-09--provider-error-matrix)
 - [S14-08 — Redis outage verification](#s14-08--redis-outage-verification)
@@ -14,6 +15,40 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-11 — dependency/secret/container scanning
+
+### What changed
+
+A new blocking security gate: three CI jobs (`secret-scan`, `dependency-scan`, `container-scan`) plus a single deterministic waiver gate, wired into `.github/workflows/security.yml` (PR + push to `main`, `contents: read` only, no untrusted input).
+
+**Scanner config.** `.gitleaks.toml` extends the built-in default rules (`[extend] useDefault = true`) with **two narrow, documented exclusions**, never a whole directory: the sanctioned test-fixture files carrying clearly-fake dummy values (`CorrelationIdFilterTest.java`, `SecretRedactorTest.java` — scoped by exact path) and one historical `.env.example` local-dev placeholder (a minio access/secret pair committed at `7c162de`, already removed from the current file — scoped to that one commit **and** path via `condition = "AND"`, so a future real secret in `.env.example` is still caught). The two exclusions were verified empirically against the full-history scan: with the fixtures-only config the historical finding reappears (1 leak), and with both configs the scan is clean.
+
+**Waiver gate.** `scripts/security/check-waivers.py` (stdlib, no dependencies, `security/waivers.json` as the registry) reads a Trivy JSON report (`fs` or `image` mode) and fails (exit 1) unless every finding at or above the blocking severity (`CRITICAL,HIGH`) is covered by a valid, unexpired waiver. It fails closed (exit 2) on an unreadable report or a malformed registry: missing required fields (`id`, `reason`, `approver`, `expires_at`), a duplicate id, a malformed or non-ISO `expires_at`, or a non-future expiry. Expired waivers fail the gate (an exception can never silently become permanent). Waivers match on the CVE id only; they cover **vulnerability** findings **only** — secret findings are never waived and always fail. The gate is the single gate: trivy is run with `--exit-code 0` so the report always reaches it.
+
+**Registry.** `security/waivers.json` — empty by design: the handful of findings that exist today (13 CRITICAL, 20 HIGH, all in the `gradle.lockfile` pins) are not waived. Waivers require human approval by a named approver; they are never added by an agent.
+
+**Local equivalent.** `scripts/security/run-local-scans.sh` (bash, repo-root relative) runs gitleaks over the full history (`--redact`), then Trivy fs over the lockfiles (`--exit-code 0`), then the waiver gate. Requires `trivy` and `gitleaks` in PATH or via `TRIVY_BIN` / `GITLEAKS_BIN`; `trivy-vulns.json` and `trivy-image.json` are git-ignored artifacts.
+
+**Container job (dormant).** `container-scan` is wired with `if: hashFiles('infra/docker/**/Dockerfile*') != ''` — no Dockerfile exists yet (S15-01), so the job stays skipped until one lands; it then builds the image and scans it with the same waiver gate. This is the honest state of "critical findings break CI" for the container side.
+
+### Why
+
+`S14-11` is the P0 Sprint-14 task: "запускать vulnerability scanner, secret scan и Trivy; задать блокирующую severity policy; для ложных срабатываний требовать срок/обоснование waiver." Sprint 14's gate is "critical/high security findings устранены или задокументированы" — before this change there was no security gate at all (no workflow, no scanner, no waiver mechanism), so a CVE-bearing dependency could merge silently. The `.github/workflows/security.yml` split between the secret job and the vulnerability gate mirrors the plan's supply-chain line (§14.2: dependency vulnerability scan + secret scan; Trivy for the container) and the acceptance criterion ("critical findings break CI либо имеют явное одобренное исключение").
+
+### Verification
+
+- `.gitleaks.toml` — full-history scan clean: `gitleaks git --redact --no-banner --config .gitleaks.toml .` → "no leaks found" (278 commits), exit 0. Without the two exclusions, the historical `.env.example` minio placeholder reappears (1 finding) — the exclusions are scoped exactly as documented.
+- `scripts/security/check-waivers.py` — against the real Trivy fs report (33 findings: 13 CRITICAL + 20 HIGH): exit 1 with every finding listed (13 CRITICAL, 20 HIGH), waived-nothing. Pass-path cases verified against synthetic reports: both-waivers-active → exit 0 (PASS); one expired waiver → exit 1 (expired warning + the covered finding reported unwaived); malformed registry (missing fields) → exit 2; duplicate id → exit 2.
+- `bash scripts/security/run-local-scans.sh` (with `TRIVY_BIN` / `GITLEAKS_BIN` pointed at the pinned tools) — gitleaks clean → Trivy produces the report → the waiver gate exits 1 as it must today (the 33 unwaived findings block).
+- Workflow YAML parses (PyYAML 1.1 quirk: the top-level `on:` key reads as boolean `True` — a PyYAML 1.1 artifact; the keys/jobs/`if:` are correct and GitHub parses `on:` natively).
+- Workflow structure: `secret-scan` (fetch-depth 0, redacted), `dependency-scan` (locked install + fs report + waiver gate), `container-scan` (dormant until a Dockerfile exists).
+
+### Scope / follow-up
+
+The 33 current findings are **not fixed** — fixing is a dependency-bump PR (jackson-core/databind, tomcat-embed-core, tika-core / tika-parser-pdf-module, bcprov-jdk18on, lz4-java, snappy-java) with a re-lock and a re-run; accepting any finding via waiver needs human approval of the waiver itself. The container image scan activates with S15-01; CycloneDX SBOM is not in this task's scope. The one remaining gap in the gate: the fs scan covers the `gradle.lockfile` pins only, so OS-layer and OCI-image findings are covered by the container job once it is live, and the fs report is a point-in-time snapshot — a new finding after the last gate run is only visible in the next PR/push.
 
 ---
 
