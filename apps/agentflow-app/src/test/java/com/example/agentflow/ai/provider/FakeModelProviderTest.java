@@ -33,8 +33,8 @@ import tools.jackson.databind.ObjectMapper;
  * (or fail to parse) through the real parser, fault fixtures reach the planner as {@code
  * TRANSPORT_FAILURE} (its only transport signal), and the refusal is never retried. The
  * production-classifier checks pin that the thrown fault <em>types</em> classify as {@code TIMEOUT}
- * / {@code RATE_LIMIT}, so a fixture wrapped in {@code ResilientChatModel} retries under the S09-09
- * policy exactly like the real fault.
+ * / {@code RATE_LIMIT} / {@code SERVER_ERROR}, so a fixture wrapped in {@code ResilientChatModel}
+ * retries under the S09-09 policy exactly like the real fault.
  */
 class FakeModelProviderTest {
 
@@ -117,6 +117,16 @@ class FakeModelProviderTest {
     assertThat(ProviderFailureReason.RATE_LIMIT.isRetryable()).isTrue();
   }
 
+  @Test
+  void the_server_error_fixture_classifies_as_server_error_by_the_production_classifier() {
+    FakeModelProvider provider = new FakeModelProvider(FakeModelProvider.Fixture.SERVER_ERROR);
+
+    RuntimeException fault = catchFault(provider);
+
+    assertThat(classifier.classify(fault)).isEqualTo(ProviderFailureReason.SERVER_ERROR);
+    assertThat(ProviderFailureReason.SERVER_ERROR.isRetryable()).isTrue();
+  }
+
   // ---------------------------------------------------------------------------------------------
   // The refusal fixture answers with null content, the port contract's refusal shape.
   // ---------------------------------------------------------------------------------------------
@@ -154,7 +164,10 @@ class FakeModelProviderTest {
   @Test
   void every_fault_fixture_throws_the_same_fault_shape_across_repeated_calls() {
     for (FakeModelProvider.Fixture fixture :
-        List.of(FakeModelProvider.Fixture.TIMEOUT, FakeModelProvider.Fixture.RATE_LIMIT)) {
+        List.of(
+            FakeModelProvider.Fixture.TIMEOUT,
+            FakeModelProvider.Fixture.RATE_LIMIT,
+            FakeModelProvider.Fixture.SERVER_ERROR)) {
       FakeModelProvider provider = new FakeModelProvider(fixture);
       RuntimeException first = catchFault(provider);
       RuntimeException second = catchFault(provider);
@@ -229,6 +242,18 @@ class FakeModelProviderTest {
   }
 
   @Test
+  void the_planner_maps_the_server_error_fixture_to_transport_failure_with_one_retry() {
+    FakeModelProvider provider = new FakeModelProvider(FakeModelProvider.Fixture.SERVER_ERROR);
+    PlannerService planner =
+        new PlannerService(catalogue(), FakeModelProvider.MODEL, provider, null);
+
+    PlannerPlanParseException failure = catchPlannerFailure(planner);
+
+    assertThat(failure.classification()).isEqualTo(PlannerFailure.TRANSPORT_FAILURE);
+    assertThat(provider.calls()).isEqualTo(2);
+  }
+
+  @Test
   void the_planner_never_retries_a_fake_refusal() {
     FakeModelProvider provider = new FakeModelProvider(FakeModelProvider.Fixture.REFUSAL);
     PlannerService planner =
@@ -276,6 +301,14 @@ class FakeModelProviderTest {
   void four_twenty_nine_is_an_alias_for_the_rate_limit_fixture() {
     assertThat(FakeModelProvider.Fixture.fromConfig("429"))
         .isEqualTo(FakeModelProvider.Fixture.RATE_LIMIT);
+  }
+
+  @Test
+  void five_hundred_is_an_alias_for_the_server_error_fixture() {
+    assertThat(FakeModelProvider.Fixture.fromConfig("500"))
+        .isEqualTo(FakeModelProvider.Fixture.SERVER_ERROR);
+    assertThat(FakeModelProvider.Fixture.fromConfig("5xx"))
+        .isEqualTo(FakeModelProvider.Fixture.SERVER_ERROR);
   }
 
   @Test
