@@ -1035,6 +1035,77 @@ class WorkflowWorkerTest {
   }
 
   // ---------------------------------------------------------------------------
+  // S07-18: service identity — the stable service subject, never the instance id
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void the_worker_runs_under_the_stable_service_subject_even_when_an_instance_id_is_configured() {
+    UUID tenant = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    UUID versionId = UUID.randomUUID();
+
+    Map<String, WorkflowStepState> stepState = new LinkedHashMap<>();
+    stepState.put("extract", WorkflowStepState.PENDING);
+
+    when(leaseService.claim(any(), any())).thenReturn(LEASE_EPOCH);
+    when(runRepository.findClaimableRuns(tenant)).thenReturn(List.of(runId));
+    when(runRepository.findRun(tenant, runId))
+        .thenReturn(
+            Optional.of(
+                new RunView(runId, versionId, WorkflowRunState.RUNNING, 1, OffsetDateTime.now())));
+    when(versionService.loadGraph(tenant, versionId))
+        .thenReturn(new WorkflowGraph(List.of(node("extract", "NOOP")), List.of()));
+    when(stepRepository.findStepStatuses(tenant, runId))
+        .thenAnswer(
+            inv ->
+                stepState.entrySet().stream()
+                    .map(e -> new StepStatusRow(e.getKey(), e.getValue(), LEASE_EPOCH))
+                    .collect(Collectors.toList()));
+    when(stepRepository.findStepOutputs(any(), any())).thenReturn(Collections.emptyMap());
+    doNothing().when(stepRepository).createStep(any(), any(), anyString(), anyInt(), any());
+    when(transitionService.transitionStep(any(), any(), anyString(), any(), any(), any(), anyInt()))
+        .thenAnswer(
+            inv -> {
+              stepState.put(inv.getArgument(2), inv.getArgument(3));
+              return inv.getArgument(3);
+            });
+    StepHandler noop =
+        new StepHandler() {
+          @Override
+          public boolean supports(String nodeType) {
+            return "NOOP".equals(nodeType);
+          }
+
+          @Override
+          public StepResult handle(StepExecutionContext context) {
+            return StepResult.succeeded("extracted");
+          }
+        };
+
+    // A per-instance lease id configured on the worker: the run still runs under the stable
+    // service principal subject (S07-18), never the per-instance identity.
+    AgentFlowProperties.Worker workerProps = new AgentFlowProperties.Worker();
+    workerProps.setInstanceId("a-per-instance-lease-id");
+    AgentFlowProperties properties = mock(AgentFlowProperties.class);
+    when(properties.getWorker()).thenReturn(workerProps);
+    WorkflowWorker worker = buildWorker(List.of(noop), properties);
+
+    int processed = worker.pollOnce(tenant);
+
+    assertThat(processed).isOne();
+    // the only run-level move is the resume's own SUCCEEDED conclusion — and the actor is the
+    // stable service subject, not the configured lease identity
+    verify(transitionService)
+        .transitionRun(
+            eq(tenant),
+            eq(runId),
+            eq(WorkflowRunState.SUCCEEDED),
+            eq("run.finished"),
+            eq("agentflow-worker"),
+            anyInt());
+  }
+
+  // ---------------------------------------------------------------------------
   // S13-11: step-duration timer and step-retry counter
   // ---------------------------------------------------------------------------
 
@@ -1151,6 +1222,20 @@ class WorkflowWorkerTest {
   private WorkflowWorker buildWorker(List<StepHandler> handlers) {
     AgentFlowProperties properties = mock(AgentFlowProperties.class);
     when(properties.getWorker()).thenReturn(new AgentFlowProperties.Worker());
+    return new WorkflowWorker(
+        runRepository,
+        stepRepository,
+        versionService,
+        leaseService,
+        null,
+        transitionService,
+        checkpointAdapter,
+        approvalRepository,
+        handlers,
+        properties);
+  }
+
+  private WorkflowWorker buildWorker(List<StepHandler> handlers, AgentFlowProperties properties) {
     return new WorkflowWorker(
         runRepository,
         stepRepository,

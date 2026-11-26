@@ -132,10 +132,13 @@ started, so there is nothing to audit.
 |---|---|---|---|---|---|
 | Approve | `APPROVE` | `APPROVAL` | WIRED | `ApprovalService#approve` (in the decision transaction, ADR-018) | `workflowexecution → audit` (ADR-018) |
 | Reject | `REJECT` | `APPROVAL` | WIRED | `ApprovalService#reject` | `workflowexecution → audit` (ADR-018) |
-| Expire | `EXPIRE` | `APPROVAL` | WIRED | `ApprovalService#expireOverdue` (system actor `agentflow-approval-expiry`) | `workflowexecution → audit` (ADR-018) |
+| Expire | `EXPIRE` | `APPROVAL` | WIRED | `ApprovalService#expireOverdue` (system actor `agentflow-worker`, ADR-023) | `workflowexecution → audit` (ADR-018) |
 
 The decision and its audit row commit atomically (invariant 3); the redacted metadata carries only
-`step=<key>`, never the payload or the decision comment (invariant 8).
+structural identity — `step=<key>` (never the payload or the decision comment, invariant 8), and for
+the expiry the run's requester (`requester=<subject>`, the user who initiated the run, kept on
+`workflow_runs.created_by`), so the system record is attributable to the platform service while the
+requester stays on the run (ADR-023).
 
 ### 4.6 Ops actions — `messaging` / ops surface (S12-11 … S12-13)
 

@@ -6,6 +6,84 @@
 
 
 
+## S07-18 — Service identity for the durable worker (S07-18).
+
+- **One stable service principal, never a user token.** Every transition, row and audit record the
+  durable worker writes (the claim, the run/step transitions through `RunStateMachineService`, the
+  `workflow_step_runs` insert, the approval pause, and the approval-expiry sweep's refusal
+  completion) now goes out under one stable `actor_subject`: `agentflow-worker` — the service
+  principal the platform runs the worker as. The worker no longer derives its actor from
+  `agentflow.worker.instance-id` (previously a per-instance string, or `agentflow-worker` only when
+  no id was configured): the per-instance identity stays on the lease (`lease_owner`, ADR-011) and
+  never doubles as an actor. The decision is `ServiceIdentity` (a new pure value type in
+  `workflowexecution.application`, the one stable-subject factory) — `WorkflowWorker` resolves its
+  single `actor` from it, so the whole worker propagates the stable subject in one change.
+- **The M2M client decision is explicit and validated.** The worker performs no outbound call today
+  (the deterministic handler is side-effect free), so it issues no token and holds none — recorded
+  as `usesUserToken() == false` on `ServiceIdentity`, not as a hidden assumption. If an operator
+  asks for the machine-to-machine `agentflow-service` client (`S04-02`) —
+  `agentflow.worker.service-client-enabled=true` — the secret is read from the `AGENTFLOW_SERVICE_CLIENT_SECRET`
+  environment variable (never configuration or source, invariant 8) and validated up front: a missing
+  or blank secret refuses construction with a clear `IllegalStateException` naming both the config
+  key and the environment variable — a startup failure, never a silent run without the credential
+  it claims to use. The worker is never presented with a user token: the actor is a platform service
+  principal, so no user token, JWT or client secret appears in Kafka event payloads, log lines or
+  audit metadata (invariant 8).
+- **The requester stays on the run.** The user who initiated the run is never the worker's actor.
+  `workflow_runs.created_by` keeps that requester; the one system-driven audit record the worker
+  appends — the approval-expiry `EXPIRE` row (`ApprovalService#expireOverdue`) — now carries both
+  the stable service principal (`actor_subject`) and the requester in redacted metadata:
+  `step=<key>,requester=<subject>` (the segment is omitted when the run carries no actor). The
+  `agentflow-approval-expiry` per-scheduler actor is dropped in favour of the stable subject; the
+  per-item attribution survives in the `step=<key>` segment plus the requester segment.
+- **The requester is surfaced by the sweep scan.** `ApprovalRepository#findOverduePending` now carries
+  the run's `created_by` (tenant-scoped `LEFT JOIN` to `workflow_runs`), so the expiry audit record
+  can attribute the run without inventing a requester the run does not carry.
+
+#### What changed
+- `workflowexecution.application.ServiceIdentity` (new) — the stable `agentflow-worker` subject, the
+  `AGENTFLOW_SERVICE_CLIENT_SECRET` environment-variable name and the `worker(boolean, String)`
+  factory with the startup guard.
+- `config.AgentFlowProperties` — new `agentflow.worker.service-client-enabled` flag (default
+  `false`), with getter/setter and a comment on the startup-failure contract.
+- `workflowexecution.application.WorkflowWorker` — the `actor` now resolves through
+  `ServiceIdentity` (replacing the instance-id-or-fallback `resolveActor`), with the M2M guard wired
+  to the config flag and the environment read.
+- `workflowexecution.application.ApprovalService` — `EXPIRY_ACTOR` becomes the stable service subject;
+  the expiry audit metadata carries the step and the requester (`step=<key>,requester=<subject>`),
+  omitting the requester segment when the run carries none.
+- `workflowexecution.persistence.OverdueApprovalRow` — gains a `requester` (the run's `created_by`);
+- `workflowexecution.persistence.ApprovalRepository#findOverduePending` — the scan joins the run
+  (tenant-scoped) to carry `created_by` as `requester`.
+
+#### Why
+The actor on the worker's records is a fact about *who* acted — an operator reading `workflow_events`
+or `audit_events` should see the platform service, not a host or a hostname. The decision needed a
+single point of truth: one stable subject for the whole worker, never the per-instance lease id.
+The M2M client decision needed to be explicit and validated so the operator's enablement is a real
+gate rather than a silent no-op; the requester needed to survive on the run and surface in the
+system audit record without being fabricated.
+
+#### Verification
+- `:apps:agentflow-app:test --tests '*ServiceIdentityTest'` — 7 green (the stable subject, the
+  never-presents-a-user-token contract, and the M2M guard: absent/blank secret refuses to build, a
+  real secret constructs the stable subject).
+- `:apps:agentflow-app:test --tests '*WorkflowWorkerTest'` — the stable subject is carried even with a
+  per-instance lease id configured (`the_worker_runs_under_the_stable_service_subject_even_when_an_instance_id_is_configured`).
+- `:apps:agentflow-app:test --tests '*ApprovalServiceTest' --tests '*ApprovalRepositoryTest'` — the
+  expiry audit record carries the service-principal actor and the requester; the scan projection is
+  extended with the requester (unit + mocked-ResultSet).
+- `:apps:agentflow-app:integrationTest --tests '*ApprovalDecisionWriteIT'` — green on real PostgreSQL:
+  the sweep scan carries the run's `created_by` (a run begun with an actor answers the requester; a
+  run begun without one answers null — never a fabricated actor).
+- `:apps:agentflow-app:test --tests '*ApprovalExpirySchedulerTest'` — green.
+
+#### Schema / contract
+No migration, no new contract: the `EXPIRE` audit metadata gains the `requester=<subject>` segment
+(an additional redacted fact on the same row; the `audit_events` schema is unchanged). No new
+module edge — `ServiceIdentity` lives inside `workflowexecution`, which already owns every type
+referenced.
+
 ## S07-17 — Workflow run recovery runbook (S07-17).
 
 - **Workflow run recovery runbook (S07-17).** The durable-execution Sprint 7 design is now

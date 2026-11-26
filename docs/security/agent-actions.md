@@ -126,13 +126,32 @@ path, so the model can never approve its own step.
   RUNNING`, the gated step moving back to `RUNNING` and immediately `SUCCEEDED` — the human decision
   *is* the step's whole execution, so it can never re-pause and recreate a second `PENDING`
   approval). Reject (`{"decision":"reject"}` on `POST /api/v1/runs/{runId}/approvals/{approvalId}`,
-  `run:approve` authority) and expiry (`ApprovalService#expireOverdue`, driven by the system actor
-  `agentflow-approval-expiry`) refuse the side effect: the run and the gated step move
+  `run:approve` authority) and expiry (`ApprovalService#expireOverdue`, driven by the stable service
+  principal `agentflow-worker`) refuse the side effect: the run and the gated step move
   `WAITING_FOR_APPROVAL → FAILED` without the handler ever executing, and the refusal
   `workflow.run.rejected.v1` on `agentflow.workflow.run-rejected.v1` carries the closed `cause`
   vocabulary (`REJECTED` / `EXPIRED`) — a rejected/expired request never launches a side effect
   (S11-05). Every lookup is scoped `(tenant_id, run_id, id)`, so another tenant's approval is a `404`,
   never a leak (invariant 1).
+
+## Service identity — the worker never acts as a user
+
+Every state change the durable worker performs — the claim, the run/step transitions, the
+`workflow_step_runs` insert, the approval pause and the expiry sweep's refusal completion — is
+written under one stable service principal, `agentflow-worker` (`ServiceIdentity`, ADR-023). It is
+**not** the per-instance lease identity (that stays on `lease_owner`, ADR-011) and it is never a
+user token: the worker presents no credential to any system — the deterministic handler is
+side-effect free today, so no machine-to-machine client (`S04-02`) is issued or held. The actor is
+never the user who initiated the run; that requester stays on `workflow_runs.created_by` and is
+carried by the system-driven audit record (`step=<key>,requester=<subject>`).
+
+The M2M client is explicit and validated: `agentflow.worker.service-client-enabled=true` asks the
+worker to call protected APIs or external services through the `agentflow-service` client. The
+secret is read from the `AGENTFLOW_SERVICE_CLIENT_SECRET` environment variable — never from
+configuration, source or a Kafka payload — and if it is absent or blank the worker refuses to
+construct at startup (a clear `IllegalStateException`, not a silent run without the credential it
+claims to use). With the flag off (the default), no token is issued at all. No user token or client
+secret ever appears in Kafka event payloads, log lines or audit metadata (invariant 8).
 
 ## MCP server allowlist and SSRF controls
 

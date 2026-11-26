@@ -58,7 +58,8 @@ class ApprovalExpirySchedulerTest {
   void an_overdue_approval_on_a_run_still_waiting_is_expired_and_counted() {
     UUID tenant = UUID.randomUUID();
     OverdueApprovalRow overdue =
-        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "send-report", 0);
+        new OverdueApprovalRow(
+            UUID.randomUUID(), tenant, UUID.randomUUID(), "send-report", 0, null);
     when(approvalRepository.findOverduePending(
             eq(OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)), anyInt()))
         .thenReturn(List.of(overdue));
@@ -80,7 +81,8 @@ class ApprovalExpirySchedulerTest {
   void a_candidate_whose_run_moved_on_is_skipped_without_expiring_anything() {
     UUID tenant = UUID.randomUUID();
     OverdueApprovalRow overdue =
-        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "send-report", 0);
+        new OverdueApprovalRow(
+            UUID.randomUUID(), tenant, UUID.randomUUID(), "send-report", 0, null);
     when(approvalRepository.findOverduePending(any(OffsetDateTime.class), anyInt()))
         .thenReturn(List.of(overdue));
     // the run is no longer parked at the pause (cancellation in flight, a recovery, …): it owns
@@ -97,9 +99,9 @@ class ApprovalExpirySchedulerTest {
   void a_lost_race_leaves_the_row_to_the_winner_and_keeps_sweeping() {
     UUID tenant = UUID.randomUUID();
     OverdueApprovalRow raced =
-        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "a", 0);
+        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "a", 0, null);
     OverdueApprovalRow won =
-        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "b", 0);
+        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "b", 0, null);
     when(approvalRepository.findOverduePending(any(OffsetDateTime.class), anyInt()))
         .thenReturn(List.of(raced, won));
     when(runRepository.findState(eq(tenant), any(UUID.class)))
@@ -118,9 +120,9 @@ class ApprovalExpirySchedulerTest {
   void a_faulted_item_rolls_back_whole_and_never_stops_the_batch() {
     UUID tenant = UUID.randomUUID();
     OverdueApprovalRow faulted =
-        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "a", 0);
+        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "a", 0, null);
     OverdueApprovalRow won =
-        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "b", 0);
+        new OverdueApprovalRow(UUID.randomUUID(), tenant, UUID.randomUUID(), "b", 0, null);
     when(approvalRepository.findOverduePending(any(OffsetDateTime.class), anyInt()))
         .thenReturn(List.of(faulted, won));
     when(runRepository.findState(eq(tenant), any(UUID.class)))

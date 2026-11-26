@@ -106,8 +106,14 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class ApprovalService {
 
-  /** The system actor recorded on the audit trail of an expiry — never a human, never a token. */
-  static final String EXPIRY_ACTOR = "agentflow-approval-expiry";
+  /**
+   * The system actor recorded on the audit trail of an expiry — never a human, never a token. Since
+   * S07-18 this is the one stable service principal subject the worker runs under ({@code
+   * agentflow-worker}), the same identity the worker loop itself uses for every transition and
+   * audit record it writes; the per-scheduler actor was dropped to keep the attribution uniform and
+   * attributable to the platform service.
+   */
+  static final String EXPIRY_ACTOR = ServiceIdentity.WORKER_SERVICE_ACTOR;
 
   private final ApprovalRepository approvalRepository;
   private final WorkflowStepRunRepository stepRepository;
@@ -359,6 +365,18 @@ public class ApprovalService {
   }
 
   /**
+   * The redacted audit metadata for an expiry: the gated step (and, when the run carries an actor,
+   * the run's requester — the user who initiated the run, kept on the run row), S07-18. Neither the
+   * step key nor the requester is a secret; the subject itself is the stable service principal
+   * ({@link ServiceIdentity}), never a user token.
+   */
+  private static String expiryAuditMetadata(OverdueApprovalRow overdue) {
+    String requester = overdue.requester();
+    String base = "step=" + overdue.stepKey();
+    return (requester == null || requester.isBlank()) ? base : base + ",requester=" + requester;
+  }
+
+  /**
    * Expire one overdue {@code PENDING} approval and refuse its gated side effect — the entry point
    * of the approval-expiry sweep (S11-05). The guarded {@code EXPIRED} write wins the row against a
    * racing human decision (or a concurrent sweeper); the loser sees a {@link ConflictException} and
@@ -390,7 +408,7 @@ public class ApprovalService {
         AuditAction.EXPIRE,
         AuditResourceType.APPROVAL,
         overdue.id(),
-        "step=" + overdue.stepKey());
+        expiryAuditMetadata(overdue));
     refuseSideEffect(
         overdue.tenantId(),
         overdue.runId(),

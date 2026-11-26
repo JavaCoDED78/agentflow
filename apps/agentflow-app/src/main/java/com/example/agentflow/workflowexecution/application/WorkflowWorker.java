@@ -100,6 +100,12 @@ public class WorkflowWorker implements DisposableBean {
   private final ApprovalRepository approvalRepository;
 
   private final List<StepHandler> handlers;
+
+  /**
+   * The stable service-principal actor the worker runs under (S07-18, {@link ServiceIdentity}):
+   * every transition, row and audit record it writes goes out under this subject, so the run
+   * history is uniformly attributable to the platform service rather than to a per-instance id.
+   */
   private final String actor;
 
   private final AgentFlowProperties properties;
@@ -163,7 +169,9 @@ public class WorkflowWorker implements DisposableBean {
    * @param approvalRepository the approvals owner (the durable pause at a {@code HUMAN_APPROVAL}
    *     boundary — S11-03)
    * @param handlers the {@link StepHandler} beans, resolved by node type at runtime
-   * @param properties the validated application configuration (used for the event {@code actor})
+   * @param properties the validated application configuration (the service-client decision is read
+   *     from it; the stable service subject is derived from {@link ServiceIdentity}, not from the
+   *     instance id)
    */
   public WorkflowWorker(
       WorkflowRunRepository runRepository,
@@ -254,7 +262,18 @@ public class WorkflowWorker implements DisposableBean {
     this.checkpointAdapter = checkpointAdapter;
     this.approvalRepository = approvalRepository;
     this.handlers = handlers;
-    this.actor = resolveActor(properties);
+    // S07-18: the worker runs under a single, stable service-principal actor (the
+    // {@code agentflow-worker} subject), never the per-instance lease identity — the instanceId
+    // stays on the lease ({@code lease_owner}) and never doubles as an actor. The M2M client
+    // decision is validated up front: when the operator asks the worker to call protected APIs
+    // or external services, a missing or blank secret refuses construction (a clear startup
+    // failure); when it is not needed, the worker issues no token and holds none.
+    boolean serviceClientEnabled = properties.getWorker().isServiceClientEnabled();
+    ServiceIdentity identity =
+        ServiceIdentity.worker(
+            serviceClientEnabled,
+            serviceClientEnabled ? System.getenv(ServiceIdentity.M2M_CLIENT_SECRET_ENV) : null);
+    this.actor = identity.subject();
     this.properties = properties;
     this.clock = clock == null ? Clock.systemUTC() : clock;
     // A DB-less skeleton may leave the execution config unset; the defaults keep the loop stopping
@@ -1044,14 +1063,6 @@ public class WorkflowWorker implements DisposableBean {
           e.getStatusCode());
       return false;
     }
-  }
-
-  /**
-   * @return the run's event actor: the configured worker instance id, or a stable default.
-   */
-  private String resolveActor(AgentFlowProperties properties) {
-    String instanceId = properties.getWorker().getInstanceId();
-    return (instanceId != null && !instanceId.isBlank()) ? instanceId : "agentflow-worker";
   }
 
   /**

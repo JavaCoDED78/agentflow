@@ -351,17 +351,21 @@ public class ApprovalRepository {
    */
   public List<OverdueApprovalRow> findOverduePending(OffsetDateTime cutoff, int limit) {
     return jdbc.query(
-        "SELECT id, tenant_id, run_id, step_key, version FROM "
+        "SELECT a.id, a.tenant_id, a.run_id, a.step_key, a.version, r.created_by AS requester"
+            + " FROM "
             + TABLE
-            + " WHERE status = 'PENDING' AND expiry IS NOT NULL AND expiry < ?"
-            + " ORDER BY expiry ASC LIMIT ?",
+            + " a"
+            + " LEFT JOIN workflow_runs r ON r.id = a.run_id AND r.tenant_id = a.tenant_id"
+            + " WHERE a.status = 'PENDING' AND a.expiry IS NOT NULL AND a.expiry < ?"
+            + " ORDER BY a.expiry ASC LIMIT ?",
         (rs, rowNum) ->
             new OverdueApprovalRow(
                 rs.getObject("id", UUID.class),
                 rs.getObject("tenant_id", UUID.class),
                 rs.getObject("run_id", UUID.class),
                 rs.getString("step_key"),
-                rs.getInt("version")),
+                rs.getInt("version"),
+                rs.getString("requester")),
         cutoff,
         limit);
   }
