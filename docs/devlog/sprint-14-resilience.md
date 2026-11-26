@@ -4,6 +4,7 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-09 — provider error matrix](#s14-09--provider-error-matrix)
 - [S14-08 — Redis outage verification](#s14-08--redis-outage-verification)
 - [S14-07 — PostgreSQL outage / unknown commit](#s14-07--postgresql-outage--unknown-commit)
 - [S14-06 — concurrent lease claims](#s14-06--concurrent-lease-claims)
@@ -12,6 +13,41 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-09 — provider error matrix
+
+### What changed
+
+One new test suite, [`ProviderErrorMatrixTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/provider/ProviderErrorMatrixTest.java) (7 tests, DB-free, direct construction — the same pattern as `ResilientChatModelTest`), plus one new fixture on [`FakeModelProvider`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ai/provider/FakeModelProvider.java): the **`SERVER_ERROR`** fixture — the missing half of the provider error space. It reproduces an HTTP 5xx exactly like an SDK fault does (an `OpenAIServiceException` with status code 500, the same anonymous-subclass technique the 429 fixture uses), so the production `ProviderExceptionClassifier` maps it to `SERVER_ERROR` and the planner maps it to `TRANSPORT_FAILURE`, exactly like a live 500. One new `5XX`/`500` config alias alongside the existing `429` alias; the accepted-mode list in the config error and the javadoc updated to match, and `FakeModelConfigurationTest` gained a `server-error`/`500` config-wiring case (5 → 6 tests) pinning the alias through the `ApplicationContextRunner`.
+
+The matrix drives every row of the error space through the **full production seam** — `PlannerService` → `ResilientChatModel` (bounded retry + concurrency cap, S09-09) → the deterministic fake provider — with the real `ProviderExceptionClassifier`, a `SimpleMeterRegistry` and a `ModelBudget`:
+
+- **Fault rows — timeout / 429 / 5xx** (each an `OpenAIServiceException` or a `TimeoutException` cause chain): every wrapper attempt fails, so the whole call spends **2 wrapper attempts × 2 planner attempts = 4 model calls**, recorded as `timeout` / `rate_limit` / `server_error` in `agentflow.ai.provider.chat.errors.total{reason}` (one increment per failed wrapper attempt, never an invented reason). The terminal failure is `PlannerPlanParseException` with classification `TRANSPORT_FAILURE` — never a silent success. No tokens are recorded (the wrapper never holds a response), the whole-call latency timer records one sample per wrapper call (2), and the usage reservation is **kept** on both failed attempts (never settled on failure) — the committed headroom is `2 ×` the conservative estimate.
+- **Invalid structured output** (the `INVALID_PLAN` fixture — well-formed JSON that is not a structurally valid plan): the wrapper succeeds and returns a response carrying the fixture's usage block, so the planner repairs once, then fails terminal as `PlannerFailure.SCHEMA_MISMATCH` with exactly **2 model calls**. The errors counter stays empty (the wrapper never fails — this is a planner-level failure), the latency timer records 2 samples, tokens are recorded from the provider's own report (12 input / 6 output per attempt × 2 = **24 / 12** — never invented), and both failed attempts keep their reservation.
+- **Refusal** (`null` content, `content_filter` stop): never retried (not a repairable failure), exactly **1 model call**, terminal classification `PROVIDER_REFUSAL`, no errors counter, a single latency sample, **no tokens** (the refusal carries no usage block), and exactly one kept reservation.
+- **Valid-plan control:** exactly 1 model call, the plan returned, tokens recorded once (12 / 6), one reserved estimate — the baseline that a clean path introduces no error counter and no extra calls.
+
+A second, dedicated test proves the budget-blocking half of the same criterion: a budget whose headroom covers exactly one conservative estimate lets the initial attempt run (2 wrapper attempts, 2 model calls), then the S09-08 repair is refused at the pre-call reserve — the fake is never asked again (`calls == 2`), the refusal is the terminal failure (`InsufficientBudgetException`), the one reservation that did proceed is kept (never silently released).
+
+No production change — the resilience contract was already in place (S09-09 / S09-08 / S09-10); the new suite proves the acceptance criterion that no single test covered: **retries bounded, expenses accounted, runaway calls absent**, with the sibling 5xx row filled in. The matrix is intentionally chat-side (`ResilientChatModel` + `PlannerService`); the embedding wrapper is covered by `ResilientEmbeddingModelTest` and the failure-matrix row cites both.
+
+### Why
+
+`S14-09` is the P0 Sprint-14 task: "fake provider возвращает timeout, 429, 5xx, invalid structured output и refusal; сверить retry count, status, usage reservation и metrics." The fake provider already reproduced `TIMEOUT` / `RATE_LIMIT` / `INVALID_PLAN` / `REFUSAL` (S09-11) — but a 5xx scenario was missing, and no test verified the whole matrix at once: the retry bound against the real wrapper, the terminal status, the usage reservation across failed attempts, and the metrics evidence — as one criterion set rather than four separate suites. The new suite makes the criterion one executable artifact: six parameterized rows (one per provider outcome + the valid control) plus the budget-blocking test, all through the production seam.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.provider.ProviderErrorMatrixTest' --tests 'com.example.agentflow.ai.provider.FakeModelProviderTest' --tests 'com.example.agentflow.ai.provider.FakeModelConfigurationTest'` — BUILD SUCCESSFUL; `ProviderErrorMatrixTest` **7 tests, 0 failures, 0 errors** (JUnit XML `tests="7" failures="0" errors="0"`); `FakeModelProviderTest` **23 tests, 0 failures, 0 errors** (XML `tests="23"` — up from 20, +3 new 5xx/alias checks); `FakeModelConfigurationTest` **6 tests, 0 failures, 0 errors** (XML `tests="6"` — up from 5, +1 5xx config-wiring case).
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ai.*'` — BUILD SUCCESSFUL, **260 tests, 0 failures, 0 errors** (whole `ai` module, XML-verified; 259 before the config-wiring test, +1).
+- `./gradlew check` — BUILD SUCCESSFUL, exit 0.
+- `./gradlew :apps:agentflow-app:check --rerun-tasks` — BUILD SUCCESSFUL, 8 executed (cache bypassed).
+- Final gate on the finished tree (after the config-wiring test): `./gradlew :apps:agentflow-app:check` — BUILD SUCCESSFUL in 42s.
+
+### Scope / follow-up
+
+The embedding side stays in `ResilientEmbeddingModelTest` (S09-09/S09-11); the matrix intentionally covers the chat/planner path. No production change — the resilience contract already existed; the new suite proves the acceptance criterion and fills the missing 5xx fixture. The operational injection remains the fake provider — no live endpoint was needed.
 
 ---
 

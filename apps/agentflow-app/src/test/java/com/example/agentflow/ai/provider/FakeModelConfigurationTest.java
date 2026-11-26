@@ -67,6 +67,18 @@ class FakeModelConfigurationTest {
   }
 
   @Test
+  void the_configured_server_error_mode_is_honored() {
+    runner
+        .withPropertyValues("agentflow.ai.provider=fake", "agentflow.ai.provider.fake.mode=500")
+        .run(
+            context -> {
+              assertThat(context).hasNotFailed();
+              assertThat(context.getBean(FakeModelProvider.class).fixture())
+                  .isEqualTo(FakeModelProvider.Fixture.SERVER_ERROR);
+            });
+  }
+
+  @Test
   void an_unknown_fixture_mode_fails_the_context_at_bean_creation() {
     runner
         .withPropertyValues("agentflow.ai.provider=fake", "agentflow.ai.provider.fake.mode=chaos")

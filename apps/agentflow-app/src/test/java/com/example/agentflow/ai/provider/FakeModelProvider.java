@@ -40,6 +40,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@link Fixture#RATE_LIMIT} — the call fails the way an HTTP 429 does: the thrown fault is
  *       an {@link OpenAIServiceException} with status code 429, so the production classifier maps
  *       it to {@code RATE_LIMIT} (retryable) and the Planner maps it to {@code TRANSPORT_FAILURE};
+ *   <li>{@link Fixture#SERVER_ERROR} — the call fails the way an HTTP 5xx does: the thrown fault is
+ *       an {@link OpenAIServiceException} with status code 500, so the production classifier maps
+ *       it to {@code SERVER_ERROR} (retryable) and the Planner maps it to {@code
+ *       TRANSPORT_FAILURE};
  *   <li>{@link Fixture#REFUSAL} — a completion with {@code null} content and a {@code
  *       content_filter} finish reason, the shape the port contract defines for a refusal.
  * </ul>
@@ -117,8 +121,8 @@ public final class FakeModelProvider implements ChatModelPort {
    *
    * @param request the request to answer (ignored except for the call count)
    * @return the fixture's response; {@code null} content on the refusal fixture
-   * @throws RuntimeException the fixture's fault (timeout / rate limit) when it models a failed
-   *     call
+   * @throws RuntimeException the fixture's fault (timeout / rate limit / 5xx) when it models a
+   *     failed call
    */
   @Override
   public ChatResponse chat(ChatRequest request) {
@@ -131,6 +135,7 @@ public final class FakeModelProvider implements ChatModelPort {
           throw new IllegalStateException(
               "fake provider read timeout", new TimeoutException("fake provider timed out"));
       case RATE_LIMIT -> throw rateLimited();
+      case SERVER_ERROR -> throw serverError();
       case REFUSAL -> new ChatResponse(MODEL, null, "content_filter", null);
     };
   }
@@ -148,6 +153,48 @@ public final class FakeModelProvider implements ChatModelPort {
       @Override
       public int statusCode() {
         return 429;
+      }
+
+      @Override
+      public com.openai.core.http.Headers headers() {
+        return null;
+      }
+
+      @Override
+      public com.openai.core.JsonValue body() {
+        return null;
+      }
+
+      @Override
+      public Optional<String> code() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<String> param() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<String> type() {
+        return Optional.empty();
+      }
+    };
+  }
+
+  /**
+   * The 500 fault, shaped exactly like the OpenAI SDK's generic service exception with status code
+   * 500 (the same anonymous-subclass technique {@link #rateLimited()} uses). The production
+   * classifier's generic status-code branch therefore maps this fixture to {@code SERVER_ERROR},
+   * not {@code UNKNOWN}.
+   *
+   * @return a thrown-never-returned 500 service fault
+   */
+  private static RuntimeException serverError() {
+    return new OpenAIServiceException("fake provider 500", null) {
+      @Override
+      public int statusCode() {
+        return 500;
       }
 
       @Override
@@ -198,15 +245,18 @@ public final class FakeModelProvider implements ChatModelPort {
     /** Fail every call the way an HTTP 429 does (a 429 service fault). */
     RATE_LIMIT,
 
+    /** Fail every call the way an HTTP 5xx does (a 500 service fault). */
+    SERVER_ERROR,
+
     /** Answer every call with a refusal: {@code null} content and a {@code content_filter} stop. */
     REFUSAL;
 
     /**
      * Resolve a configuration value (for example {@code agentflow.ai.provider.fake.mode}) to a
      * fixture. Kebab-case names are accepted case-insensitively ({@code valid-plan}), and {@code
-     * 429} is accepted as an alias for {@link #RATE_LIMIT}; blank means the documented default,
-     * {@link #VALID_PLAN}. An unknown value is a configuration error and fails fast with the list
-     * of supported modes.
+     * 429} is accepted as an alias for {@link #RATE_LIMIT} and {@code 500} for {@link
+     * #SERVER_ERROR}; blank means the documented default, {@link #VALID_PLAN}. An unknown value is
+     * a configuration error and fails fast with the list of supported modes.
      *
      * @param mode the configured mode; {@code null} or blank selects {@link #VALID_PLAN}
      * @return the fixture for {@code mode}
@@ -220,6 +270,9 @@ public final class FakeModelProvider implements ChatModelPort {
       if ("429".equals(normalized)) {
         return RATE_LIMIT;
       }
+      if ("500".equals(normalized) || "5XX".equals(normalized)) {
+        return SERVER_ERROR;
+      }
       try {
         return valueOf(normalized);
       } catch (IllegalArgumentException e) {
@@ -227,7 +280,7 @@ public final class FakeModelProvider implements ChatModelPort {
             "unknown fake provider mode '"
                 + mode
                 + "'; expected one of: valid-plan, invalid-plan, malformed-response, timeout,"
-                + " 429 (rate limit), refusal",
+                + " 429 (rate limit), 500 (server error), refusal",
             e);
       }
     }
