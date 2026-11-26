@@ -90,8 +90,9 @@ remaining profiles are in [`infra/compose/README.md`](infra/compose/README.md).
 
 [`scripts/smoke-local.sh`](scripts/smoke-local.sh) (`S01-20`) starts a profile,
 waits for every service to become `healthy` through its compose healthcheck,
-prints a per-service summary and tears the stack down. It is the Sprint 1 smoke
-test — run it from a clean checkout:
+probes the Garage S3 endpoint from the Compose network (for profiles that run
+Garage), prints a per-service summary and tears the stack down. It is the Sprint 1
+smoke test — run it from a clean checkout:
 
 ```bash
 bash scripts/smoke-local.sh                       # core, then down
