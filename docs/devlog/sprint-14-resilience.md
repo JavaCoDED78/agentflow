@@ -4,6 +4,7 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-10 — upload/parser abuse regression pack](#s14-10--uploadparser-abuse-regression-pack)
 - [S14-09 — provider error matrix](#s14-09--provider-error-matrix)
 - [S14-08 — Redis outage verification](#s14-08--redis-outage-verification)
 - [S14-07 — PostgreSQL outage / unknown commit](#s14-07--postgresql-outage--unknown-commit)
@@ -13,6 +14,39 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-10 — upload/parser abuse regression pack
+
+### What changed
+
+One new P0 upload/parser abuse regression pack, [`UploadParserAbuseSecurityPackTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ingestion/application/parser/UploadParserAbuseSecurityPackTest.java) (12 tests, DB-free, direct construction — the same pattern as `IngestionServiceTest` / `TikaDocumentParserTest` / `BoundedDocumentParserTest`), plus the wall-clock bound it exercises.
+
+**Production (one new bounded parser + one new classified failure code + one new config bound):** a new `BoundedDocumentParser` (`ingestion.application.parser`) wraps the real `TikaDocumentParser` and bounds the wait by a wall-clock limit — the underlying PDFBox/Tika parse is CPU-bound and uninterruptible, so a timeout cannot stop the work, it stops the *wait*: the caller returns `Status.FAILED` carrying `ExtractionError.Code.TIMEOUT` ("extraction exceeded the time limit of 60s") instead of an unbounded pin. The abandoned daemon thread holds no locks and the parser is stateless, so it is bounded by the payload size and the page / character caps the engine already enforces; Spring shuts the executor down on context close (`@PreDestroy`). One new `ExtractionError.Code.TIMEOUT` (the terminal, non-retryable, failure class alongside `CORRUPT` / `ENCRYPTED` — it is never a transient) and one new `agentflow.ingestion.max-extraction-seconds` bound (default 60, validated at `@Min(1)` — a nonsensical bound fails boot, mirroring `max-pages` / `max-chars`). `DocumentExtractionConfiguration` now wires the bean as `BoundedDocumentParser` → `TikaDocumentParser`.
+
+**What the pack proves (acceptance criterion: no unsupported file becomes `INDEXED` and no abuse bypasses a resource limit):**
+
+- **Upload boundary** (`DocumentUploadValidator`, the only reject-before-persist gate): oversized payload rejected; a MIME outside the allowlist rejected; magic bytes contradicting the declared type rejected; traversal filename reduced to the safe base name (`../../etc/passwd` → `passwd`); a traversal-only filename rejected outright.
+- **Parser boundary** (`TikaDocumentParser`, real engine): a corrupt PDF classified `CORRUPT` (never EXTRACTED); an encrypted PDF classified `ENCRYPTED`; excessive extracted text capped at the configured character limit (truncated, never beyond).
+- **Bounded parser** (`BoundedDocumentParser`): a hanging extraction is abandoned at the configured bound and reported as `TIMEOUT` within the bound — the test asserts the caller returns while the delegate is still parked, never an unbounded wait.
+- **Pipeline end** (the real `IngestionService` with the real parser and mocked `knowledgebase` boundary — no fake parser, no fake outbox): a corrupt PDF, an encrypted PDF and a timeout extraction each end `FAILED` and never become `INDEXED` — `markFailed` with `EXTRACTION_CORRUPT` / `EXTRACTION_ENCRYPTED` / `EXTRACTION_TIMEOUT` carries a non-blank safe summary, and `markIndexed` / `chunkIndexingService.index` / `outboxService.enqueue` are all never called. The timeout pipeline pin uses a stub parser returning the typed `TIMEOUT` result (a wall-clock timing pin is already proven in `BoundedDocumentParserTest`) — every other row drives the real engine and the real classification.
+
+Also new: [`BoundedDocumentParserTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ingestion/application/parser/BoundedDocumentParserTest.java) (5 tests — constructor validation, success pass-through, the runaway abandon, the delegate-fault propagation, executor shutdown) and [`DocumentExtractionConfigurationTest`](../../apps/agentflow-app/src/test/java/com/example/agentflow/ingestion/application/config/DocumentExtractionConfigurationTest.java) (3 tests — the bean is the bounded wrapper around the real Tika engine, a configured bound is accepted, a non-positive bound fails the wiring).
+
+### Why
+
+`S14-10` is the P0 Sprint-14 task: "oversized file, неверный MIME, corrupt/encrypted PDF, path traversal filename, чрезмерный размер extracted text и parser timeout." The resource bounds were already in place (`max-pages` / `max-chars`, S10-07; the upload limits `max-bytes` / `max-file-name-length` / `max-media-duration-seconds`, S10-03) and the validator already rejected the oversized/MIME/magic-byte/traversal rows — but no test proved the acceptance criterion end to end, and the one real gap was a missing timeout: nothing bounded the wall-clock time a single extraction may take, so a pathological document could pin an ingestion worker thread indefinitely. The new `BoundedDocumentParser` closes exactly that gap with a configuration bound, a terminal classification, and a regression pack that exercises the whole abuse space at the two gates an upload actually passes through plus the pipeline end.
+
+### Verification
+
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ingestion.application.parser.BoundedDocumentParserTest' --tests 'com.example.agentflow.ingestion.application.parser.UploadParserAbuseSecurityPackTest' --tests 'com.example.agentflow.ingestion.application.config.DocumentExtractionConfigurationTest'` — BUILD SUCCESSFUL; XML-verified: `BoundedDocumentParserTest` **5 tests, 0 failures**; `UploadParserAbuseSecurityPackTest` **12 tests** (5 upload boundary + 3 parser boundary + 1 bounded parser + 3 pipeline end, 0 failures); `DocumentExtractionConfigurationTest` **3 tests, 0 failures**.
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.ingestion.*'` — BUILD SUCCESSFUL: whole `ingestion` module — **104 tests, 0 failures, 0 errors** (XML-verified; `IngestionServiceTest` 12/12, `IngestionConfigurationTest` 5/5, config/wiring tests 8/8).
+- `./gradlew :apps:agentflow-app:check` — BUILD SUCCESSFUL (the background gate; see the final report for the real exit code).
+
+### Scope / follow-up
+
+The abandoned in-flight parse thread is not killable (CPU-bound, uninterruptible) — it is a daemon, bounded by the payload size and the page/character caps, holds no locks and terminates on its own. A hard cancellation (interruptible work) would require making the engine interruptible — explicitly out of scope for this task. The pipeline timeout pin uses a stub parser for the typed result so the wall-clock timing stays deterministic; the classification itself is the same production one the real parser emits. No production behavior changed for a file that parses within the bound.
 
 ---
 

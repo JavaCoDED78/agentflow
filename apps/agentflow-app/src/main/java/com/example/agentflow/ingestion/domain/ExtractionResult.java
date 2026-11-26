@@ -19,7 +19,7 @@ import java.util.Objects;
  *   <li><b>{@link Status#EMPTY}</b> &mdash; the payload carried no extractable content (a blank,
  *       zero-byte or zero-page document). This is not an error. {@link Status#FAILED}</b> &mdash;
  *       the payload could not be parsed; {@link #error()} carries the classified {@link
- *       ExtractionError} ({@code CORRUPT} or {@code ENCRYPTED}).
+ *       ExtractionError} ({@code CORRUPT}, {@code ENCRYPTED} or {@code TIMEOUT}).
  * </ul>
  *
  * <p>Nothing here is a thrown fault: the parser maps every failure to a {@link Status} + {@link

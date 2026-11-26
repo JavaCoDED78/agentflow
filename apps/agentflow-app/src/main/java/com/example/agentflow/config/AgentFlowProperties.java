@@ -2098,15 +2098,16 @@ public class AgentFlowProperties {
   }
 
   /**
-   * Document-extraction limits (S10-07). Bound from {@code agentflow.ingestion.*}; these bound the
-   * {@code DocumentParser} the ingestion worker runs on an already-uploaded document (extraction
-   * happens in the worker, never in the upload use case &mdash; S10-06). The limits live in
-   * configuration, not in code: the number of pages read from a PDF and the number of characters
-   * retained from the extracted text are capped here so a very large or pathological document
-   * cannot exhaust a worker. They are validated at startup so a nonsensical limit fails boot rather
-   * than silently accepting everything, mirroring the {@link Upload} limits.
+   * Document-extraction limits (S10-07; the wall-clock bound S14-10). Bound from {@code
+   * agentflow.ingestion.*}; these bound the {@code DocumentParser} the ingestion worker runs on an
+   * already-uploaded document (extraction happens in the worker, never in the upload use case
+   * &mdash; S10-06). The limits live in configuration, not in code: the number of pages read from a
+   * PDF, the number of characters retained from the extracted text and the wall-clock time one
+   * extraction may take are capped here so a very large or pathological document cannot exhaust a
+   * worker. They are validated at startup so a nonsensical limit fails boot rather than silently
+   * accepting everything, mirroring the {@link Upload} limits.
    *
-   * <p>Two independent bounds:
+   * <p>Three independent bounds:
    *
    * <ul>
    *   <li><b>max-pages</b> &mdash; the maximum number of pages read from a PDF (default 100). Pages
@@ -2115,6 +2116,9 @@ public class AgentFlowProperties {
    *   <li><b>max-chars</b> &mdash; the maximum number of characters retained from the extracted
    *       text (default 500000, ~500 KiB). Text beyond this cap is dropped; {@code
    *       ExtractionResult#truncated()} is {@code true} when it was.
+   *   <li><b>max-extraction-seconds</b> &mdash; the maximum wall-clock time one extraction may take
+   *       (default 60). A document that would exceed this bound is abandoned: the extraction
+   *       returns a {@code TIMEOUT} failure (the document never becomes INDEXED).
    * </ul>
    */
   public static class Ingestion {
@@ -2129,6 +2133,14 @@ public class AgentFlowProperties {
      */
     @Min(value = 1, message = "agentflow.ingestion.max-chars must be at least 1")
     private int maxChars = 500 * 1000;
+
+    /**
+     * Maximum number of seconds one extraction may take (the wall-clock bound of the bounded
+     * parser). Default 60; at least 1, a value below 1 fails. A document that would exceed this
+     * bound is abandoned as a {@code TIMEOUT} failure — the document never becomes INDEXED.
+     */
+    @Min(value = 1, message = "agentflow.ingestion.max-extraction-seconds must be at least 1")
+    private int maxExtractionSeconds = 60;
 
     /**
      * Chunk-embedding batching parameters (S10-12), bound from {@code
@@ -2168,6 +2180,20 @@ public class AgentFlowProperties {
      */
     public void setMaxChars(int maxChars) {
       this.maxChars = maxChars;
+    }
+
+    /**
+     * @return the maximum number of seconds one extraction may take (default {@code 60})
+     */
+    public int getMaxExtractionSeconds() {
+      return maxExtractionSeconds;
+    }
+
+    /**
+     * @param maxExtractionSeconds the wall-clock bound for one extraction in seconds (at least 1)
+     */
+    public void setMaxExtractionSeconds(int maxExtractionSeconds) {
+      this.maxExtractionSeconds = maxExtractionSeconds;
     }
 
     /**
