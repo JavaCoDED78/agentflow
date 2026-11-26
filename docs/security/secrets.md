@@ -82,6 +82,17 @@ appear in Git, logs, or diagnostic endpoints* — with real code:
 If a developer ever commits a real key (or the canary stand-in for it), `git ls-files` + the scan
 fails `./gradlew check`.
 
+## CI secret scan (S14-11)
+
+The same guarantee is enforced in the CI `secret-scan` job
+(`.github/workflows/security.yml`, `docs/security/scan-policy.md`): gitleaks
+scans the **full git history** (not just the working tree) with the
+`.gitleaks.toml` config — a narrow, documented allowlist for the sanctioned
+fixture files and one historical local-dev placeholder in `.env.example`,
+nothing else. Secret findings are never waived and always fail the job; the
+canary fixture itself is a test fixture and is not matched. `CanaryLeakScanTest`
+remains the repo-side guard so the failure also shows up in `./gradlew check`.
+
 ## Redact the whole value of prompt / document fields (S09-13)
 
 The provider key is one secret surface; the prompt and the document body are another — and they are

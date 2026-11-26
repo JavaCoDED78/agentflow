@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "comment": "AgentFlow vulnerability-finding waivers. Waivers cover vulnerability (severity CRITICAL/HIGH) findings only — never secret findings — and require a justified reason, an approver and an ISO-date expiry. An expired waiver fails the gate. See docs/security/scan-policy.md.",
+  "waivers": []
+}

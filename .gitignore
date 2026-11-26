@@ -47,3 +47,7 @@ docker-compose*.override.yml
 *~
 .fleet/
 infra/observability/prometheus/scrape/token
+
+# ---- Security scan artifacts ----
+trivy-vulns.json
+trivy-image.json
