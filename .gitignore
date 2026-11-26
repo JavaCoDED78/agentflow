@@ -51,3 +51,6 @@ infra/observability/prometheus/scrape/token
 # ---- Security scan artifacts ----
 trivy-vulns.json
 trivy-image.json
+
+# ---- Load-test output ----
+docs/load-tests/results/
