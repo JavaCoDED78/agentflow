@@ -288,6 +288,9 @@ prompts) appear in metrics, logs, or Actuator output (invariant 9).
   default; the model is an untrusted planner (`docs/adr/ADR-006-untrusted-planner.md`).
 - **`S04-13`** — the HTTP-boundary security regression suite proving the tenant-spoofing and
   cross-tenant-read criteria through the live bearer-token chain.
+- **`S04-20`** — the real-Keycloak integration tier: the realm contract (`iss`/`aud`/tenant claim/
+  roles, no forbidden grant types, parity with the Compose-imported realm) and the production JWT
+  decoder (valid token accepted; wrong issuer/audience/expired rejected).
 
 ---
 
@@ -302,7 +305,31 @@ prompts) appear in metrics, logs, or Actuator output (invariant 9).
   reads back its status, a non-ACTIVE row reads back as-is, and a missing row answers `Optional.empty()`.
 - **HTTP boundary** — `SecurityFilterChainTest` drives the real `SecurityFilterChain` on the
   `secured-test` profile (a `workflow:read` caller reading another tenant's resource gets `404`; a
-  body-carried `tenant_id` is ignored).
+  body-carried `tenant_id` is ignored). This fast tier (`src/test`, no Docker) uses a locally
+  signed JWT — the same decoder config, a test-only key pair standing in for Keycloak's.
+- **Real Keycloak tier (S04-20)** — the integration tier (`src/integrationTest`, Testcontainers on
+  the pinned Keycloak image) runs against the production realm and the real production decoder:
+  - `KeycloakRealmContractTest` (8 tests) — the realm the app is configured for: `agentflow-web` is
+    a public standard-flow client with no direct/implicit/service-account grants; `agentflow-service`
+    is a confidential client with service accounts only (no standard flow); `agentflow-api` exists as
+    the resource server and is not a user-facing client; no client mixes standard-flow and
+    service-account grants; the `agentflow` scope carries the tenant-id (`tenant_id`), realm-roles
+    (`realm_access.roles`) and fixed-audience (`agentflow-api`) mappers; both user-facing clients
+    default to the scope; the realm grants exactly the 8 catalogue roles (no custom extras); and a
+    token minted by the S04-18 fixture carries the pinned `iss`/`aud=agentflow-api`/`tenant_id`/role
+    set.
+  - `RealJwtDecoderTest` (4 tests) — the production `SecurityConfiguration.jwtDecoder()`: a valid
+    token decodes with signature, issuer, audience and expiry all checked; wrong issuer, wrong
+    audience and expired tokens are each rejected. Mints through the same S04-18 fixture
+    (`KeycloakRealmFixture`), which imports the Compose-pinned realm and the S04-18 identities via
+    the Admin API.
+- **Tier split (S04-20)** — which suite proves what: the fast `src/test` tier (`SecurityFilterChainTest`,
+  `secured-test` profile) proves the HTTP-boundary contract (401/403/404 masking, cross-tenant
+  denial, body-carried `tenant_id` ignored) with a locally-signed JWT and no Docker dependency.
+  The integration tier (`KeycloakRealmContractTest` + `RealJwtDecoderTest`) proves the Keycloak-side
+  contract: the realm configuration and the production decoder against a real Keycloak — the part
+  a locally-signed test can never prove (JWKS discovery, realm-level client/audience wiring, the
+  realm's claim mappers). Neither tier substitutes for the other; both are required.
 - **Local run** — bring up Keycloak (`docker compose --profile identity up -d`) and PostgreSQL,
   then follow [`docs/runbooks/local-auth.md`](../runbooks/local-auth.md) to issue a token and hit a
   secured endpoint.

@@ -219,7 +219,7 @@ provides the localhost defaults — see [`.env.example`](.env.example).
 ## Tests
 
 - `./gradlew check` — unit tests, the module-boundary and no-cycles architecture gates, the formatting gate (`spotlessCheck`) and the OpenAPI contract gate. Runs without Docker.
-- `./gradlew integrationTest` — Testcontainers suites on the real PostgreSQL/pgvector, Kafka, Redis and Keycloak images (the same images the Compose profiles pin).
+- `./gradlew integrationTest` — Testcontainers suites on the real PostgreSQL/pgvector, Kafka, Redis and Keycloak images (the same images the Compose profiles pin). The identity security suite is two tiers: `SecurityFilterChainTest` (fast, `src/test`, locally-signed JWT) proves the HTTP boundary, while `KeycloakRealmContractTest` and `RealJwtDecoderTest` (`src/integrationTest`, real Keycloak) prove the realm contract and the production JWT decoder — see `docs/security/authentication-authorization.md`.
 
 The unit/integration split is explicit: `integrationTest` runs a separate source set (`src/integrationTest`), and the fast `test` gate additionally excludes `*IT` classes so a test class is one tier and never both. The integration tier is designed for stability, not first-minute luck:
 
