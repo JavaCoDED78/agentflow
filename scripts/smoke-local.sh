@@ -4,10 +4,11 @@
 #
 # Brings up a Compose profile (default: `core`) from
 # infra/compose/docker-compose.yml, waits for every service in that profile to
-# become `healthy` through its compose healthcheck, prints a per-service
-# summary and tears the stack down. It is the Sprint 1 "working smoke test": a
-# green run proves the base stack starts reproducibly from a clean checkout
-# without any verbal instructions.
+# become `healthy` through its compose healthcheck, probes the Garage S3
+# endpoint from the compose network (for profiles that run Garage), prints a
+# per-service summary and tears the stack down. It is the Sprint 1 "working
+# smoke test": a green run proves the base stack starts reproducibly from a
+# clean checkout without any verbal instructions.
 #
 # Usage:
 #   bash scripts/smoke-local.sh                       # core profile, then down
@@ -29,6 +30,10 @@ COMPOSE_FILE="infra/compose/docker-compose.yml"
 ENV_FILE="infra/compose/.env"
 WAIT_SECONDS_PER_SERVICE=120
 CHECK_INTERVAL=5
+GARAGE_PROBE_IMAGE="alpine:3.21"
+# The Garage S3 endpoint probe runs from the compose network (S01-15): a real S3
+# client needs the pinned SDK (S10-03, Sprint 7) — this probe only proves the
+# endpoint serves an HTTP response, which is the readiness contract.
 
 # container name -> "Display name|host port"
 declare -A SERVICE_DISPLAY=(
@@ -69,6 +74,26 @@ expected_services() {
 # The container's compose health status, or "missing" if not running.
 container_status() {
   docker inspect --format '{{.State.Health.Status}}' "$1" 2>/dev/null || echo "missing"
+}
+
+# Garage S3 endpoint probe from the compose network (S01-15).
+#
+# Expected behaviour: the S3 API answers with an HTTP status line. An anonymous
+# request to the root is deliberately denied by the bucket policy (the bucket is
+# private, S10-02), so a 403 Forbidden is the pass shape; a connection failure
+# (refused / no route / no DNS) means the endpoint is unreachable and fails the
+# check. This proves the endpoint is reachable from a Compose-network client —
+# the healthcheck only proves the in-container cluster is healthy.
+s3_probe() {
+  local out
+  out=$(docker run --rm --network agentflow "$GARAGE_PROBE_IMAGE" \
+        wget -S --spider -T 10 -q -S http://garage:3900/ 2>&1)
+  if grep -qE 'HTTP/1\.[01]' <<<"$out"; then
+    return 0
+  fi
+  echo "error: Garage S3 endpoint did not answer from the Compose network" >&2
+  echo "       $out" >&2
+  return 1
 }
 
 main() {
@@ -124,13 +149,27 @@ main() {
     sleep "$CHECK_INTERVAL"
   done
 
-  # 4) Report.
+  # 4) Garage S3 endpoint probe (profiles that run garage).
+  local s3_ok=1
+  if [[ " ${EXPECTED[*]} " == *" agentflow-garage "* ]]; then
+    echo "==> Probing the Garage S3 endpoint from the Compose network..."
+    if ! s3_probe; then
+      s3_ok=0
+    else
+      echo "       garage:3900 answers from the Compose network (anonymous root request denied as expected)"
+    fi
+  fi
+
+  # 5) Report.
   printf '\n%-30s %-10s %s\n' "SERVICE" "PORT" "STATUS"
   for name in "${EXPECTED[@]}"; do
     printf '%-30s %-10s %s\n' "${SERVICE_DISPLAY[$name]%%|*}" "${SERVICE_DISPLAY[$name]#*|}" "${STATUS[$name]}"
   done
+  if [[ " ${EXPECTED[*]} " == *" agentflow-garage "* ]]; then
+    printf '%-30s %-10s %s\n' "Garage S3 (network probe)" "3900" "$([[ $s3_ok == 1 ]] && echo 'healthy' || echo 'FAIL')"
+  fi
 
-  # 5) Cleanup unless asked to keep.
+  # 6) Cleanup unless asked to keep.
   if (( KEEP == 0 )); then
     echo "==> Tearing down (docker compose down)..."
     docker compose --file "$COMPOSE_FILE" --profile "$PROFILE" down >/dev/null
@@ -141,8 +180,8 @@ main() {
     printf 'Stop it later with: docker compose --file %s --profile %s down\n' "$COMPOSE_FILE" "$PROFILE"
   fi
 
-  (( all_ok == 1 )) && { echo "SMOKE TEST: PASS"; exit 0; }
-  echo "SMOKE TEST: FAIL - not all services are healthy" >&2
+  (( all_ok == 1 && s3_ok == 1 )) && { echo "SMOKE TEST: PASS"; exit 0; }
+  echo "SMOKE TEST: FAIL - not all services are healthy or the Garage S3 endpoint did not answer" >&2
   exit 1
 }
 

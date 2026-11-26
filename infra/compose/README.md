@@ -23,7 +23,11 @@ bucket and key persist in the metadata/data volumes across restarts. See
 via `GARAGE_S3_API_PORT` in a local `.env`). The RPC secret is injected via
 `GARAGE_RPC_SECRET` (never committed); the app's S3 client
 (`minio.access-key` / `minio.secret-key`) must match the Garage root key set
-here and in the root `.env`.
+here and in the root `.env`. The smoke gate (`scripts/smoke-local.sh`) probes the
+S3 endpoint from the Compose network — a probe container on the `agentflow`
+network asks `garage:3900` and passes only when the API answers — so a green
+smoke run proves the endpoint is reachable from a Compose-network client, not
+just the in-container cluster.
 
 ## Running the core profile
 
@@ -60,8 +64,15 @@ bash scripts/smoke-local.sh --keep                # leave the stack running
 
 It is a smoke gate: the script exits non-zero when any service does not become
 healthy, and it validates `docker compose config` for the chosen profile first.
-`messaging`/`full` need a one-time `KAFKA_CLUSTER_ID`, which the local
-`infra/compose/.env` provides.
+For profiles that run Garage (`core`, `full`) the gate additionally probes the
+S3 endpoint from the Compose network — a probe container on the `agentflow`
+network asks `garage:3900` for a response and passes only when the API answers
+with an HTTP status line (an anonymous root request is expected to be denied with
+`403 Forbidden` — the bucket is private, `S10-02`; a connection failure fails the
+gate). The probe is the `S01-15` readiness contract: the `/garage health`
+healthcheck proves the in-container cluster is healthy, this probe proves a
+Compose-network client can reach the S3 API. `messaging`/`full` need a one-time
+`KAFKA_CLUSTER_ID`, which the local `infra/compose/.env` provides.
 
 ## Running the messaging profile (Kafka, S01-14)
 
