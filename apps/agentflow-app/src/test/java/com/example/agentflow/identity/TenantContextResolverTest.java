@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.agentflow.identity.application.TenantClaimExtractor;
 import com.example.agentflow.identity.application.TenantContext;
 import com.example.agentflow.identity.application.TenantContextResolver;
+import com.example.agentflow.identity.persistence.TenantRepository;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
@@ -15,6 +16,8 @@ import com.nimbusds.jwt.SignedJWT;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -51,16 +54,30 @@ class TenantContextResolverTest {
 
   private JwtDecoder decoder;
 
-  private TenantContextResolver resolver;
-
   @BeforeEach
   void setUp() throws Exception {
     key = rsaKey();
     // Public (non-verifying) decoder: decode() parses the claims, it does not check signature.
     decoder = NimbusJwtDecoder.withPublicKey(key.toRSAPublicKey()).build();
-    // One singleton resolver instance shared by every test (and by the parallel test), so the
-    // thread-safety claim is exercised against a real Spring-style singleton.
-    resolver = new TenantContextResolver();
+  }
+
+  /** Builds a resolver backed by the stub tenant repository mapping each tenant to its status. */
+  private static TenantContextResolver resolver(Map<UUID, String> statuses) {
+    return new TenantContextResolver(fakeRepo(statuses));
+  }
+
+  /**
+   * A stub {@link TenantRepository}: status lookup by tenant id, {@code Optional.empty()} when the
+   * id carries no row. Used as-is (never touching {@code JdbcTemplate}) so the application-layer
+   * gate is exercised without a database.
+   */
+  private static TenantRepository fakeRepo(Map<UUID, String> statuses) {
+    return new TenantRepository(null) {
+      @Override
+      public Optional<String> findStatus(UUID tenantId) {
+        return Optional.ofNullable(statuses.get(tenantId));
+      }
+    };
   }
 
   @Test
@@ -69,7 +86,7 @@ class TenantContextResolverTest {
     String actor = "jdoe";
     Jwt jwt = signWithTenantAndSubject(tenant.toString(), actor);
 
-    TenantContext context = resolver.resolve(jwt);
+    TenantContext context = resolver(Map.of(tenant, "ACTIVE")).resolve(jwt);
 
     assertThat(context.tenantId()).isEqualTo(tenant);
     assertThat(context.actor()).isEqualTo(actor);
@@ -80,7 +97,7 @@ class TenantContextResolverTest {
     // A verified token that carries no tenant membership (no tenant_id claim).
     Jwt jwt = signClaim("preferred_username", "jdoe");
 
-    assertThatThrownBy(() -> resolver.resolve(jwt))
+    assertThatThrownBy(() -> new TenantContextResolver(null).resolve(jwt))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
@@ -92,7 +109,7 @@ class TenantContextResolverTest {
   void malformed_tenant_id_is_denied() {
     Jwt jwt = signWithTenantAndSubject("not-a-uuid", "jdoe");
 
-    assertThatThrownBy(() -> resolver.resolve(jwt))
+    assertThatThrownBy(() -> new TenantContextResolver(null).resolve(jwt))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
@@ -105,7 +122,8 @@ class TenantContextResolverTest {
     UUID tenant = UUID.randomUUID();
     Jwt jwt = signWithTenantAndSubject(tenant.toString(), "jdoe");
 
-    TenantContext context = resolver.resolveFromAuthentication(principal(jwt));
+    TenantContext context =
+        resolver(Map.of(tenant, "ACTIVE")).resolveFromAuthentication(principal(jwt));
 
     assertThat(context.tenantId()).isEqualTo(tenant);
     assertThat(context.actor()).isEqualTo("jdoe");
@@ -114,7 +132,8 @@ class TenantContextResolverTest {
   @Test
   void principal_that_is_not_a_verified_jwt_is_denied() {
     // e.g. the permissive test principal on the {@code test} profile carries no verified Jwt.
-    assertThatThrownBy(() -> resolver.resolveFromAuthentication(principal("anonymous")))
+    assertThatThrownBy(
+            () -> new TenantContextResolver(null).resolveFromAuthentication(principal("anonymous")))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
@@ -128,7 +147,8 @@ class TenantContextResolverTest {
     // attacker-controlled Kafka header would never reach here.
     UUID tenant = UUID.randomUUID();
 
-    TenantContext context = resolver.resolveFromStoredTenant(tenant, "agentflow-worker");
+    TenantContext context =
+        resolver(Map.of(tenant, "ACTIVE")).resolveFromStoredTenant(tenant, "agentflow-worker");
 
     assertThat(context.tenantId()).isEqualTo(tenant);
     assertThat(context.actor()).isEqualTo("agentflow-worker");
@@ -136,12 +156,104 @@ class TenantContextResolverTest {
 
   @Test
   void worker_resolves_tenant_from_stored_run_rejects_missing_tenant() {
-    assertThatThrownBy(() -> resolver.resolveFromStoredTenant(null, "agentflow-worker"))
+    assertThatThrownBy(
+            () -> new TenantContextResolver(null).resolveFromStoredTenant(null, "agentflow-worker"))
         .isInstanceOf(ResponseStatusException.class)
         .satisfies(
             e ->
                 assertThat(((ResponseStatusException) e).getStatusCode())
                     .isEqualTo(HttpStatus.UNAUTHORIZED));
+  }
+
+  // --- S04-19: tenant existence & status verification ------------------------------
+
+  @Test
+  void unknown_disabled_and_no_membership_are_denied_identically() {
+    // The S04-19 acceptance criterion: unknown and disabled tenants, and a user without
+    // membership, all get the same denial — the answer never reveals whether the tenant exists
+    // or its status.
+    UUID unknown = UUID.randomUUID();
+    UUID disabled = UUID.randomUUID();
+    Jwt unknownJwt = signWithTenantAndSubject(unknown.toString(), "jdoe");
+    Jwt disabledJwt = signWithTenantAndSubject(disabled.toString(), "jdoe");
+    Jwt noMembershipJwt = signClaim("preferred_username", "jdoe");
+
+    TenantContextResolver resolver = resolver(Map.of(disabled, "DISABLED"));
+
+    ResponseStatusException unknownDenial = denialOf(() -> resolver.resolve(unknownJwt));
+    ResponseStatusException disabledDenial = denialOf(() -> resolver.resolve(disabledJwt));
+    ResponseStatusException noMembershipDenial =
+        denialOf(() -> new TenantContextResolver(null).resolve(noMembershipJwt));
+
+    for (ResponseStatusException denial :
+        List.of(unknownDenial, disabledDenial, noMembershipDenial)) {
+      assertThat(denial.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+      assertThat(denial.getReason()).isEqualTo(TenantContextResolver.NO_TENANT_MESSAGE);
+    }
+    assertThat(disabledDenial.getReason()).isEqualTo(unknownDenial.getReason());
+    assertThat(noMembershipDenial.getReason()).isEqualTo(unknownDenial.getReason());
+  }
+
+  @Test
+  void any_status_other_than_active_is_refused() {
+    UUID tenant = UUID.randomUUID();
+    Jwt jwt = signWithTenantAndSubject(tenant.toString(), "jdoe");
+
+    for (String status : List.of("DISABLED", "SUSPENDED", "EMPTY", "")) {
+      TenantContextResolver resolver = resolver(Map.of(tenant, status));
+      assertThatThrownBy(() -> resolver.resolve(jwt))
+          .isInstanceOf(ResponseStatusException.class)
+          .satisfies(
+              e ->
+                  assertThat(((ResponseStatusException) e).getStatusCode())
+                      .isEqualTo(HttpStatus.UNAUTHORIZED));
+    }
+  }
+
+  @Test
+  void missing_database_is_denied_with_the_same_answer() {
+    // The app boots without a database (S01-02); the tenant gate must fail closed, and — like every
+    // other tenant failure — render the same tenant-agnostic answer.
+    UUID tenant = UUID.randomUUID();
+    Jwt jwt = signWithTenantAndSubject(tenant.toString(), "jdoe");
+
+    ResponseStatusException denial = denialOf(() -> new TenantContextResolver(null).resolve(jwt));
+
+    assertThat(denial.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    assertThat(denial.getReason()).isEqualTo(TenantContextResolver.NO_TENANT_MESSAGE);
+  }
+
+  @Test
+  void worker_refuses_an_unknown_tenant_and_a_disabled_one() {
+    // The worker path (S04-06) is checked against the same gate — a stored run whose tenant
+    // vanished or was disabled must not be processable.
+    UUID unknown = UUID.randomUUID();
+    UUID disabled = UUID.randomUUID();
+    TenantContextResolver resolver = resolver(Map.of(disabled, "DISABLED"));
+
+    assertThatThrownBy(() -> resolver.resolveFromStoredTenant(unknown, "agentflow-worker"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.UNAUTHORIZED));
+    assertThatThrownBy(() -> resolver.resolveFromStoredTenant(disabled, "agentflow-worker"))
+        .isInstanceOf(ResponseStatusException.class)
+        .satisfies(
+            e ->
+                assertThat(((ResponseStatusException) e).getStatusCode())
+                    .isEqualTo(HttpStatus.UNAUTHORIZED));
+  }
+
+  private static ResponseStatusException denialOf(Callable<TenantContext> call) {
+    try {
+      call.call();
+    } catch (ResponseStatusException e) {
+      return e;
+    } catch (Exception e) {
+      throw new IllegalStateException("expected a 401 denial, got " + e, e);
+    }
+    throw new IllegalStateException("expected a 401 denial, but resolution succeeded");
   }
 
   @Test
@@ -153,13 +265,14 @@ class TenantContextResolverTest {
     UUID tenantB = UUID.randomUUID();
     Jwt jwtA = signWithTenantAndSubject(tenantA.toString(), "a");
     Jwt jwtB = signWithTenantAndSubject(tenantB.toString(), "b");
+    TenantContextResolver shared = resolver(Map.of(tenantA, "ACTIVE", tenantB, "ACTIVE"));
 
     ExecutorService pool = Executors.newFixedThreadPool(8);
     try {
-      Resolved a1 = new Resolved(jwtA, tenantA);
-      Resolved b1 = new Resolved(jwtB, tenantB);
-      Resolved a2 = new Resolved(jwtA, tenantA);
-      Resolved b2 = new Resolved(jwtB, tenantB);
+      Resolved a1 = new Resolved(shared, jwtA);
+      Resolved b1 = new Resolved(shared, jwtB);
+      Resolved a2 = new Resolved(shared, jwtA);
+      Resolved b2 = new Resolved(shared, jwtB);
       List<TenantContext> resolved = runConcurrently(pool, List.of(a1, b1, a2, b2));
 
       assertThat(resolved).hasSize(4);
@@ -237,24 +350,19 @@ class TenantContextResolverTest {
         .build();
   }
 
-  /** A concurrent resolve task carrying one {@link Jwt} and the tenant it must return. */
+  /** A concurrent resolve task carrying one {@link Jwt} and a shared resolver instance. */
   private final class Resolved implements Callable<TenantContext> {
+    private final TenantContextResolver resolver;
     private final Jwt jwt;
-    private final UUID expectedTenant;
 
-    Resolved(Jwt jwt, UUID expectedTenant) {
+    Resolved(TenantContextResolver resolver, Jwt jwt) {
+      this.resolver = resolver;
       this.jwt = jwt;
-      this.expectedTenant = expectedTenant;
     }
 
     @Override
     public TenantContext call() {
       return resolver.resolve(jwt);
-    }
-
-    @Override
-    public String toString() {
-      return "Resolved{tenant=" + expectedTenant + "}";
     }
   }
 }
