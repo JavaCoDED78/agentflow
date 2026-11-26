@@ -3,7 +3,7 @@
 **Версия документа:** 1.2  
 **Актуальность стека:** 15 октября 2026 года  
 **Горизонт:** 16 недель (2–4 месяца)  
-**Формат:** pet-проект backend/system design, один основной разработчик с AI-ассистентом; backlog из 289 атомарных задач с acceptance criteria  
+**Формат:** pet-проект backend/system design, один основной разработчик с AI-ассистентом; backlog из 295 атомарных задач с acceptance criteria  
 
 ## 1. Цель проекта
 
@@ -454,10 +454,10 @@ flowchart LR
 
 ### 11.1. Authentication and authorization
 
-- Keycloak — OIDC provider; API — OAuth2 Resource Server с проверкой issuer, audience и подписи JWT.
+- Keycloak — OIDC provider; API — OAuth2 Resource Server с проверкой issuer, audience и подписи JWT. Реализация: Sprint 4 (S04-01…S04-20), Kubernetes — S15-21.
 - Использовать scopes/roles, например `workflow:read`, `workflow:write`, `workflow:approve`, `knowledge:read`, `tenant:admin`.
 - Роль не заменяет tenant check: каждый запрос проверяет resource ownership.
-- Для worker использовать отдельную service identity, без пользовательских токенов в Kafka payload.
+- Для worker использовать отдельную service identity, без пользовательских токенов в Kafka payload. Реализация: S07-18.
 - Актор и correlation ID фиксируются в audit trail для чувствительных действий.
 
 ### 11.2. AI-specific security
@@ -654,10 +654,10 @@ agentflow/
 | 1 | README skeleton и quickstart, `docs/README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, шаблоны PR/issue | Новый разработчик запускает проект по README с чистого checkout |
 | 2 | Domain glossary, context/module map, архитектурные диаграммы, ADR index и шаблон, ADR-021 (роль Redis) | Диаграммы и ADR согласованы с реальными границами модулей |
 | 3 | Database/migration guide, API conventions, OpenAPI и примеры ошибок | Миграции и API-контракты проверяются автоматизированно |
-| 4 | Authentication/authorization guide, tenant claims, local login runbook, политика rate limit API | Инструкция проверяется OIDC и cross-tenant тестами |
+| 4 | Authentication/authorization guide, tenant claims, local login runbook, политика rate limit API, tenant membership и тестовые identities realm | Инструкция проверяется OIDC и cross-tenant тестами |
 | 5 | Workflow DSL reference, schema examples, state-machine diagram | Все примеры графов проходят validator |
 | 6 | Kafka topic/event catalog, event envelope, delivery/idempotency guarantees | Имена, schemas и описания совпадают с тестами и конфигурацией |
-| 7 | Durable execution design, lease/fencing explanation, recovery runbook | Runbook проверяется тестом kill/restart worker |
+| 7 | Durable execution design, lease/fencing explanation, recovery runbook, service identity worker | Runbook проверяется тестом kill/restart worker |
 | 8 | Tool authoring guide, schemas, permission, timeout и audit contract | Документированный пример зарегистрирован и проходит tool tests |
 | 9 | Provider configuration, prompt versioning, budgets и Planner evaluation | Fake-provider tests и eval command воспроизводимы без реального API key |
 | 10 | RAG pipeline, ingestion lifecycle, retrieval filters, citations и eval corpus | Описанный сценарий upload → index → retrieve повторяется локально |
@@ -665,7 +665,7 @@ agentflow/
 | 12 | Usage/cost model, quotas, audit events, DLQ/redrive runbooks, `docs/architecture/redis-usage.md` и `docs/runbooks/redis-outage.md` | Операции бюджета и DLQ имеют проверяемые инструкции и ограничения доступа |
 | 13 | Observability handbook, metric catalogue, dashboards/alerts-as-code и runbooks, метрики Redis и rate limiter | Полный telemetry stack восстанавливается из Git |
 | 14 | Test strategy, failure matrix, benchmark methodology и отчёт измерений | Все утверждения о надёжности/производительности имеют evidence |
-| 15 | Deployment guide, configuration reference, secrets/rollback/upgrade runbooks, параметры Redis | Развёртывание выполняется по документации на чистом локальном кластере |
+| 15 | Deployment guide, configuration reference, secrets/rollback/upgrade runbooks, параметры Redis и Keycloak | Развёртывание выполняется по документации на чистом локальном кластере |
 | 16 | README/release notes/CHANGELOG finalization, broken-link и docs build checks, release readiness | Quickstart и критические инструкции проверены на clean-room окружении |
 
 **Ритм обновления:** по ходу спринта автор меняет профильный документ и `CHANGELOG.md` вместе с кодом; в конце спринта ответственный за задачу проверяет README, ссылки и примеры, а review подтверждает совпадение документа с реализацией. Финальная документационная работа в Sprint 16 — это верификация и выпуск, а не написание документации с нуля.
@@ -1065,6 +1065,21 @@ agentflow/
 Результат: работающий rate limit одного инстанса.
 Приёмка: превышение лимита даёт `429` с `Retry-After`; лимиты разных tenant независимы; тесты с фиксированным `Clock` воспроизводимы; число ключей ограничено; health endpoints не лимитируются; ограничение «per-replica» задокументировано.
 
+### S04-18 — детализировать Keycloak realm и способ получения токенов (P0)
+Действия: в realm import config (S04-01) добавить audience mapper/client scope, чтобы access token содержал `aud` для API; добавить mapper tenant claim, выбранного в S04-05; создать realm roles из каталога S04-04 и привязать их к client scopes; создать два tenant (A и B) и минимум по два тестовых пользователя в каждом с разными наборами ролей, а также пользователя без tenant для сценария «без membership»; пароли тестовых пользователей и client secrets не хранить в Git (подстановка из локальных переменных окружения либо локальный скрипт создания пользователей — вариант выбрать по возможностям выбранной версии Keycloak); зафиксировать pinned stable image Keycloak (patch из раздела 2) и единый hostname/issuer для Compose-сети и хоста, чтобы `iss` в токене совпадал с настройкой Resource Server; S04-02 запрещает password grant, а S04-14 требует примеры получения токена — определить способ получения user-токена для curl и тестов (dev/test-only client, существующий только в local/test realm, либо authorization code + PKCE helper) и client credentials для machine-to-machine; выбранный способ записать в runbook S04-14.
+Результат: расширенный realm import и описанные test identities.
+Приёмка: токен тестового пользователя содержит ожидаемые `iss`, `aud`, tenant claim и roles; пользователи tenant A и B и пользователь без tenant различаются по результату доступа; чистый Keycloak повторяемо создаёт ту же конфигурацию; в Git нет паролей и client secrets; production-like realm не содержит password grant и dev-only client.
+
+### S04-19 — определить tenant membership и сверять tenant claim с таблицей tenants (P0)
+Действия: решить, чем подтверждается membership пользователя в tenant (claim или группа Keycloak); при разрешении tenant в S04-06 проверять, что tenant из claim существует и имеет допустимый status в таблице `tenants` (S03-03); определить поведение для неизвестного, отключённого и отсутствующего tenant в рамках единой политики S04-09, чтобы ответ не раскрывал существование tenant; описать контракт в `docs/security/authentication-authorization.md`.
+Результат: tenant resolution contract.
+Приёмка: неизвестный и отключённый tenant, а также пользователь без membership получают отказ; подмена tenant в body/query не меняет scope; по ответу нельзя отличить несуществующий tenant от отключённого.
+
+### S04-20 — подготовить Keycloak в Testcontainers и contract-тест realm (P0)
+Действия: создать общую Testcontainers-фикстуру Keycloak с импортом realm из Git на том же pinned image, что в Compose; получать токены тестовых пользователей способом из S04-18; добавить realm contract test: `iss`, `aud`, tenant claim, roles и отсутствие запрещённых grant types у production-like clients; определить, какие тесты S04-13 идут против реального Keycloak, а какие — против локально подписанных JWT с той же конфигурацией decoder (для скорости); wrong issuer, wrong audience и expired token проверить хотя бы один раз на реальной конфигурации декодера; внести Keycloak в список Testcontainers в тестовой документации.
+Результат: Keycloak-фикстура и realm contract test.
+Приёмка: `./gradlew integrationTest` поднимает Keycloak без внешних зависимостей; изменение realm, ломающее `aud`, tenant claim или роли, падает в CI; быстрые тесты не требуют Docker.
+
 **Gate Sprint 4:** все API защищены OIDC, tenant берётся из доверенного контекста, cross-tenant regression suite проходит. Это блокирующее условие следующих спринтов.
 
 ---
@@ -1338,6 +1353,11 @@ agentflow/
 Действия: создать `docs/architecture/durable-execution.md` и `docs/runbooks/workflow-recovery.md`; описать lease/heartbeat, fencing token, checkpoints, attempt history, retryability, cancel, ambiguous external calls и действия оператора при зависшем run.
 Результат: инженерный guide и runbook восстановления.
 Приёмка: runbook ссылается на реальные метрики/логи и SQL/API диагностику; сценарии подтверждаются kill/restart test; процедуры не предлагают ручное изменение БД без контролируемого пути.
+
+### S07-18 — определить service identity worker и actor системных действий (P1)
+Действия: определить identity, под которой worker выполняет переходы и пишет audit: стабильный `actor_subject` сервисного principal, отдельный от пользователя, инициировавшего run (requester остаётся в run); если worker вызывает защищённые API или внешние сервисы — использовать machine-to-machine client из S04-02 с минимальными scopes, кэшировать токен до истечения и обновлять; если не вызывает — не выдавать токен и записать это решение; убедиться, что пользовательские токены и client secrets не попадают в Kafka payload, логи и audit metadata.
+Результат: контракт service identity и его использование в audit.
+Приёмка: audit-записи системных переходов содержат actor сервисного principal и requester; canary-тест подтверждает отсутствие токенов и secrets в Kafka payload, логах и audit; worker стартует без пользовательского токена; если client нужен, но secret отсутствует, — понятный startup failure.
 
 **Gate Sprint 7:** lease/fencing/checkpoint/retry/cancel/recovery проверены автоматически.
 
@@ -1941,7 +1961,7 @@ agentflow/
 **Цель:** доказать заявленные гарантии сценарными тестами и измерениями.
 
 ### S14-01 — составить failure matrix (P0)
-Действия: перечислить component, failure injection, expected behavior, recovery target, metric/alert и evidence для PostgreSQL, Kafka, Redis, object storage, provider и worker.
+Действия: перечислить component, failure injection, expected behavior, recovery target, metric/alert и evidence для PostgreSQL, Kafka, Redis, Keycloak, object storage, provider и worker.
 Результат: `docs/testing/failure-matrix.md`.
 Приёмка: каждая критическая зависимость имеет outage scenario.
 
@@ -2030,6 +2050,11 @@ agentflow/
 Результат: решение «кэш не нужен / нужен» с измерениями.
 Приёмка: решение подтверждено raw output; при внедрении кэша terminal-статус не отдаётся устаревшим дольше TTL, cross-tenant тест проходит, S14-08 повторён с включённым кэшем.
 
+### S14-19 — проверить Keycloak/JWKS outage и ротацию ключей (P1)
+Действия: добавить Keycloak в failure matrix (S14-01); остановить Keycloak и проверить, что API продолжает валидировать выданные токены по закэшированным ключам, новые токены не выдаются, а токен с неизвестным `kid` или недействительный отклоняется (fail-closed); выполнить ротацию signing key и проверить обновление JWKS без перезапуска API; определить и проверить, влияет ли недоступность Keycloak на readiness API; убедиться, что в логах и метриках auth-ошибок нет токенов.
+Результат: Keycloak outage/rotation test и строка в failure matrix.
+Приёмка: недоступность Keycloak не создаёт обхода аутентификации; запросы с ещё валидными токенами не дают 5xx в пределах cache TTL; после восстановления новые токены принимаются без ручных действий; поведение после истечения кэша ключей задокументировано.
+
 **Gate Sprint 14:** отказоустойчивость покрыта automated tests, baseline воспроизводим, critical/high security findings устранены или задокументированы.
 
 ---
@@ -2089,9 +2114,9 @@ agentflow/
 Приёмка: параллельный rollout не приводит к конкурентным миграциям.
 
 ### S15-11 — открыть наружу только API (P0)
-Действия: публиковать API через ingress; DB/Kafka/Redis/Garage и worker endpoints оставить internal; определить TLS handling для local/prod-like profiles.
+Действия: публиковать API через ingress; DB/Kafka/Redis/Garage и worker endpoints оставить internal; определить исключение для Keycloak: token endpoint доступен клиентам, получающим токен (отдельный ingress host либо документированный port-forward для demo), admin console остаётся internal; определить TLS handling для local/prod-like profiles.
 Результат: service/ingress configuration.
-Приёмка: infrastructure services не доступны через внешний ingress.
+Приёмка: infrastructure services не доступны через внешний ingress; наружу открыты только API и явно разрешённый token endpoint Keycloak (если выбран ingress); admin console недоступна снаружи.
 
 ### S15-12 — применить least-privilege service accounts (P1)
 Действия: отдельные ServiceAccounts по ролям; отключить token automount, если Kubernetes API не нужен; не выдавать cluster-admin приложению.
@@ -2137,6 +2162,11 @@ agentflow/
 Действия: добавить Redis в Helm values/зависимости demo-кластера: pinned image, requests/limits, только internal service, credentials из Secret references (S15-09), доступ только от API/worker pods (S15-13, если выполнена); передать `agentflow.redis.*` через values; запустить минимум две реплики API и проверить общий rate limit; остановить Redis pod и проверить fallback и readiness; отразить параметры в `docs/deployment/configuration.md`.
 Результат: Redis в Kubernetes-профиле и evidence для распределённого rate limit.
 Приёмка: суммарный лимит соблюдается на нескольких репликах; остановка Redis не выводит поды из readiness и не вызывает 5xx из-за лимитера; Redis недоступен снаружи кластера; секреты не попадают в values и Git.
+
+### S15-21 — развернуть Keycloak в Kubernetes и согласовать issuer (P0)
+Действия: добавить Keycloak в Helm values/зависимости demo-кластера: pinned image, requests/limits, отдельная база или schema Keycloak (не таблицы приложения), realm import из Git как контролируемый Job или init-step, admin credentials и client secrets из Secret references (S15-09), hostname/issuer и TLS для local/prod-like profiles; передать issuer и audience API через values; admin console не публиковать наружу; доступ API → JWKS ограничить NetworkPolicy (S15-13, если выполнена); обеспечить получение токена для smoke job (S15-17) и clean-room E2E (S16-08).
+Результат: Keycloak в Kubernetes-профиле.
+Приёмка: API в кластере принимает токен Keycloak из того же кластера при совпадающем issuer; smoke job и E2E получают токен без ручных шагов; admin console недоступна снаружи; secrets не в values и Git; повторный deploy даёт ту же конфигурацию realm.
 
 **Gate Sprint 15:** clean Kubernetes deploy проходит, секреты скрыты, API/worker roles отделены, rollback и scale-out протестированы.
 
@@ -2297,7 +2327,7 @@ agentflow/
 
 ### P0 — обязательный MVP
 
-- Java/Spring skeleton, Postgres migrations, Keycloak/OIDC, tenant isolation.
+- Java/Spring skeleton, Postgres migrations, Keycloak/OIDC (в том числе в Kubernetes, S15-21), tenant isolation.
 - Workflow state machine + outbox + Kafka + worker leasing/recovery.
 - Typed tool registry, один model provider, structured planner output.
 - Document ingestion + pgvector/FTS + citations.
@@ -2313,6 +2343,7 @@ agentflow/
 - Kubernetes GitOps через Argo CD.
 - k6 load test и отчёт по p95/p99.
 - Redis-реализация (rate limiter, health, метрики): S12-16…S12-21, S13-22, S15-20; при нехватке времени остаётся in-memory rate limiter (S04-16, S04-17).
+- Service identity worker и Keycloak outage-тест: S07-18, S14-19.
 
 ### P2 — только после завершения MVP
 
