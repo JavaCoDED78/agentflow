@@ -36,11 +36,30 @@ member of any tenant simply gets no `tenant_id` claim. The realm import is
 
 ## Behaviour table
 
-| Verified JWT | `tenant_id` claim | Result |
-|---|---|---|
-| member of a tenant | present, valid UUID | tenant resolved, request continues scoped to that tenant |
-| member of a tenant | present, not a UUID | **deny** (malformed — treated as absent) |
-| not a member of any tenant | absent | **deny** — no authorized tenant |
+| Verified JWT | `tenant_id` claim | Tenant row | Result |
+|---|---|---|---|
+| member of a tenant | present, valid UUID | exists, `ACTIVE` | tenant resolved, request continues scoped to that tenant |
+| member of a tenant | present, not a UUID | — | **deny** (malformed — treated as absent) |
+| not a member of any tenant | absent | — | **deny** — no authorized tenant |
+| member of a tenant | present, valid UUID | absent | **deny** — unknown tenant (S04-19) |
+| member of a tenant | present, valid UUID | exists, non-`ACTIVE` | **deny** — disabled / not live (S04-19) |
+
+### Membership is confirmed by claim, existence/status by table (S04-19)
+
+Membership is confirmed by the `tenant_id` claim in the verified token — **not** by Keycloak groups.
+The realm maps the claim from the user's `tenant_id` attribute on the shared `agentflow` client scope
+(`oidc-usermodel-attribute-mapper`); a user without that attribute gets no claim. The claim says
+*who* the caller is allowed to be; the `tenants` table (`S03-03`) is a second, independent gate on the
+same id — it says whether that tenant may be used *right now*. Both are checked in
+`TenantContextResolver` before the tenant is threaded through application services; the worker path
+(`S04-06`) applies the same gate to the stored run's tenant.
+
+Any failure of the gate — no claim, malformed claim, unknown tenant, non-`ACTIVE` tenant, or no
+database — answers the **identical** `401` with an identical tenant-agnostic body. The answer
+never reveals whether the tenant exists or is disabled; it cannot be used to probe the `tenants`
+table or to distinguish "no row" from "disabled row". See
+[`authentication-authorization.md`](./authentication-authorization.md#tenant-resolution-s04-05--s04-06--s04-19)
+for the full contract.
 
 ## Relation to the other Sprint 4 tasks
 
@@ -75,3 +94,12 @@ member of any tenant simply gets no `tenant_id` claim. The realm import is
 Holds by construction: the tenant comes only from the verified `tenant_id` claim, so a caller-supplied
 `tenant_id` in the body/query/headers is never consulted. Proven by the `S04-13` HTTP-boundary
 suite; the extraction primitive is unit-tested in `TenantClaimExtractorTest`.
+
+### Acceptance (S04-19)
+
+> По ответу нельзя отличить несуществующий tenant от отключённого.
+
+Holds by construction: every gate failure — no claim, malformed claim, unknown tenant, non-`ACTIVE`
+tenant, or a missing database — returns the identical `401` with the identical tenant-agnostic body,
+asserted by `TenantContextResolverTest` (unknown/disabled/no-membership/no-DB cases) and the
+integration path in `TenantRepositoryIT` (ACTIVE / non-ACTIVE / absent-row read-back).

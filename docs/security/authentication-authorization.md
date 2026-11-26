@@ -162,22 +162,64 @@ for the full matrix and the add-an-endpoint procedure.
 
 ---
 
-## Tenant resolution (S04-05 / S04-06)
+## Tenant resolution (S04-05 / S04-06 / S04-19)
 
 The **tenant** is the unit of data separation (`ADR-007`). `TenantClaimExtractor` reads the tenant
 id from the verified JWT's `tenant_id` claim — a mapped Keycloak claim present **only** when the
 caller has a tenant membership. By the time it runs, the Resource Server has already validated the
 token, so the claim is trusted.
 
-| Verified JWT | `tenant_id` claim | Result |
-|---|---|---|
-| member of a tenant | present, valid UUID | tenant resolved, request scoped to that tenant |
-| member of a tenant | present, not a UUID | **deny** (malformed — treated as absent) |
-| not a member of any tenant | absent | **deny** — no authorized tenant |
+| Verified JWT | `tenant_id` claim | Tenant row | Result |
+|---|---|---|---|
+| member of a tenant | present, valid UUID | exists, `ACTIVE` | tenant resolved, request scoped to that tenant |
+| member of a tenant | present, not a UUID | — | **deny** (malformed — treated as absent) |
+| not a member of any tenant | absent | — | **deny** — no authorized tenant |
+| member of a tenant | present, valid UUID | absent | **deny** — unknown tenant |
+| member of a tenant | present, valid UUID | exists, not `ACTIVE` | **deny** — disabled / not live |
 
 `tenant_id` is **never** taken from the request body, query parameter, or Kafka header (invariant 1):
 those are untrusted. For async workers, which have no HTTP `SecurityContext`, the tenant comes from
-the stored run's `tenant_id` re-read from PostgreSQL (`S04-06`), never from the Kafka envelope.
+the stored run's `tenant_id` re-read from PostgreSQL (`S04-06`), never from the Kafka envelope — and
+that stored tenant is checked against the same gate before it is used.
+
+### How membership is confirmed (S04-19)
+
+Membership is confirmed by **the `tenant_id` claim in the verified token, not by Keycloak groups**.
+The realm maps the `tenant_id` claim from the user's `tenant_id` attribute (`oidc-usermodel-attribute-mapper`)
+on the shared `agentflow` client scope, so a user without a `tenant_id` attribute simply gets no
+claim; Keycloak groups are not consulted for tenant resolution. The claim is the declaration of
+*who* the caller is allowed to be; the **`tenants` table is the second, independent gate** on the
+same id — it says whether that tenant may actually be used right now. The two are deliberately
+separate: a token that declares a member of a tenant whose row is gone or disabled is refused,
+exactly as if the caller had no claim at all.
+
+### Existence and status are checked in the resolver (S04-19)
+
+`TenantContextResolver` (the single tenant resolver, `S04-06`) does the verification in one place,
+so every entry point — HTTP `SecurityContext` principal and async worker stored-tenant path —
+applies the same gate:
+
+1. extract the `tenant_id` claim (`TenantClaimExtractor`); a missing or non-UUID claim → **deny**;
+2. ask `TenantRepository` (the `identity`-owned read path over the `tenants` table, S03-03) whether the
+   tenant exists and what its `status` is;
+3. only `ACTIVE` is accepted — any other status (`DISABLED`, `SUSPENDED`, or any unknown value), an
+   absent row, or a missing database (the repository unavailable) → **deny**.
+
+### The denial is uniform (S04-09)
+
+Every failure of the gate returns the **identical** response — a `401 Unauthorized` with the same
+tenant-agnostic body (`no authorized tenant for this request`) — with no difference in status,
+error class, reason or body between the no-membership, unknown-tenant, disabled-tenant and
+no-database cases. The answer can therefore never reveal whether a tenant exists, is disabled or
+is simply absent, which is the S04-19 acceptance criterion ("по ответу нельзя отличить несуществующий
+tenant от отключённого") and is the S04-09 masking policy applied to tenant resolution. The
+response also never names the tenant, its status or the reason: a probe cannot tell "no row" from
+"disabled row" from "no claim". Substituting a different tenant's id in the body/query changes
+nothing — the tenant comes only from the verified security context (`S04-05`), and the resolver
+re-checks the verified claim against the database.
+
+The `identity` package owns the decision and the table: the row is populated by a tenant lifecycle
+(administrator-only — `S03-03`), which is not part of this task; the resolver only probes it.
 
 ---
 
@@ -253,6 +295,11 @@ prompts) appear in metrics, logs, or Actuator output (invariant 9).
 
 - **Catalogue / mapper / matrix** — unit tests: `PermissionTest`, `ClaimsToAuthoritiesMapperTest`,
   `AccessMatrixTest`, `TenantClaimExtractorTest`.
+- **Tenant resolution (S04-05 / S04-06 / S04-19)** — `TenantContextResolverTest` unit suite: no claim,
+  malformed claim, wrong key, restricted claim, no-tenant-row, disabled tenant, non-ACTIVE status,
+  no-DB, worker stored-tenant path, parallel-tenants, and the uniform `401` masking across the three
+  failure modes. `TenantRepositoryIT` integration suite (real PostgreSQL + Flyway): an ACTIVE row
+  reads back its status, a non-ACTIVE row reads back as-is, and a missing row answers `Optional.empty()`.
 - **HTTP boundary** — `SecurityFilterChainTest` drives the real `SecurityFilterChain` on the
   `secured-test` profile (a `workflow:read` caller reading another tenant's resource gets `404`; a
   body-carried `tenant_id` is ignored).
