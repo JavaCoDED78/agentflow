@@ -1,9 +1,9 @@
 # AgentFlow — архитектура и план разработки
 
-**Версия документа:** 1.2  
+**Версия документа:** 1.3  
 **Актуальность стека:** 15 октября 2026 года  
 **Горизонт:** 16 недель (2–4 месяца)  
-**Формат:** pet-проект backend/system design, один основной разработчик с AI-ассистентом; backlog из 295 атомарных задач с acceptance criteria  
+**Формат:** pet-проект backend/system design, один основной разработчик с AI-ассистентом; backlog из 321 атомарной задачи с acceptance criteria  
 
 ## 1. Цель проекта
 
@@ -63,7 +63,7 @@ AgentFlow — платформа для создания и надёжного �
 | Vector search | pgvector + PostgreSQL full-text search | На старте меньше инфраструктуры, единые tenant-фильтры и транзакционная модель. Отдельный Qdrant — опциональное сравнение в конце. |
 | Очередь / events | Apache Kafka 4.3.x; Spring Kafka без ручного override версии клиента | Durable event log, consumer groups, replay и отдельное масштабирование API/worker. Проверить broker/client compatibility при создании проекта. |
 | Cache / ephemeral coordination | **Redis Open Source 8.10.x** | Кэш, rate-limit state, короткоживущие distributed coordination данные. PostgreSQL остаётся источником истины для workflow. Границы применения — ADR-021. |
-| Файлы | Garage с S3 API | Документы и артефакты хранятся вне PostgreSQL; в БД — метаданные и object key. |
+| Файлы | Garage с S3 API через AWS SDK for Java v2 и provider-neutral `ObjectStoragePort` | Документы и артефакты хранятся вне PostgreSQL; в БД — метаданные, object reference и checksum. |
 | Identity | Keycloak 26.x + Spring Security OAuth2 Resource Server | OIDC, роли, локальные тестовые пользователи и отделение identity от бизнес-домена. Выбрать конкретный стабильный patch при старте. |
 | AI model provider | Один облачный provider + Ollama как локальная опция | Изолировать провайдера интерфейсом и не привязывать доменную логику к одному SDK. Локальная модель не должна быть обязательна для CI. |
 | Document parsing | Apache Tika + PDFBox; OCR оставить расширением | Достаточно для извлечения текста и метаданных из типовых PDF/DOCX; OCR — отдельная задача. |
@@ -173,17 +173,18 @@ flowchart TB
 | `identity` | tenant context, authorization policy mapping | Spring Security, Keycloak claims |
 | `agentcatalog` | agent profiles, model policy, tool allowlist | identity, PostgreSQL |
 | `workflowdefinition` | versioned workflow graph, validation, activation | agentcatalog |
-| `workflowexecution` | run/step state machine, checkpoints, cancellation | workflowdefinition, messaging ports |
+| `workflowexecution` | run/step state machine, checkpoints, cancellation | workflowdefinition, messaging ports, storage public API for large outputs |
 | `toolexecution` | typed tool registry, timeout, permission check, result schema | agentcatalog, audit |
-| `knowledgebase` | document metadata, access policy, chunk search | object storage, embedding port |
-| `ingestion` | extract, chunk, embed, index, retry | knowledgebase, messaging |
+| `knowledgebase` | document metadata, access policy, chunk search | storage public API, embedding port |
+| `storage` | provider-neutral `ObjectStoragePort`, object references/metadata, Garage S3 adapter | AWS SDK for Java v2, Garage S3 API |
+| `ingestion` | extract, chunk, embed, index, retry | knowledgebase, storage public API, messaging |
 | `ai` | model provider adapter, prompts, structured outputs, evaluation hooks | Spring AI, tool ports |
 | `usage` | token/cost metering, budgets, quotas | ai, workflowexecution |
 | `audit` | security and business audit events, immutable append-only history | identity |
 | `messaging` | outbox, inbox, event schemas, publisher/consumer configuration | PostgreSQL, Kafka |
 | `observability` | domain meters, trace attributes, correlation helpers | Micrometer, OTel |
 
-**Правило зависимостей:** доменные модули не импортируют web-контроллеры, Kafka listener'ы или инфраструктурные классы других модулей. События между модулями — через публичные типы или application services, а между процессами — через версионированные event contracts.
+**Правило зависимостей:** доменные модули не импортируют web-контроллеры, Kafka listener'ы или инфраструктурные классы других модулей. `knowledgebase` и `workflowexecution` используют публичный контракт `storage`, но не импортируют `GarageS3Adapter` или AWS SDK types. События между модулями — через публичные типы или application services, а между процессами — через версионированные event contracts.
 
 ---
 
@@ -590,6 +591,8 @@ agentflow/
     asyncapi/
   docs/
     adr/
+    architecture/
+    storage/
     runbooks/
     threat-model/
     load-tests/
@@ -652,20 +655,20 @@ agentflow/
 | Спринт | Документация, которую создаём или обновляем | Проверка готовности |
 |---|---|---|
 | 1 | README skeleton и quickstart, `docs/README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, шаблоны PR/issue | Новый разработчик запускает проект по README с чистого checkout |
-| 2 | Domain glossary, context/module map, архитектурные диаграммы, ADR index и шаблон, ADR-021 (роль Redis) | Диаграммы и ADR согласованы с реальными границами модулей |
+| 2 | Domain glossary, context/module map, архитектурные диаграммы, ADR index и шаблон, ADR-021 (роль Redis), ADR-024 (Object Storage), `docs/architecture/object-storage.md` | Диаграммы, storage contract и ADR согласованы с реальными границами модулей |
 | 3 | Database/migration guide, API conventions, OpenAPI и примеры ошибок | Миграции и API-контракты проверяются автоматизированно |
 | 4 | Authentication/authorization guide, tenant claims, local login runbook, политика rate limit API, tenant membership и тестовые identities realm | Инструкция проверяется OIDC и cross-tenant тестами |
 | 5 | Workflow DSL reference, schema examples, state-machine diagram | Все примеры графов проходят validator |
 | 6 | Kafka topic/event catalog, event envelope, delivery/idempotency guarantees | Имена, schemas и описания совпадают с тестами и конфигурацией |
-| 7 | Durable execution design, lease/fencing explanation, recovery runbook, service identity worker | Runbook проверяется тестом kill/restart worker |
+| 7 | Durable execution design, lease/fencing explanation, recovery runbook, service identity worker, `docs/storage/garage-s3.md`, S3 adapter configuration/error policy | Runbook проверяется kill/restart; Garage CRUD/streaming integration tests проходят локально и в CI |
 | 8 | Tool authoring guide, schemas, permission, timeout и audit contract | Документированный пример зарегистрирован и проходит tool tests |
 | 9 | Provider configuration, prompt versioning, budgets и Planner evaluation | Fake-provider tests и eval command воспроизводимы без реального API key |
-| 10 | RAG pipeline, ingestion lifecycle, retrieval filters, citations и eval corpus | Описанный сценарий upload → index → retrieve повторяется локально |
+| 10 | RAG pipeline, ingestion lifecycle, retrieval filters, citations и eval corpus, Garage document storage lifecycle, delete/reconciliation runbook | Описанный сценарий upload → index → retrieve → delete повторяется локально; orphan cleanup и outage recovery проверяются тестами |
 | 11 | Agent security/threat model, MCP setup, human approval lifecycle | Документированы threat boundaries, allowlist и проверка approval |
 | 12 | Usage/cost model, quotas, audit events, DLQ/redrive runbooks, `docs/architecture/redis-usage.md` и `docs/runbooks/redis-outage.md` | Операции бюджета и DLQ имеют проверяемые инструкции и ограничения доступа |
 | 13 | Observability handbook, metric catalogue, dashboards/alerts-as-code и runbooks, метрики Redis и rate limiter | Полный telemetry stack восстанавливается из Git |
 | 14 | Test strategy, failure matrix, benchmark methodology и отчёт измерений | Все утверждения о надёжности/производительности имеют evidence |
-| 15 | Deployment guide, configuration reference, secrets/rollback/upgrade runbooks, параметры Redis и Keycloak | Развёртывание выполняется по документации на чистом локальном кластере |
+| 15 | Deployment guide, configuration reference, secrets/rollback/upgrade runbooks, параметры Redis/Keycloak/Garage, Garage backup/restore runbook | Развёртывание выполняется по документации на чистом локальном кластере; Garage PVC и restore проверены |
 | 16 | README/release notes/CHANGELOG finalization, broken-link и docs build checks, release readiness | Quickstart и критические инструкции проверены на clean-room окружении |
 
 **Ритм обновления:** по ходу спринта автор меняет профильный документ и `CHANGELOG.md` вместе с кодом; в конце спринта ответственный за задачу проверяет README, ссылки и примеры, а review подтверждает совпадение документа с реализацией. Финальная документационная работа в Sprint 16 — это верификация и выпуск, а не написание документации с нуля.
@@ -749,7 +752,7 @@ agentflow/
 ### S01-15 — добавить Garage и Keycloak profiles (P0)
 Действия: добавить Garage S3 API и Keycloak с realm import; разделить profiles так, чтобы базовые зависимости можно было запускать без всех сервисов; хранить dev credentials локально.
 Результат: object storage и IdP конфигурации.
-Приёмка: оба сервиса стартуют повторяемо из конфигурации в Git; production secrets не в репозитории.
+Приёмка: оба сервиса стартуют повторяемо из конфигурации в Git; Garage S3 endpoint проходит readiness/smoke check из Compose network; production secrets не в репозитории. Полноценные S3 operations реализуются в Sprint 7.
 
 ### S01-16 — определить Compose profiles (P0)
 Действия: определить `core`, `messaging`, `identity`, `ai-local`, `observability`, `full`; проверить зависимости между профилями и итоговую конфигурацию.
@@ -865,7 +868,7 @@ agentflow/
 Приёмка: применимые архитектурные риски рассматриваются в review.
 
 ### S02-15 — опубликовать архитектурный индекс (P0)
-Действия: собрать `docs/architecture/README.md`; связать context diagram, module map, glossary, error taxonomy и ADR; указать текущие архитектурные ограничения и список отложенных решений; сверить названия модулей и внешних систем с build/repository.
+Действия: собрать `docs/architecture/README.md`; связать context diagram, module map, glossary, error taxonomy и ADR; указать текущие архитектурные ограничения и список отложенных решений; сверить названия модулей и внешних систем с build/repository; добавить ссылки на Object Storage contract и ADR-024.
 Результат: единая навигационная страница по архитектуре.
 Приёмка: от README до каждой актуальной архитектурной диаграммы/ADR можно дойти по ссылкам; нет противоречащих описаний владельцев модулей.
 
@@ -879,7 +882,27 @@ agentflow/
 Результат: `docs/adr/ADR-021-redis-role.md`.
 Приёмка: каждое применение Redis в бэклоге (S04-17, S12-16…S12-21, S13-22, S14-08, S14-18, S15-20) соответствует ADR; запрещённые применения перечислены явно; для каждого допустимого применения указан fail-open или fail-closed с обоснованием.
 
-**Gate Sprint 2:** модули имеют владельцев, границы защищены тестами, первые ADR отражают фактическую архитектуру.
+### S02-18 — определить ownership и границы Object Storage (P0)
+Действия: добавить логический модуль `storage` в module map; закрепить его ответственность за provider-neutral storage contract и инфраструктурный Garage adapter; определить разрешённых потребителей (`knowledgebase` и `workflowexecution`); описать направление зависимостей и запрет прямого импорта AWS SDK/Garage-классов из доменных модулей; разграничить metadata ownership между `knowledgebase`/`workflowexecution` и физическими объектами в Garage.
+Результат: обновлённые `docs/architecture/module-map.md` и §4.2 архитектуры.
+Приёмка: у storage API и Garage adapter один владелец; потребители используют только публичный контракт; architecture test выявляет прямую зависимость доменного модуля от `GarageS3Adapter` или AWS SDK.
+
+### S02-19 — определить контракт `ObjectStoragePort` (P0)
+Действия: определить provider-neutral операции `put`, `get/openStream`, `head`, paginated `list(prefix, cursor, limit)` и `delete`; описать request/response модели и `ObjectReference` с bucket, key, content type, size и SHA-256; предусмотреть потоковую передачу без обязательной загрузки всего файла в heap; определить поведение для отсутствующего объекта, пустого объекта, повторной записи и повторного удаления; запретить передачу AWS SDK types через публичный контракт; определить, что object key генерирует приложение, а не пользователь.
+Результат: `docs/architecture/object-storage.md` с интерфейсным контрактом и примерами вызовов.
+Приёмка: контракт достаточен для хранения document originals и workflow artifacts; контракт не содержит Garage-specific типов; unit tests для будущих адаптеров можно писать через contract test suite.
+
+### S02-20 — оформить ADR-024 «Object Storage: consistency, security и lifecycle» (P0)
+Действия: зафиксировать Garage как текущую реализацию S3-compatible storage, PostgreSQL как источник истины для metadata/ownership, а Garage — для bytes; определить tenant-scoped key convention для документов и workflow artifacts; запретить public buckets и постоянные публичные URL; определить хранение credentials через env/Secret references и разделение provisioning/admin credentials от runtime credentials; описать consistency gap между PostgreSQL и Garage, upload/delete state transitions, retry, compensation, orphan cleanup, checksum verification и retention; определить поведение при Garage outage и запрет считать object storage транзакционно связанным с PostgreSQL.
+Результат: `docs/adr/ADR-024-object-storage.md`.
+Приёмка: ADR содержит Context/Decision/Alternatives/Consequences; сценарии DB failure after object upload, Garage outage, duplicate upload и delete retry имеют однозначную политику; ADR добавлен в `docs/adr/README.md`.
+
+### S02-21 — закрепить Object Storage в архитектурных документах и проверках (P1)
+Действия: обновить component/context diagram и module map; добавить `storage` в architecture index; описать правила key generation, tenant authorization, checksum, streaming и запрет логирования credentials/object content; добавить в PR architecture checklist вопросы об object ownership, orphan cleanup и failure behavior; перечислить интеграционные сценарии Sprint 7/10/15 как planned.
+Результат: согласованные архитектурные документы и checklist.
+Приёмка: README/architecture index ведут к `docs/architecture/object-storage.md` и ADR-024; diagram, module map и backlog не противоречат друг другу.
+
+**Gate Sprint 2:** модули имеют владельцев, границы защищены тестами, первые ADR отражают фактическую архитектуру; Object Storage contract, module ownership и consistency/security policy утверждены.
 
 ---
 
@@ -1299,8 +1322,60 @@ agentflow/
 Результат: attempt lifecycle.
 Приёмка: состояние и история позволяют диагностировать crash window.
 
+#### Garage S3 Adapter — подзадачи к storage foundation Sprint 7
+
+### S07-06A — подключить AWS SDK for Java v2 и typed storage configuration (P0)
+Действия: добавить AWS SDK for Java v2 S3 dependency через version catalog/BOM; проверить совместимость с Java 25 и существующим dependency management; создать `@ConfigurationProperties` для endpoint, region, bucket, path-style addressing, connection/request timeouts и retry limits; передавать access/secret keys только через environment/Secret references; не использовать реальные credentials в test fixtures; не создавать отдельный S3 client на каждый запрос.
+Результат: зависимости и validated `agentflow.storage.*` configuration.
+Приёмка: приложение стартует с корректной конфигурацией; отсутствующие обязательные параметры дают понятную ошибку только для включённого storage profile/role; `./gradlew dependencies` не показывает конфликтующих AWS SDK versions; секреты не попадают в Git и startup logs.
+
+### S07-06B — реализовать provider-neutral storage models и `ObjectStoragePort` (P0)
+Действия: реализовать контракт Sprint 2 в коде; создать immutable request/result types для put/get/head/delete; включить object reference (bucket/key), content type, content length, SHA-256 и безопасные user metadata; определить stream ownership/closing semantics; ограничить публичный API типами приложения и JDK, не экспортировать AWS SDK classes.
+Результат: `storage` application API и модели.
+Приёмка: contract unit tests покрывают обязательные поля, invalid key/metadata, empty object и lifecycle stream; модуль `knowledgebase`/`workflowexecution` компилируется без зависимости на AWS SDK.
+
+### S07-06C — реализовать Garage S3 adapter для записи объектов (P0)
+Действия: создать `GarageS3Adapter`; реализовать `put` через S3 API; поддержать streaming request body с известным content length; передавать content type и checksum metadata; обеспечить детерминированную обработку повторной записи по тому же immutable key; не логировать содержимое объекта и credentials.
+Результат: рабочая операция object upload.
+Приёмка: интеграционный тест записывает byte array и большой stream в Garage; повтор запроса не создаёт новый логический объект; записанные size/content type/checksum metadata подтверждаются операцией `head` из S07-06E.
+
+### S07-06D — реализовать потоковое чтение объектов (P0)
+Действия: реализовать `get/openStream`; обеспечить потоковую передачу без `readAllBytes()` в основном production path; корректно закрывать response/client stream при успехе, исключении и отмене; преобразовывать `NoSuchKey` в типизированный not-found результат; поддержать чтение больших объектов с ограничением времени.
+Результат: потоковый object download API.
+Приёмка: тест читает объект частями; bounded-memory test не требует держать полный файл в heap; отсутствующий ключ имеет предсказуемую ошибку; открытые streams не остаются после завершения теста.
+
+### S07-06E — реализовать head и idempotent delete (P0)
+Действия: реализовать `head` для проверки существования, размера, content type и checksum metadata; реализовать paginated `list` только по серверному prefix и `delete`; считать удаление отсутствующего объекта успешным идемпотентным результатом; не выполнять list/delete по произвольному пользовательскому prefix; ограничить операции ожидаемым bucket/key.
+Результат: базовые CRUD и ограниченный listing API ObjectStoragePort.
+Приёмка: tests покрывают present/missing object, repeat delete, metadata mismatch, pagination и запрет выхода за разрешённый bucket/key/prefix scope.
+
+### S07-06F — реализовать timeout, retry и mapping ошибок S3 (P0)
+Действия: классифицировать network timeout, throttling/5xx, auth/permission errors, invalid request и missing object; retry применять только к transient failures с bounded exponential backoff/jitter; не повторять бесконечно 4xx и permanent failures; возвращать provider-neutral `StorageException` с safe error code; сохранять request/correlation ID, если он доступен, без секретных заголовков.
+Результат: единая storage error policy.
+Приёмка: deterministic tests для retryable/permanent ошибок подтверждают количество попыток и timeout budget; наружу не выходят AWS SDK exception details и secrets; повторная запись использует тот же key/checksum.
+
+### S07-06G — обеспечить безопасное использование Garage credentials (P0)
+Действия: разделить provisioning credentials и runtime credentials; runtime identity получает только необходимые операции в рабочем bucket; не помещать credentials в object metadata, logs, traces или Kafka; не принимать bucket/key от клиента как подтверждение доступа; определить, что tenant authorization выполняется потребляющим application service по PostgreSQL ownership record до вызова storage port; сам adapter не считается механизмом tenant authorization.
+Результат: storage access policy и настройки runtime credentials.
+Приёмка: security tests подтверждают отсутствие credential leakage, запрет публичного доступа и отсутствие административных операций у runtime credentials; tenant/document authorization дополнительно проверяется в Sprint 10 на уровне `knowledgebase`.
+
+### S07-06H — добавить Garage integration/contract test suite (P0)
+Действия: поднимать закреплённый Garage image в отдельном integration profile (Testcontainers или Compose test fixture); автоматически создавать тестовый bucket/credentials; проверять put/get/head/list/delete, streaming, metadata, missing object, повторные операции, pagination, invalid credentials, network timeout и cleanup; изолировать тестовые prefixes и очищать их после suite.
+Результат: `GarageS3Adapter` integration tests.
+Приёмка: тесты проходят без облачного AWS аккаунта и внешнего интернета; CI получает тот же Garage S3 API, что и локальная среда; suite повторяется без загрязнения предыдущими данными.
+
+### S07-06I — добавить storage health и технические метрики (P1)
+Действия: реализовать `StorageHealthIndicator` и безопасную проверку доступности bucket; добавить счётчики операций/ошибок и latency histogram с ограниченными labels (`operation`, `result`); не добавлять tenantId, object key, filename и documentId в metric labels; определить, какие runtime roles зависят от Garage.
+Результат: диагностируемый storage adapter.
+Приёмка: остановка Garage отражается в health/metrics; временная недоступность storage не вызывает liveness restart loop; метрики не содержат высококардинальных или чувствительных атрибутов.
+
+### S07-06J — написать Garage adapter developer guide (P1)
+Действия: создать `docs/storage/garage-s3.md`; описать конфигурацию endpoint/region/bucket, secrets, локальный запуск, контракт операций (включая paginated listing для reconciliation), stream ownership, error/retry mapping, запуск integration tests и troubleshooting; добавить примеры только с placeholders.
+Результат: инструкция для разработчика и оператора.
+Приёмка: новый разработчик может поднять Garage, выполнить integration tests и понять, как подключить нового потребителя без импорта Garage/AWS SDK classes.
+
 ### S07-07 — реализовать checkpoints (P0)
-Действия: сохранять output reference и schema version после шага; лимитировать размер в строке; большие outputs хранить в object storage; redact sensitive fields.
+Действия: сохранять output reference и schema version после шага; лимитировать размер в строке; большие outputs хранить через `ObjectStoragePort` (реализация S07-06A…S07-06I); в PostgreSQL сохранять bucket/key, checksum, size и schema version, а не бинарное содержимое; redact sensitive fields; обеспечить cleanup временного объекта при неуспешной фиксации checkpoint по согласованной consistency policy.
 Результат: checkpoint adapter.
 Приёмка: завершённые pure steps не выполняются заново после рестарта.
 
@@ -1350,7 +1425,7 @@ agentflow/
 Приёмка: документация не обещает exactly-once для внешних side effects; неоднозначная попытка видна в history.
 
 ### S07-17 — написать durable execution и recovery guide (P0)
-Действия: создать `docs/architecture/durable-execution.md` и `docs/runbooks/workflow-recovery.md`; описать lease/heartbeat, fencing token, checkpoints, attempt history, retryability, cancel, ambiguous external calls и действия оператора при зависшем run.
+Действия: создать `docs/architecture/durable-execution.md` и `docs/runbooks/workflow-recovery.md`; описать lease/heartbeat, fencing token, checkpoints, attempt history, retryability, cancel, ambiguous external calls и действия оператора при зависшем run; связать checkpoint references с `docs/storage/garage-s3.md` и правилами очистки временных artifacts.
 Результат: инженерный guide и runbook восстановления.
 Приёмка: runbook ссылается на реальные метрики/логи и SQL/API диагностику; сценарии подтверждаются kill/restart test; процедуры не предлагают ручное изменение БД без контролируемого пути.
 
@@ -1359,7 +1434,7 @@ agentflow/
 Результат: контракт service identity и его использование в audit.
 Приёмка: audit-записи системных переходов содержат actor сервисного principal и requester; canary-тест подтверждает отсутствие токенов и secrets в Kafka payload, логах и audit; worker стартует без пользовательского токена; если client нужен, но secret отсутствует, — понятный startup failure.
 
-**Gate Sprint 7:** lease/fencing/checkpoint/retry/cancel/recovery проверены автоматически.
+**Gate Sprint 7:** lease/fencing/checkpoint/retry/cancel/recovery проверены автоматически; Garage S3 adapter проходит CRUD/streaming/error/security integration tests; workflow checkpoints хранят большие outputs в Garage, а metadata/reference — в PostgreSQL.
 
 ---
 
@@ -1534,14 +1609,14 @@ agentflow/
 **Цель:** загружать PDF, индексировать документы асинхронно и выдавать ответы со ссылками на реальные фрагменты.
 
 ### S10-01 — определить document lifecycle (P0)
-Действия: задать `UPLOADED`, `QUEUED`, `PROCESSING`, `INDEXED`, `FAILED`, `DELETE_REQUESTED`, `DELETED`; определить retry и terminal states.
+Действия: задать `UPLOAD_PENDING`, `UPLOADED`, `QUEUED`, `PROCESSING`, `INDEXED`, `FAILED`, `DELETE_REQUESTED`, `DELETED`; определить retry и terminal states.
 Результат: lifecycle diagram.
 Приёмка: каждый переход явно описан и проверяется.
 
 ### S10-02 — создать Garage bucket и key convention (P0)
-Действия: создать bucket; генерировать object key из серверного document ID; не использовать filename как путь; выдать worker только нужные credentials.
-Результат: storage config.
-Приёмка: объект доступен через internal API, но не через публичный URL без авторизации.
+Действия: создать приватный bucket повторяемым provisioning script/Job; генерировать object key из серверного document ID и version; использовать tenant-scoped namespace, например `tenants/{tenantId}/documents/{documentId}/versions/{version}/original`; не использовать filename как путь; выдать ingestion worker только необходимые runtime credentials; хранить bucket/key/checksum в metadata, не публиковать постоянный URL.
+Результат: storage config и key convention.
+Приёмка: bucket создаётся повторно без дублирующих/опасных изменений; object доступен только через внутренний S3 API с runtime credentials; пользовательский filename не влияет на key; key генерируется сервером.
 
 ### S10-03 — реализовать upload API limits (P0)
 Действия: ограничить размер, MIME/type и duration; проверить magic bytes; посчитать SHA-256; очистить filename; вернуть document ID/status.
@@ -1562,6 +1637,48 @@ agentflow/
 Действия: зафиксировать document metadata и event в одной транзакции; не запускать parser из HTTP request; вернуть async status.
 Результат: ingestion enqueue flow.
 Приёмка: upload response не ждёт завершения parsing/embedding.
+
+#### Document storage lifecycle — подзадачи к S10-02
+
+### S10-02A — автоматизировать создание и проверку приватного bucket (P0)
+Действия: добавить idempotent script или provisioning Job для создания bucket; разделить admin/provisioning и application credentials; запретить public read/write; проверять bucket existence/configuration перед запуском storage integration tests; описать ручной recovery, если provisioning завершился частично.
+Результат: повторяемый Garage bucket provisioning.
+Приёмка: чистое Compose окружение подготавливает bucket одной командой; повторный запуск безопасен; приложение не использует admin credentials; публичный доступ к объектам отсутствует.
+
+### S10-02B — реализовать `DocumentObjectStorageService` (P0)
+Действия: реализовать application service поверх `ObjectStoragePort`; принимать внутренний document ID/version и stream, а не произвольный bucket/key от HTTP клиента; формировать object key через отдельный key builder; сохранять checksum, content type и size в результате; возвращать provider-neutral `ObjectReference`.
+Результат: document storage application service.
+Приёмка: unit tests подтверждают детерминированный key generation, корректные metadata и отсутствие Garage/AWS SDK types в `knowledgebase` API.
+
+### S10-02C — согласовать upload с document lifecycle и PostgreSQL (P0)
+Действия: связать S3 upload с документной state machine и миграцией S10-05; зафиксировать последовательность `UPLOAD_PENDING → object stored/verified → UPLOADED/QUEUED + outbox`; при ошибке S3 не публиковать ingestion event; при ошибке DB после успешного upload сохранять достаточную информацию для retry/compensation; исключить dangling `INDEXED` documents.
+Результат: согласованный upload orchestration flow.
+Приёмка: fault-injection tests для failure до upload, после upload и при DB commit показывают предсказуемые состояния; ingestion event публикуется только после подтверждения наличия объекта и durable metadata.
+
+### S10-02D — реализовать безопасное чтение документа ingestion worker (P0)
+Действия: получать tenant/document ownership из PostgreSQL и event context; загружать object reference из trusted document record; читать через streaming `ObjectStoragePort`; проверять size/checksum до передачи в Tika/PDFBox; не использовать object key из произвольного Kafka payload без сверки с БД.
+Результат: document download adapter/service для ingestion.
+Приёмка: worker читает корректный документ потоково; checksum mismatch переводит документ в контролируемый failure state; подмена tenant/document/key в событии не даёт прочитать чужой объект.
+
+### S10-02E — реализовать удаление документа и его объекта (P0)
+Действия: реализовать идемпотентный переход `DELETE_REQUESTED`; запретить дальнейшую выдачу документа в retrieval; удалить/деактивировать chunks и embeddings согласно retention policy; удалить оригинал через `ObjectStoragePort`; завершать `DELETED` только после успешной очистки либо сохранять retryable cleanup state; писать audit event без содержимого документа.
+Результат: полный document deletion flow.
+Приёмка: повторный delete безопасен; удалённый документ не возвращается поиском; временная ошибка Garage не приводит к ложному `DELETED`; после восстановления cleanup завершается автоматически.
+
+### S10-02F — реализовать orphan object reconciliation (P1)
+Действия: выявлять устаревшие upload-pending/failed записи и объекты без актуальной ссылки в PostgreSQL; использовать ограниченные tenant/prefix/time windows; применять grace period и dry-run режим; не удалять объект при активной загрузке, retry или retention hold; записывать результат каждого решения в безопасный audit/operational log.
+Результат: reconciliation/cleanup job и runbook.
+Приёмка: тестовые orphan objects обнаруживаются и очищаются после grace period; активные и retention-protected объекты сохраняются; повторный запуск job идемпотентен; dry-run ничего не удаляет.
+
+### S10-02G — проверить Garage outage, recovery и tenant isolation (P0)
+Действия: остановить Garage и смоделировать сетевой timeout во время upload/download/delete; проверить retry и terminal states; восстановить Garage и убедиться в завершении отложенных операций; проверить одинаковые document IDs в разных tenant и попытку подмены object key; сверить object checksum с PostgreSQL.
+Результат: Garage document-storage integration/failure tests.
+Приёмка: недоступность Garage не приводит к `INDEXED` документу без оригинала; после восстановления retry завершается без дублирования; cross-tenant access запрещён; mismatch checksum обнаруживается явно.
+
+### S10-02H — документировать Garage document lifecycle (P1)
+Действия: расширить `docs/storage/garage-s3.md` и `docs/rag/pipeline.md`; описать upload sequence, key convention, object reference, consistency gap, download, delete, retention, reconciliation, outage/retry и ручную диагностику; привести проверяемые команды локального сценария.
+Результат: storage lifecycle guide, связанный с RAG developer guide.
+Приёмка: документация совпадает с реальными состояниями и кодом; clean-room upload → index → download → delete воспроизводится по инструкции.
 
 ### S10-07 — реализовать PDF/text extraction adapter (P0)
 Действия: подключить Tika/PDFBox; извлекать текст, страницы и metadata; лимитировать количество страниц/текст; обработать corrupt/encrypted PDFs.
@@ -1638,7 +1755,7 @@ agentflow/
 Результат: RAG developer guide и воспроизводимый evaluation workflow.
 Приёмка: схема pipeline соответствует runtime; пример ответа ссылается на реальные chunk/page metadata; документ объясняет как проверить отсутствие cross-tenant retrieval и как интерпретировать eval results.
 
-**Gate Sprint 10:** upload и indexing асинхронны, retrieval tenant-safe, citations берутся только из возвращённого evidence.
+**Gate Sprint 10:** upload и indexing асинхронны, retrieval tenant-safe, citations берутся только из возвращённого evidence; document originals загружаются/читаются/удаляются через Garage adapter; upload consistency, outage recovery и orphan cleanup подтверждены тестами.
 
 ---
 
@@ -2168,7 +2285,27 @@ agentflow/
 Результат: Keycloak в Kubernetes-профиле.
 Приёмка: API в кластере принимает токен Keycloak из того же кластера при совпадающем issuer; smoke job и E2E получают токен без ручных шагов; admin console недоступна снаружи; secrets не в values и Git; повторный deploy даёт ту же конфигурацию realm.
 
-**Gate Sprint 15:** clean Kubernetes deploy проходит, секреты скрыты, API/worker roles отделены, rollback и scale-out протестированы.
+### S15-22 — развернуть Garage в локальном Kubernetes-кластере (P0)
+Действия: зафиксировать image tag/digest; определить поддерживаемую для demo topology Garage; создать Helm resources/StatefulSet (или иной подходящий stateful workload), internal Service, ConfigMap и Secret references; подключить persistent volume для данных Garage; задать requests/limits, storage capacity и probes; отделить S3 endpoint от административного endpoint; не создавать внешний Ingress для Garage; явно документировать, что одноузловой local profile не является HA production deployment.
+Результат: Garage Helm deployment и internal S3 Service.
+Приёмка: `helm lint`/template проходят; Garage поднимается в kind/k3d; S3 endpoint доступен из API/worker namespace; после перезапуска Pod объекты сохраняются на PVC; Garage не доступен через внешний ingress.
+
+### S15-23 — автоматизировать Garage bucket и runtime credentials в Kubernetes (P0)
+Действия: создать idempotent provisioning Job/script для bucket и runtime access key; хранить admin/provisioning и application credentials в разных Secret references; передавать runtime credentials только API/ingestion/workflow роли, которым нужен storage; не помещать secrets в Helm values, ConfigMap, Git или logs; описать rotation без потери доступа к существующим объектам.
+Результат: Kubernetes storage provisioning и secret wiring.
+Приёмка: повторный deploy не ломает bucket/keys; приложение работает с runtime credentials без admin permissions; rendered manifests и job logs не содержат credentials; key rotation проверена в тестовом окружении.
+
+### S15-24 — определить и проверить backup/restore Garage data (P0)
+Действия: описать backup strategy для persistent object data, Garage configuration/layout metadata и связанных PostgreSQL document/object references; определить согласованный порядок/окно backup, retention и хранение backup вне исходного PVC; создать restore runbook; восстановить тестовый bucket и проверить checksum нескольких оригиналов/checkpoints; явно отметить ограничения local single-node demo.
+Результат: `docs/runbooks/garage-backup-restore.md` и restore evidence.
+Приёмка: после имитации потери PVC тестовое окружение восстанавливает объекты из backup; соответствующие PostgreSQL references разрешаются; checksum совпадают; runbook не предполагает, что PVC сам по себе является backup.
+
+### S15-25 — ограничить сетевой доступ к Garage и добавить Kubernetes smoke test (P0)
+Действия: разрешить S3 traffic только от API/ingestion/workflow workloads, которым нужен storage; закрыть доступ снаружи кластера и к admin endpoint; добавить smoke job для put/get/head/delete тестового объекта через тот же `GarageS3Adapter`, который использует приложение; проверить поведение при временной недоступности Garage и после restart.
+Результат: Garage NetworkPolicy и storage smoke test.
+Приёмка: разрешённые workloads выполняют CRUD smoke test; произвольный pod/внешний клиент не получает доступ; после restart тестовые данные сохраняются; outage отражается в storage health/metrics без liveness restart loop.
+
+**Gate Sprint 15:** clean Kubernetes deploy проходит, секреты скрыты, API/worker roles отделены, rollback и scale-out протестированы; Garage работает с persistent storage, внутренним доступом и проверенным backup/restore.
 
 ---
 
