@@ -4,6 +4,7 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 
 ## Contents
 
+- [S14-12 — create-run/status polling scenario](#s14-12--create-runstatus-polling-scenario)
 - [S14-11 — dependency/secret/container scanning](#s14-11--dependencysecretcontainer-scanning)
 - [S14-10 — upload/parser abuse regression pack](#s14-10--uploadparser-abuse-regression-pack)
 - [S14-09 — provider error matrix](#s14-09--provider-error-matrix)
@@ -15,6 +16,53 @@ Detailed per-task changelog records for the resilience/security/load thread. Sli
 - [S14-03 — cross-tenant regression tests](#s14-03--cross-tenant-regression-tests)
 - [S14-02 — Testcontainers suite stability](#s14-02--testcontainers-suite-stability)
 - [S14-01 — failure matrix](#s14-01--failure-matrix)
+
+---
+
+## S14-12 — create-run/status polling scenario
+
+### What changed
+
+One k6 scenario, [`docs/load-tests/create-run-status.k6.js`](../load-tests/create-run-status.k6.js), plus its documentation [`docs/load-tests/README.md`](../load-tests/README.md), the root `README.md` Load-testing section, the `docs/README.md` index rows, the `.gitignore` results line, the `CHANGELOG.md` entry and this devlog section.
+
+The scenario measures the create-run/status-polling path over HTTP:
+
+- **create-run** — `POST /api/v1/runs` with a **unique** `Idempotency-Key` (RFC 4122 v4 UUID generated in-script — k6 v2 dropped the built-in `uuidv4`, so the script carries a local generator, no external import and no internet dependency) and the fixed payload `{"workflowId": "<WORKFLOW_ID>"}`. `202 Accepted` is the success path; anything else is counted as a rejected create and the iteration ends.
+- **status polling** — `GET /api/v1/runs/{runId}` every `POLL_INTERVAL_SEC` tick until the run reaches a terminal state (`SUCCEEDED` / `FAILED` / `CANCELLED`, the three terminal states of the run state machine) or the polling horizon (`MAX_POLLS` ticks, default 120 ≈ 60 s) elapses.
+- **metrics** — `agentflow_load_*`: two `Trend`s (create/poll latency) and counters for creates / rejected creates / polls / terminal outcomes (succeeded/failed/cancelled) / the horizon, all closed low-cardinality sets, all exported by k6 to the machine-readable `--summary-export` JSON.
+
+**Fixed dataset:** the scenario's parameters, not the payload — one pinned workflow id (`WORKFLOW_ID`, required), one fixed payload shape, fixed scenario defaults (5 VUs, 60 s, 0.5 s tick, 120-tick horizon), with documented `-e` overrides. No LLM is called: the default scenario points at a workerless API (`local` profile, no worker attached), so runs stay `QUEUED` and the horizon is reached; nothing in the scenario drives a model.
+
+**Machine-readable output:** `--summary-export=docs/load-tests/results/create-run-status.summary.json` — the export carries every custom metric. The `docs/load-tests/results/` directory is git-ignored; k6 silently skips an export to a missing parent directory, so the documented command includes the one-time `mkdir -p`.
+
+**Honest limits, stated in the docs:** the HTTP API has no version-create endpoint — an active workflow must be seeded through the service layer or an integration test — and without one every create is a `404` (counted as rejected). The scenario is a smoke/shape tool, **not** a performance baseline — the baseline environment is `S14-13` and the p50/p95/p99/saturation measurement is `S14-14`. The scenario never claims a latency or duration number.
+
+### Why
+
+`S14-12` is the P0 Sprint-14 task: "create-run/status polling scenario — fixed dataset, unique idempotency keys, no paid LLM per iteration, machine-readable output, load run reproducible from README". Before this change there was no k6 scenario in the repo (`docs/load-tests/` was an empty planned tree) and no way to reproduce a load shape from the README. `S14-13`/`S14-14` build on this scenario for the actual measurements, so the script is pinned to a fixed parameter set rather than a per-operator ad-hoc run.
+
+### Verification
+
+The scenario was exercised against a local mock of the two endpoints (a Python HTTP server — POST returns `202` with a run id, GET flips `RUNNING → SUCCEEDED` after three polls):
+
+- `k6 run --quiet --vus 2 --duration 5s -e BASE_URL=http://127.0.0.1:18080 -e WORKFLOW_ID=<UUID> -e POLL_INTERVAL_SEC=0.2 -e MAX_POLLS=10 --summary-export=<file> docs/load-tests/create-run-status.k6.js` — BUILD SUCCESSFUL, exit 0; **18 creates / 18 runs succeeded / 72 polls**, checks 90/90, and the `--summary-export` JSON carried every custom metric (`agentflow_load_*` + the standard k6 metrics).
+- `WORKFLOW_ID` missing — fails fast with a clear script exception (exit 107) naming the prerequisite and the no-version-create-endpoint caveat.
+- Dead port (`http://127.0.0.1:9999`) — every create is a non-202 and is counted as rejected (`agentflow_load_creates_rejected`, 9943/9943); no poll loop, no crash.
+- `--summary-export` to a missing parent directory is **silently skipped** (verified) — documented in the README, where the one-time `mkdir -p docs/load-tests/results` is part of the command.
+
+No performance number is claimed: the mock ran in milliseconds and the smoke run uses a local, unmeasured target.
+
+### Docs
+
+- [`docs/load-tests/README.md`](../load-tests/README.md) — the scenario documentation (fixed dataset, prerequisites, configuration reference, output-metric catalogue, honest limits).
+- `README.md` — the Load-testing section (commands + prerequisite).
+- `docs/README.md` — the `load-tests/` tree entry and table row (no longer `⚠ planned`).
+- `.gitignore` — the generated `docs/load-tests/results/` output.
+- `CHANGELOG.md` — the Unreleased / Added entry.
+
+### Scope / follow-up
+
+This task ships the scenario and the commands, not a measurement. The baseline environment report (`S14-13`) and the p50/p95/p99/saturation measurement with resource usage (`S14-14`) are out of scope; the scenario is deliberately not presented as a baseline. The workerless default keeps the full workflow duration and the terminal-status distribution invisible — both are operator choices (a worker-capable deployment) and are stated as such, never as a fact about the default scenario.
 
 ---
 

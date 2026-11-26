@@ -228,6 +228,23 @@ The unit/integration split is explicit: `integrationTest` runs a separate source
 - **Readiness over sleeps** — waiting for an asynchronous condition is expressed as an explicit poll with a deadline and a real assertion (a bounded loop that fails with the state it saw), not a flat sleep with a hoped-for wait.
 - **Data isolation** — Kafka topics are freshly created per test (or per class) and message/outbox assertions are made against freshly seeded identifiers, never against a shared broker state.
 
+## Load testing
+
+The create-run/status-polling k6 scenario (`S14-12`) measures the API path — `POST /api/v1/runs` (202) and `GET /api/v1/runs/{runId}` (200) until a run reaches a terminal state or the polling horizon elapses — with a fixed dataset (one pinned workflow id, a fixed payload, unique per-run idempotency keys) and a machine-readable `--summary-export` JSON. It calls no LLM.
+
+Prerequisite: the API running (`./gradlew :apps:agentflow-app:bootRun --args='--spring.profiles.active=local'`) with an **active workflow** in the local database (the HTTP API has no version-create endpoint — a draft is created through the service layer or an integration test).
+
+```bash
+mkdir -p docs/load-tests/results
+k6 run \
+  -e BASE_URL=http://localhost:8080 \
+  -e WORKFLOW_ID=<fixed workflow UUID> \
+  --summary-export=docs/load-tests/results/create-run-status.summary.json \
+  docs/load-tests/create-run-status.k6.js
+```
+
+The full scenario documentation, configuration reference and output-metric catalogue live in [`docs/load-tests/README.md`](docs/load-tests/README.md). This scenario is a smoke/shape tool, **not** a performance baseline — the baseline environment is `S14-13` and the p50/p95/p99 measurement is `S14-14`.
+
 ## Security
 
 The platform ships a blocking security gate that runs on every pull request and

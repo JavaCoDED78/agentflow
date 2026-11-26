@@ -87,7 +87,8 @@ docs/
 ├── runbooks/                          ← operational runbooks: workflow-recovery.md (S07-17); local-auth.md (S04-14); dlq-redrive.md (S12-12); redis-outage.md (S12-21)
 ├── observability/                     README.md (S13-21) ← the observability handbook; standards.md (S13-01) ← telemetry conventions; metrics.md (S13-11) ← metric catalogue (machine-checked, S13-19); SLOs ⚠ planned (S14-16/S16-14)
 ├── testing/                           README.md (⚠ planned — Sprint 14 test strategy, S14-17); failure-matrix.md (S14-01) ← outage scenarios for every critical dependency
-└── load-tests/                        ⚠ planned — k6 scenarios, reports, environment description
+└── load-tests/                        ├── create-run-status.k6.js (S14-12) ← create-run/status-polling scenario
+                                       └── README.md ← scenario docs, commands, output catalogue
 ```
 
 Machine-readable contracts are **not** in `docs/`; they live in
@@ -122,7 +123,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Tools | `docs/tools/` | `README.md` authoring guide (S08-15) |
 | AI, RAG, evaluation | `docs/ai/`, `docs/rag/`, `docs/evaluation/` | `docs/evaluation/README.md` (S09-14 Planner baseline eval cases), `docs/ai/README.md` (S09-15 AI integration guide), `docs/ai/provider-configuration.md` (S09-15 provider configuration), `docs/ai/real-provider-contract-test.md` (S09-12 opt-in live provider contract test), `docs/rag/README.md` (RAG grounding — S10-11 follow-up), `docs/rag/pipeline.md` (full pipeline upload→…→ground — S10-11…S10-20) |
 | Observability (metrics, dashboards, alerts, SLOs) | `docs/observability/` | `README.md` (S13-21) ← the observability handbook; `standards.md` (S13-01) ← telemetry conventions; `metrics.md` (S13-11) ← metric catalogue (machine-checked, S13-19); SLOs ⚠ planned (`S14-16`/`S16-14`) |
-| Load tests | `docs/load-tests/` | ⚠ planned |
+| Load tests | `docs/load-tests/` | `create-run-status.k6.js` (S14-12) + `README.md` (scenario docs, commands, output catalogue) |
 | Failure matrix (outage scenarios for critical dependencies) | `docs/testing/failure-matrix.md` | S14-01 |
 | Test strategy (unit/module/contract/Testcontainers/E2E/failure/security/load) | `docs/testing/README.md` | ⚠ planned (`S14-17`) |
 | Usage, costs, budgets | `docs/usage-and-costs.md` | S12-15 |
