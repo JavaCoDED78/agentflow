@@ -37,8 +37,9 @@ each standing constraint to its ADR, so a reader travels between the two.
 | [`ADR-019`](ADR-019-mcp-streamable-http-transport.md) | MCP transport and client/server compatibility: Streamable-HTTP on the stable Spring AI 2.0.x line | 2026-11-15 | S11-07 | Accepted |
 | [`ADR-020`](ADR-020-shared-redaction-in-common.md) | Centralised secret redaction is a shared primitive in `common`, consumed by `observability`, `audit` and `messaging` | 2026-11-18 | S12-09 | Accepted |
 | [`ADR-021`](ADR-021-redis-role.md) | Redis is a helper component: cache, rate-limit state and short-lived coordination only — correctness never depends on it | 2026-11-19 | S02-17 | Accepted |
-|| [`ADR-022`](ADR-022-messaging-audit-edge.md) | The DLQ inspection audit is written through a new `messaging -> audit` compile edge (operator family `READ`/`DLQ`) | 2026-11-19 | S12-11 | Accepted |
+| [`ADR-022`](ADR-022-messaging-audit-edge.md) | The DLQ inspection audit is written through a new `messaging -> audit` compile edge (operator family `READ`/`DLQ`) | 2026-11-19 | S12-11 | Accepted |
 | [`ADR-023`](ADR-023-service-identity-worker-actor.md) | The durable worker runs under one stable service-principal actor (`agentflow-worker`); the requester stays on the run | 2026-11-26 | S07-18 | Accepted |
+| [`ADR-024`](ADR-024-object-storage.md) | Object Storage: PostgreSQL owns metadata/ownership, Garage owns bytes — tenant-scoped keys, no public buckets, runtime/admin credential separation, no transactional link, bounded retry + compensation + orphan reconciliation, consumer-owned retention | 2026-11-27 | S02-20 | Accepted |
 
 ## Statuses
 

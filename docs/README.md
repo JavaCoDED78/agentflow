@@ -51,7 +51,12 @@ docs/
 │   ├── ADR-016-ingestion-ai-embedding-edge.md ← ingestion → ai embedding port edge (S10-12)
 │   ├── ADR-017-tool-risk-classification.md   ← closed, deny-by-default tool risk vocabulary (S11-01)
 │   ├── ADR-018-workflowexecution-audit-edge.md ← the approval decision audited across a new audit edge (S11-04)
-│   └── ADR-019-mcp-streamable-http-transport.md ← MCP transport: Streamable-HTTP on stable Spring AI 2.0.x (S11-07)
+│   ├── ADR-019-mcp-streamable-http-transport.md ← MCP transport: Streamable-HTTP on stable Spring AI 2.0.x (S11-07)
+│   ├── ADR-020-shared-redaction-in-common.md ← centralised secret redaction in common, consumed by observability/audit/messaging (S12-09)
+│   ├── ADR-021-redis-role.md ← Redis is a helper: cache, rate-limit state, short-lived coordination only (S02-17)
+│   ├── ADR-022-messaging-audit-edge.md ← DLQ inspection audited across a new messaging -> audit edge (S12-11)
+│   ├── ADR-023-service-identity-worker-actor.md ← the durable worker under one stable service-principal actor (S07-18)
+│   └── ADR-024-object-storage.md ← Object Storage: PostgreSQL owns metadata/ownership, Garage owns bytes (S02-20)
 ├── architecture/
 │   ├── system-context.md              ← C4 context diagram: externals, trust boundaries, flows (S02-02)
 │   ├── dependency-management.md       ← version catalog / BOM policy (S01-06, S01-08)

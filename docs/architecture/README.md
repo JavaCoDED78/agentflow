@@ -57,7 +57,7 @@ documentation entry point. The **project** entry point is the root
 | **ADR register** | Architecture decision records, statuses, lifecycle | [`../adr/README.md`](../adr/README.md) |
 | **Threat model** | Assets, attacker goals, trust boundaries, mitigations (tenant isolation, prompt injection, SSRF, log leaks) | [`../threat-model/README.md`](../threat-model/README.md) |
 | **Redis usage** | The single operational reference for every Redis use — key format, TTL, failure mode, config reference, observability (`ADR-021`, `S12-21`) | [`redis-usage.md`](./redis-usage.md) |
-| **Object storage** | The provider-neutral `ObjectStoragePort` contract — the five operations, `ObjectReference`/value types, stream ownership, idempotency and error policy (`S02-19`) | [`object-storage.md`](./object-storage.md) |
+| **Object storage** | The provider-neutral `ObjectStoragePort` contract — the five operations, `ObjectReference`/value types, stream ownership, idempotency and error policy (`S02-19`), with the consistency/security/lifecycle policy in [`ADR-024`](../adr/ADR-024-object-storage.md) (`S02-20`) | [`object-storage.md`](./object-storage.md) |
 
 ---
 
@@ -110,6 +110,12 @@ where possible (`S02-08` rejects any edge outside the module-map table;
 - **Redis is a helper, never a store of truth** — cache, rebuildable cache and
   rate-limit state only; never workflow state, lease/fencing, idempotency, inbox,
   permissions or usage/cost counters; failure mode documented per use ([`ADR-021`](../adr/ADR-021-redis-role.md)).
+- **Object Storage: PostgreSQL owns metadata and ownership, Garage owns bytes** —
+  no transactional link between the two; upload is object-then-metadata (no row
+  pointing at a missing object), delete is object-then-metadata-terminal; no public
+  buckets or permanent public URLs; runtime and provisioning/admin credentials are
+  separate; tenant-scoped keys are server-generated; orphan objects are swept, not
+  forgotten; retention is consumer-owned ([`ADR-024`](../adr/ADR-024-object-storage.md), [`object-storage.md`](./object-storage.md)).
 - **At-least-once + idempotency** — never promise exactly-once between PostgreSQL
   and Kafka; state and the outbox record write in one transaction ([`ADR-003`](../adr/ADR-003-at-least-once-idempotency.md)).
 - **Transactional outbox** between PostgreSQL and Kafka, polling publisher,
@@ -178,7 +184,6 @@ build and repository, not assumed:
 
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
-- `ADR-024-object-storage.md` — Object Storage consistency, security and lifecycle (tenant-scoped key convention, no public buckets, credential separation, DB↔Garage consistency gap, upload/delete state transitions, retry, compensation, orphan cleanup, checksum verification, Garage-outage policy) — `S02-20`. Until it lands, the garage-local-stack decision stays recorded in [`ADR-013`](../adr/ADR-013-s3-object-storage-garage.md).
-- The `storage` module implementation — the `ObjectStoragePort` contract is defined (`S02-19`, [`object-storage.md`](./object-storage.md)); the Garage adapter and its code land with `S07-06B`/`S07-06H`. The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no code under `src/main/java/com/example/agentflow/storage/` today.
+- The `storage` module implementation — the `ObjectStoragePort` contract is defined (`S02-19`, [`object-storage.md`](./object-storage.md)) and the consistency/security/lifecycle policy is fixed ([`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`); the Garage adapter and its code land with `S07-06B`/`S07-06H`. The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no code under `src/main/java/com/example/agentflow/storage/` today.
 
 No other index topic is planned beyond the items above.
