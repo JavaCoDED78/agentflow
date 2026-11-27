@@ -71,7 +71,7 @@ docs/
 │   ├── engineering-conventions.md       ← UUID, UTC/timestamptz, injectable Clock, identifier naming (S02-11)
 │   ├── api-conventions.md               ← API, pagination, Problem Details, optimistic locking, tenant lookup (S03-17)
 │   ├── redis-usage.md                  ← Redis helper: applications, key format + TTL, failure policy, config reference, metrics (S12-21)
-│   ├── object-storage.md               ← provider-neutral ObjectStoragePort contract: operations, ObjectReference, stream ownership, idempotency, error policy (S02-19)
+│   ├── object-storage.md               ← provider-neutral ObjectStoragePort contract: operations, ObjectReference, stream ownership, idempotency, error policy (S02-19) + ADR-024 consistency/security/lifecycle policy (S02-20)
 │   ├── kafka-topics.md                ← topics & partition keys (S06-02)
 │   ├── observability/
 │   │   └── outbox-polling-benchmark.md ← poll delay & poll load: poll-vs-CDC justification gate (S06-15)
@@ -134,7 +134,7 @@ documentation, `contracts/` holds machine-readable integration contracts.
 | Test strategy (unit/module/contract/Testcontainers/E2E/failure/security/load) | `docs/testing/README.md` | ⚠ planned (`S14-17`) |
 | Usage, costs, budgets | `docs/usage-and-costs.md` | S12-15 |
 | Redis helper reference (applications, key format + TTL, failure policy, config, metrics) | `docs/architecture/redis-usage.md` | S12-21 |
-| Object storage contract (operations, `ObjectReference`, stream ownership, idempotency, error policy) | `docs/architecture/object-storage.md` | S02-19 |
+| Object storage contract & policy (operations, `ObjectReference`, stream ownership, idempotency, error policy — S02-19; PostgreSQL-metadata/Garage-bytes, tenant-scoped keys, checksum, streaming, no logging of credentials/content — ADR-024, S02-20; planned Sprint 7/10/15 integration scenarios — S02-21) | `docs/architecture/object-storage.md` | S02-19 / S02-20 / S02-21 |
 | Operational runbooks (Redis outage) | `docs/runbooks/redis-outage.md` | S12-21 |
 | Audit action catalogue (audit contract) | `docs/security/audit-contract.md` | S12-07 |
 | HTTP API (`/api/v1`) | `contracts/openapi/` | `../contracts/openapi/README.md` |

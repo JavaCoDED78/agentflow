@@ -197,6 +197,10 @@ Guarantees:
   `storage` is the bytes only.
 - **No public URLs.** No public buckets, no anonymous access, no public URLs — an object is addressed
   only through the app (see [ADR-024](../adr/ADR-024-object-storage.md), `S02-20`).
+- **No logging of credentials or object content.** The contract carries no credential fields;
+  the metadata rows carry no credential-shaped values; logs, metrics, traces, prompts and responses
+  never contain credentials, object content, document text, prompts or unrestricted keys (see
+  [ADR-024](../adr/ADR-024-object-storage.md) rule 11 and `ADR-020`'s shared redaction gate).
 - **No retry loop.** `storage` classifies and reports; bounded backoff/jitter is the caller's policy.
 - **No provider types.** No AWS SDK / Garage class crosses the contract boundary in either direction
   (arguments, returns, exceptions). The gate is `StorageBoundaryTest` (contract purity) plus a
@@ -214,7 +218,7 @@ The contract is sufficient for both sanctioned consumers:
 | Consumer | Use | How the contract covers it |
 |---|---|---|
 | `knowledgebase` (document originals) | Upload: generate the tenant-scoped key (`documents/<tenantId>/<documentId>[.<ext>]`), `put` with declared `sha256`/`contentLength`; read: `get`/`head`; delete: `delete` | `put` (streaming, checksum-verified, empty-object safe) · `get`/`head` (bounded read, typed miss) · `delete` (idempotent) |
-| `workflowexecution` (large-payload checkpoints, S15-06) | Persist `output_ref` (ref + checksum + size + `output_schema_version`), `put` of the checkpoint payload; read for recovery; cleanup on fix-up | `put` (streaming, replace-on-repeat, checksum-verified) · `get` (bounded read) · `head` + `delete` (presence, size, cleanup) · `list` (reconciliation/inspection over the checkpoint prefix) |
+| `workflowexecution` (large-payload checkpoints, S07-07) | Persist `output_ref` (ref + checksum + size + `output_schema_version`), `put` of the checkpoint payload; read for recovery; cleanup on fix-up | `put` (streaming, replace-on-repeat, checksum-verified) · `get` (bounded read) · `head` + `delete` (presence, size, cleanup) · `list` (reconciliation/inspection over the checkpoint prefix) |
 
 Neither consumer needs anything beyond these five operations and the value types above. Nothing in the
 contract carries document state, run state, a workflow step state or a tenant id — so the contract
@@ -227,7 +231,7 @@ never constrains a consumer's lifecycle.
 - `knowledgebase` generates the document key: `documents/<tenantId>/<documentId>[.<ext>]`, with the
   extension a content-type hint (a closed whitelist) and never a path segment — so a hostile or
   prompt-injected filename can never become an object path or leak across tenants.
-- `workflowexecution` generates the checkpoint key (its convention is `S15-06`'s, not yet built).
+- `workflowexecution` generates the checkpoint key (its convention is `S07-07`'s, not yet built).
 - The port treats the key as an opaque, structurally-validated string; it never interprets it.
   `storage` never derives, rewrites or validates tenant scope from the key.
 - A client-supplied key is a contract violation: the port validates the key structurally (blank,
@@ -282,7 +286,7 @@ try (OpenedObject obj = storage.get(key)) {
 // knowledgebase — lifecycle cleanup
 DeleteResult r = storage.delete(key);       // DELETED — or ALREADY_ABSENT on replay; never an error
 
-// workflowexecution — large-payload checkpoint (S15-06)
+// workflowexecution — large-payload checkpoint (S07-07)
 ObjectReference ref = storage.put(new CreateObjectRequest(
         checkpointKey, stream, "application/octet-stream", null, declaredSha256, Optional.empty()));
 
@@ -309,3 +313,40 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 The contract is **sufficient** for both document originals and workflow artifacts and is **not** a
 Garage-specific type. Unit tests for future adapters are specified in §9 and land with `S07-06B` /
 `S07-06H`.
+
+### 11.1 Integration scenarios — Sprint 7 / 10 / 15 (planned)
+
+These are the cross-module scenarios that exercise the contract end to end. **None of them is built
+today** — the `storage` module has no code — so they are recorded here as planned, each checked
+against this contract and ADR-024, never as shipped behaviour:
+
+| Sprint | Task | Scenario (planned) |
+|---|---|---|
+| 7 | `S07-06A` | AWS SDK for Java v2 + validated `agentflow.storage.*` typed config (endpoint/region/bucket/timeouts); secrets only from env/Secret references |
+| 7 | `S07-06B` | `ObjectStoragePort` + value types in code; §9 contract unit suite over the contract |
+| 7 | `S07-06C` | `put` — streaming write to Garage, deterministic replace on the same immutable key |
+| 7 | `S07-06D` | `get` — bounded streaming read, no `readAllBytes()`; stream released on success/failure/cancellation |
+| 7 | `S07-06E` | `head` + paginated `list` (server-side prefix only) + idempotent `delete` |
+| 7 | `S07-06F` | Timeout/retry classification and error mapping (`UNAVAILABLE`/`TIMEOUT` retryable, everything else not) |
+| 7 | `S07-06G` | Credentials: provisioning/admin vs runtime separation; tenant authorization stays in the consuming application service |
+| 7 | `S07-06H` | Garage integration/contract test suite — the §9 suite against a real Garage fixture |
+| 7 | `S07-06I` | `StorageHealthIndicator` + bounded storage metrics (`operation`, `result` — never tenant/key/filename) |
+| 7 | `S07-06J` | Garage adapter developer guide (`docs/storage/garage-s3.md`) |
+| 7 | `S07-07` | Workflow checkpoints — `output_ref` (ref + checksum + size + `output_schema_version`) + the large-payload path; checkpoint key convention `checkpoints/<tenantId>/<runId>/<stepRunId>[.<ext>]` |
+| 10 | `S10-02` | Garage bucket provisioning + key convention (`documents/<tenantId>/<documentId>[.<ext>]`, private bucket) |
+| 10 | `S10-02A` | Idempotent bucket provisioning Job/script; bucket exists check before storage integration tests |
+| 10 | `S10-02B` | `DocumentObjectStorageService` — server-generated keys via a key builder, checksum + metadata, provider-neutral `ObjectReference` |
+| 10 | `S10-02C` | Upload orchestration — `UPLOAD_PENDING → object stored/verified → UPLOADED/QUEUED + outbox` in one transaction; no event on an unverified object |
+| 10 | `S10-02D` | Safe document read — tenant/document ownership from PostgreSQL, streaming read, checksum re-verify before Tika/PDFBox |
+| 10 | `S10-02E` | Document deletion — `DELETE_REQUESTED → DELETED`, object deleted first, `DELETED` only after successful removal |
+| 10 | `S10-02F` | Orphan object reconciliation — bounded windows, grace period, dry-run, audited decisions (never blind deletion) |
+| 10 | `S10-02G` | Garage outage / recovery / tenant isolation — upload/download/delete failure modes, cross-tenant denial, checksum mismatch detection |
+| 10 | `S10-02H` | Garage document lifecycle guide (`docs/storage/garage-s3.md` + `docs/rag/pipeline.md`) |
+| 15 | `S15-22` | Garage deployed in the local Kubernetes cluster (Helm StatefulSet, internal Service, PVC) |
+| 15 | `S15-23` | Kubernetes bucket + runtime credentials provisioning (`Secret` references, rotation) |
+| 15 | `S15-24` | Garage backup/restore — strategy, restore runbook, checksum verification of originals/checkpoints |
+| 15 | `S15-25` | NetworkPolicy + smoke test — only API/ingestion/workflow roles reach Garage; CRUD smoke via `GarageS3Adapter` |
+
+Every one of these scenarios must be checked against [ADR-024](../adr/ADR-024-object-storage.md)
+(upload/delete policy, failure behaviour, orphan reconciliation, credential separation) and this
+contract — none of them may introduce a storage-specific assumption that contradicts either.

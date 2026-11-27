@@ -194,12 +194,48 @@ module per migration) are in
 
 Large document payloads and artifacts are stored in the S3-compatible Garage
 bucket and addressed by a server-generated, tenant-scoped `object_key`
-(`documents/<tenantId>/<documentId>[.<ext>]`). The key is generated from the
-server-issued identifiers by
+(`documents/<tenantId>/<documentId>[.<ext>]`; checkpoints use
+`checkpoints/<tenantId>/<runId>/<stepRunId>[.<ext>]`, `S07-07`). The key is
+generated from the server-issued identifiers by
 `com.example.agentflow.knowledgebase.domain.DocumentObjectKey` — never from the
 client filename, and always namespaced by tenant. The bucket is **private**
 (`S10-02`): an object is addressed only through the app, which owns the S3
 credentials and re-checks the tenant on every access (invariants 1 and 8).
+Two consumers share this one contract: `knowledgebase` (document originals) and
+`workflowexecution` (large-payload checkpoints) — both go through the
+provider-neutral `ObjectStoragePort`, never the adapter (see
+[`docs/architecture/object-storage.md`](docs/architecture/object-storage.md)).
+
+The rules every object flow obeys (fixed in
+[`ADR-024`](docs/adr/ADR-024-object-storage.md)):
+
+- **Key generation is server-side.** Keys are generated from server-issued
+  identifiers (`documents/<tenantId>/<documentId>[.<ext>]`,
+  `checkpoints/<tenantId>/<runId>/<stepRunId>[.<ext>]`); the extension is a
+  content-type hint from a closed whitelist, never a path segment; a
+  client-supplied key is a contract violation.
+- **Tenant authorization stays in the owning module.** `storage` never derives
+  or checks tenant scope — the consuming application service authorizes against
+  its PostgreSQL row (`(tenantId, resourceId)`) before the port is called; the
+  adapter only moves bytes.
+- **Checksum verification.** Every `put` verifies the declared `sha256` and
+  `contentLength` against the actual bytes (`INVALID_REQUEST` on mismatch); a
+  consumer re-verifies the checksum at read before trusting the content. The
+  checksum + size live in the metadata row, never in the object.
+- **Streaming, never heap.** `put` consumes a caller stream (bounded chunks,
+  never `readAllBytes()`); `get` returns a caller-owned stream; `head`/`list`/
+  `delete` never open content. Bounded-memory is a contract requirement.
+- **Never logged.** Credentials, object content, document text, prompts and
+  unrestricted keys are forbidden in logs, metrics, traces and responses —
+  logs/metrics stay on bounded labels (no `tenantId`, `documentId`, object key).
+
+Upload is object-then-metadata-row (the row is committed, with the outbox
+record, only after the object is stored and verified) and delete is
+object-then-terminal (`DELETED` is entered only after a successful object
+delete) — see [`ADR-024`](docs/adr/ADR-024-object-storage.md) for the full
+consistency/security/lifecycle policy. Orphan objects are reconciled by a
+scheduled operator-visible sweep (`S07-06G`/`S10-02F`), never blind deletion;
+retention is consumer-owned.
 
 The configuration is the typed `agentflow.storage.*` group — `@Validated`
 `@ConfigurationProperties` in `AgentFlowProperties.Storage`:

@@ -268,7 +268,7 @@ When a step reaches `SUCCEEDED`, its result is persisted as a **checkpoint** so 
 
 Redaction happens before the write (invariant 8 — secrets never land in a column); the length is
 bounded to `agentflow.checkpoint.max-inline-bytes` (256 KiB by default); a value larger than that
-is written to object storage and only `output_ref` is kept (the large-payload path, `S15-06`). A
+is written to object storage and only `output_ref` is kept (the large-payload path, `S07-07`). A
 `CHECK (output_inline IS NULL OR output_ref IS NULL)` enforces that the two are mutually exclusive
 for a row. On recovery the seam (`workflowexecution.application.CheckpointAdapter`) reuses the
 checkpoint only when the stored `output_schema_version` matches the step's current output-schema
