@@ -2,6 +2,7 @@ package com.example.agentflow.architecture;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
+import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
@@ -20,7 +21,8 @@ import java.util.List;
  *
  * <p>The forbidden target packages are matched with the {@code ..} (subpackage-including) pattern,
  * so a subpackage import such as {@code storage.adapter.SomeHelper} is caught — not just a direct
- * root-package import. Two independent rules:
+ * root-package import. Test classes are excluded — the gate pins production wiring. Two independent
+ * rules:
  *
  * <ul>
  *   <li><strong>Contract purity</strong> — classes in the {@code storage} root package may not
@@ -35,7 +37,9 @@ import java.util.List;
  * with no {@code packages} argument the engine would import only the test class's own package, and
  * every rule below would pass vacuously against an empty set of analysed classes.
  */
-@AnalyzeClasses(packages = "com.example.agentflow")
+@AnalyzeClasses(
+    packages = "com.example.agentflow",
+    importOptions = {ImportOption.DoNotIncludeTests.class})
 class StorageBoundaryTest {
 
   private static final String ROOT = "com.example.agentflow";

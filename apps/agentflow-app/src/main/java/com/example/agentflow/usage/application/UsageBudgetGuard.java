@@ -1,7 +1,7 @@
 package com.example.agentflow.usage.application;
 
-import com.example.agentflow.usage.domain.BudgetCheckResult;
 import com.example.agentflow.workflowexecution.application.BudgetGuard;
+import com.example.agentflow.workflowexecution.domain.BudgetCheckResult;
 import java.util.Objects;
 import java.util.UUID;
 import javax.sql.DataSource;

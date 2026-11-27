@@ -1,6 +1,6 @@
 package com.example.agentflow.workflowexecution.application;
 
-import com.example.agentflow.usage.domain.BudgetCheckResult;
+import com.example.agentflow.workflowexecution.domain.BudgetCheckResult;
 import java.util.UUID;
 
 /**

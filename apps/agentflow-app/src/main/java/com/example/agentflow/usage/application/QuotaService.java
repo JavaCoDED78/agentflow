@@ -1,9 +1,9 @@
 package com.example.agentflow.usage.application;
 
 import com.example.agentflow.usage.domain.BudgetDto;
-import com.example.agentflow.usage.domain.QuotaCheckResult;
 import com.example.agentflow.usage.persistence.BudgetRepository;
 import com.example.agentflow.usage.persistence.RunSlotRepository;
+import com.example.agentflow.workflowexecution.domain.QuotaCheckResult;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;

@@ -1,6 +1,6 @@
 package com.example.agentflow.workflowexecution.application;
 
-import com.example.agentflow.usage.domain.QuotaCheckResult;
+import com.example.agentflow.workflowexecution.domain.QuotaCheckResult;
 import java.util.UUID;
 
 /**

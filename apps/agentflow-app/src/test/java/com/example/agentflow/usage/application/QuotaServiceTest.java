@@ -5,9 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.agentflow.usage.domain.BudgetDto;
 import com.example.agentflow.usage.domain.BudgetPeriod;
-import com.example.agentflow.usage.domain.QuotaCheckResult;
 import com.example.agentflow.usage.persistence.BudgetRepository;
 import com.example.agentflow.usage.persistence.RunSlotRepository;
+import com.example.agentflow.workflowexecution.domain.QuotaCheckResult;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.HashSet;
