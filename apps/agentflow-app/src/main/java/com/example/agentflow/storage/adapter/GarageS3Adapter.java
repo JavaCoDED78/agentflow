@@ -13,7 +13,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,13 +29,19 @@ import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.AccessDeniedException;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 /**
- * The one adapter for the provider-neutral {@link ObjectStoragePort} contract (S07-06C).
+ * The one adapter for the provider-neutral {@link ObjectStoragePort} contract (S07-06C/D/E).
  *
  * <p>{@code put} is the streaming upsert of the storage contract: the caller's stream is consumed
  * through a bounded, chunked reader (never {@code readAllBytes()}), the actual bytes are verified
@@ -62,10 +71,17 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * (written without a declared checksum) is refused with {@code PERMANENT_FAILURE} rather than
  * reported with a fabricated digest.
  *
- * <p>The {@code head} / {@code list} / {@code delete} operations are deliberately not implemented
- * yet — they land with {@code S07-06E}…{@code S07-06H}. They throw a typed {@link
- * ObjectStorageException} naming the pending task rather than a raw {@code
- * UnsupportedOperationException}.
+ * <p>The {@code head} / {@code list} / {@code delete} operations (S07-06E) are implemented against
+ * the same S3 API. {@code head} reports presence + metadata from the stored object's headers — a
+ * missing key yields {@code Optional.empty()}, never an exception — and requires the same stored
+ * {@code checksum-sha256} anchor as {@code get}. {@code list} pages over a server-generated prefix
+ * (structurally validated, never reinterpreted) through S3's continuation-token pagination — a page
+ * is built with one {@code listObjectsV2} call plus one bounded {@code headObject} per item (the
+ * only honest source of the reference's {@code contentType}/{@code sha256} — a list response
+ * carries neither, so nothing is fabricated). {@code delete} is idempotent: a present object is
+ * removed ({@code DELETED}), a missing one returns {@code ALREADY_ABSENT} — a success in either
+ * case. All three operations are bound to the configured bucket and never accept one from the
+ * caller.
  */
 public class GarageS3Adapter implements ObjectStoragePort {
 
@@ -204,99 +220,272 @@ public class GarageS3Adapter implements ObjectStoragePort {
    * carries (the caller's declared checksum, verified by {@code put} against the actual bytes), so
    * it is the only honest {@code sha256} to report; an object with no stored checksum is refused
    * rather than reported with a fabricated digest.
+   *
+   * @param operation the operation whose message is used when a field is missing ("get"/"head")
    */
   private ObjectMetadata buildMetadata(GetObjectResponse response, String key) {
-    Long contentLength = response.contentLength();
+    return metadataFromHeaders(
+        response.contentLength(),
+        response.contentType(),
+        response.lastModified(),
+        response.eTag(),
+        response.metadata(),
+        key,
+        "get");
+  }
+
+  private ObjectMetadata buildMetadata(HeadObjectResponse response, String key) {
+    return metadataFromHeaders(
+        response.contentLength(),
+        response.contentType(),
+        response.lastModified(),
+        response.eTag(),
+        response.metadata(),
+        key,
+        "head");
+  }
+
+  private ObjectMetadata metadataFromHeaders(
+      Long contentLength,
+      String contentType,
+      Instant lastModified,
+      String etag,
+      Map<String, String> metadata,
+      String key,
+      String operation) {
     if (contentLength == null) {
       throw new ObjectStorageException(
           ObjectStorageErrorCode.PERMANENT_FAILURE,
-          "object storage get returned no content length");
+          "object storage " + operation + " returned no content length");
     }
-    String contentType = response.contentType();
-    if (contentType == null || contentType.isBlank()) {
+    String safeContentType = contentType;
+    if (safeContentType == null || safeContentType.isBlank()) {
       throw new ObjectStorageException(
-          ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage get returned no content type");
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage " + operation + " returned no content type");
     }
-    java.time.Instant lastModified = response.lastModified();
     if (lastModified == null) {
       throw new ObjectStorageException(
           ObjectStorageErrorCode.PERMANENT_FAILURE,
-          "object storage get returned no last-modified instant");
+          "object storage " + operation + " returned no last-modified instant");
     }
-    String etag = response.eTag();
     if (etag == null || etag.isBlank()) {
       throw new ObjectStorageException(
-          ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage get returned no ETag");
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage " + operation + " returned no ETag");
     }
-    Map<String, String> metadata = response.metadata();
     String sha256 = metadata == null ? null : metadata.get(CHECKSUM_METADATA_KEY);
     if (sha256 == null || sha256.isBlank()) {
       throw new ObjectStorageException(
           ObjectStorageErrorCode.PERMANENT_FAILURE,
-          "object storage get found no stored checksum on the object — it was written without a declared checksum");
+          "object storage "
+              + operation
+              + " found no stored checksum on the object — it was written without a declared checksum");
     }
-    return new ObjectMetadata(bucket, key, contentType, contentLength, sha256, lastModified, etag);
+    return new ObjectMetadata(
+        bucket, key, safeContentType, contentLength, sha256, lastModified, etag);
   }
 
   // -------------------------------------------------------------------------------------------
-  // Not implemented yet — S07-06E/F/G/H.
+  // head, list, delete — S07-06E.
   // -------------------------------------------------------------------------------------------
 
+  /**
+   * Presence + metadata. A missing key yields {@code Optional.empty()} — presence is checked
+   * without throwing. The metadata is built from the stored object's headers exactly as {@code get}
+   * does: the stored {@code checksum-sha256} is the only honest digest, so an object written
+   * without a declared checksum is refused, never reported with a fabricated digest.
+   */
   @Override
   public Optional<ObjectMetadata> head(String key) throws ObjectStorageException {
-    throw notImplemented("head", "S07-06E");
+    validateKey(key);
+    HeadObjectResponse response;
+    try {
+      response = s3Client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+    } catch (NoSuchKeyException exception) {
+      return Optional.empty();
+    } catch (Throwable throwable) {
+      throw mapFailure(throwable, "head");
+    }
+    if (response == null) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage head returned no response");
+    }
+    return Optional.of(buildMetadata(response, key));
   }
 
+  /**
+   * Paginated, server-side prefix listing. The prefix is structurally validated (never
+   * reinterpreted — the consumer is the only authority on which prefix it may see), the limit is
+   * bounded to 1–100, and the cursor is passed through to the provider as-is (opaque to the caller
+   * and to this adapter). One {@code listObjectsV2} call yields the page's keys + sizes; each
+   * item's {@link ObjectReference} is then built from one bounded {@code headObject} per item — the
+   * only honest source of the reference's {@code contentType} and {@code sha256} (a list response
+   * carries neither). The page is required to be strictly ascending by key — a provider that
+   * returns otherwise is a structural fault, never a normalized one.
+   */
   @Override
   public ObjectListPage list(String prefix, String cursor, int limit)
       throws ObjectStorageException {
-    throw notImplemented("list", "S07-06E");
+    if (limit < 1 || limit > MAX_LIST_LIMIT) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.INVALID_REQUEST,
+          "limit must be between 1 and " + MAX_LIST_LIMIT + ", was " + limit);
+    }
+    validatePrefix(prefix);
+    if (cursor != null && cursor.isBlank()) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.INVALID_REQUEST, "cursor must not be blank");
+    }
+
+    ListObjectsV2Response response;
+    try {
+      ListObjectsV2Request.Builder builder =
+          ListObjectsV2Request.builder().bucket(bucket).prefix(prefix).maxKeys(limit);
+      if (cursor != null) {
+        builder.continuationToken(cursor);
+      }
+      response = s3Client.listObjectsV2(builder.build());
+    } catch (Throwable throwable) {
+      throw mapFailure(throwable, "list");
+    }
+
+    String nextCursor = response.nextContinuationToken();
+    boolean hasMore = nextCursor != null && !nextCursor.isBlank();
+    if (Boolean.TRUE.equals(response.isTruncated()) && !hasMore) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage list reported a truncated page without a continuation token");
+    }
+
+    List<S3Object> pageObjects = new ArrayList<>();
+    String previousKey = null;
+    for (S3Object object : response.contents()) {
+      String itemKey = object.key();
+      if (itemKey == null || itemKey.isBlank()) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.PERMANENT_FAILURE,
+            "object storage list returned an item without a key");
+      }
+      if (previousKey != null && previousKey.compareTo(itemKey) >= 0) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.PERMANENT_FAILURE,
+            "object storage list returned unordered keys");
+      }
+      previousKey = itemKey;
+      pageObjects.add(object);
+    }
+
+    List<ObjectReference> items = new ArrayList<>();
+    for (S3Object object : pageObjects) {
+      String itemKey = object.key();
+      ObjectMetadata metadata = headMetadata(itemKey);
+      items.add(
+          new ObjectReference(
+              bucket, itemKey, metadata.contentType(), metadata.size(), metadata.sha256()));
+    }
+
+    return new ObjectListPage(items, hasMore ? nextCursor : null, hasMore);
   }
 
+  /**
+   * Idempotent delete. A present object is removed ({@code DELETED}); a missing object returns
+   * {@code ALREADY_ABSENT} — an idempotent success, never a failure. Never opens content. The
+   * presence check uses a raw {@code headObject} (not {@code head}'s metadata anchor): a stored
+   * object without a declared checksum is still deleted — the metadata anchor governs {@code
+   * head}/{@code get} reporting, not the idempotent delete.
+   */
   @Override
   public DeleteResult delete(String key) throws ObjectStorageException {
-    throw notImplemented("delete", "S07-06E");
+    validateKey(key);
+    try {
+      s3Client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+    } catch (NoSuchKeyException exception) {
+      return DeleteResult.ALREADY_ABSENT;
+    } catch (Throwable throwable) {
+      throw mapFailure(throwable, "delete");
+    }
+    try {
+      s3Client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+    } catch (Throwable throwable) {
+      throw mapFailure(throwable, "delete");
+    }
+    return DeleteResult.DELETED;
+  }
+
+  /**
+   * The per-item metadata for a listed key: one bounded {@code headObject} per item — the only
+   * honest source of the reference's {@code contentType}/{@code sha256}. An item that vanished
+   * between the list and the head is a structural provider fault, never a silent drop.
+   */
+  private ObjectMetadata headMetadata(String itemKey) {
+    HeadObjectResponse response;
+    try {
+      response =
+          s3Client.headObject(HeadObjectRequest.builder().bucket(bucket).key(itemKey).build());
+    } catch (NoSuchKeyException exception) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage list returned an item that no longer exists");
+    } catch (Throwable throwable) {
+      throw mapFailure(throwable, "list");
+    }
+    if (response == null) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage list returned an item whose head returned no response");
+    }
+    return buildMetadata(response, itemKey);
   }
 
   // -------------------------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------------------------
 
+  /** Maximum page size for the paginated listing (contract §5.4: 1–100). */
+  private static final int MAX_LIST_LIMIT = 100;
+
   /**
-   * The contract's structural key rules, repeated in the adapter — the {@code get} path takes a raw
-   * key and has no request object to validate on its behalf (the contract's own validation home,
-   * the package-private {@code StorageValidation}, is in the root package and is not visible to
-   * this adapter). The {@link ObjectMetadata} constructor re-runs the same rules. A rejected key
-   * never reaches the network.
+   * The contract's structural key/prefix rules, repeated in the adapter — the callers pass raw keys
+   * and prefixes to a raw adapter, and the contract's own validation home, the package-private
+   * {@code StorageValidation}, is in the root package and is not visible to this adapter. The
+   * {@link ObjectMetadata} constructor re-runs the same rules for metadata keys. A rejected
+   * key/prefix never reaches the network.
    */
   private static void validateKey(String key) {
-    if (key == null || key.isBlank()) {
-      throw new ObjectStorageException(
-          ObjectStorageErrorCode.INVALID_KEY, "key must not be null or blank");
-    }
-    if (key.length() > 1024) {
-      throw new ObjectStorageException(
-          ObjectStorageErrorCode.INVALID_KEY,
-          "key must not exceed 1024 characters, was " + key.length());
-    }
-    for (int i = 0; i < key.length(); i++) {
-      if (key.charAt(i) < 0x20) {
-        throw new ObjectStorageException(
-            ObjectStorageErrorCode.INVALID_KEY, "key must not contain control characters");
-      }
-    }
-    for (String segment : key.split("/", -1)) {
-      if (segment.equals("..")) {
-        throw new ObjectStorageException(
-            ObjectStorageErrorCode.INVALID_KEY, "key must not contain '..' path segments");
-      }
-    }
+    validateStructuredName(key, "key");
   }
 
-  private static ObjectStorageException notImplemented(String operation, String task) {
-    return new ObjectStorageException(
-        ObjectStorageErrorCode.PERMANENT_FAILURE,
-        "object storage " + operation + " is not implemented yet — lands with " + task);
+  /**
+   * The same structural rules applied to a list prefix — a prefix is never reinterpreted, only
+   * validated and passed to the provider as-is.
+   */
+  private static void validatePrefix(String prefix) {
+    validateStructuredName(prefix, "prefix");
+  }
+
+  private static void validateStructuredName(String value, String kind) {
+    if (value == null || value.isBlank()) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.INVALID_KEY, kind + " must not be null or blank");
+    }
+    if (value.length() > 1024) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.INVALID_KEY,
+          kind + " must not exceed 1024 characters, was " + value.length());
+    }
+    for (int i = 0; i < value.length(); i++) {
+      if (value.charAt(i) < 0x20) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.INVALID_KEY, kind + " must not contain control characters");
+      }
+    }
+    for (String segment : value.split("/", -1)) {
+      if (segment.equals("..")) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.INVALID_KEY, kind + " must not contain '..' path segments");
+      }
+    }
   }
 
   private static String hex(MessageDigest digest) {

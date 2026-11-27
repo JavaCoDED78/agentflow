@@ -154,14 +154,14 @@ build and repository, not assumed:
   `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`, matching the
   base package `com.example.agentflow` (main class
   `com.example.agentflow.AgentflowApplication`, `apps/agentflow-app/build.gradle.kts`).
-  `storage` is the one module whose adapter is not complete yet (the plan,
+  `storage` is the one module whose full adapter test surface is not complete yet (the plan,
   the module map, the ownership boundary and the contract are in place — the
   contract is [`object-storage.md`](./object-storage.md), `S02-19`). As of `S07-06B`
   the module's root-package contract is in code — `ObjectStoragePort`, the value
-  types, the error taxonomy and the contract unit tests — and as of `S07-06C`/`S07-06D`
-  its Garage adapter's `put` and `get` paths are in code (`GarageS3Adapter`, streaming,
-  bounded-memory, checksum-verified, bound to the configured bucket); `head`/`list`/`delete`
-  land with `S07-06E`…`S07-06H`. The `S07-06A` typed `agentflow.storage.*`
+  types, the error taxonomy and the contract unit tests — and as of `S07-06C`/`S07-06D`/`S07-06E`
+  its Garage adapter's `put`, `get`, `head`, `list` and `delete` paths are in code
+  (`GarageS3Adapter`, streaming, bounded-memory, checksum-verified, bound to the
+  configured bucket). The `S07-06A` typed `agentflow.storage.*`
   configuration (`AgentFlowProperties.Storage`) and its opt-in singleton S3 client
   wiring (`StorageClientConfiguration`) live under `config`. Two further packages live under
   the same root but are **not** domain modules: `config` (framework wiring —

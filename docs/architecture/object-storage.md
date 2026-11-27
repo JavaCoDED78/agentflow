@@ -31,10 +31,10 @@ root-package contract in `S07-06B`: `ObjectStoragePort`, the value types (`Objec
 `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`, `ObjectListPage`, `DeleteResult`), the error
 carrier (`ObjectStorageException` + the `ObjectStorageErrorCode` taxonomy), provider-neutral validation
 (`StorageValidation`, package-private) and the §9 contract unit tests — all in code, verified by
-`StorageBoundaryTest` and the §9 unit suite. The adapter landed with `S07-06C`/`S07-06D`:
-`GarageS3Adapter` (`com.example.agentflow.storage.adapter`) implements the `put` and `get` paths
-against the S3 API — streaming, bounded-memory, checksum-verified — bound to the configured bucket;
-`head`/`list`/`delete` remain pending (`S07-06E`…`S07-06H`).
+`StorageBoundaryTest` and the §9 unit suite. The adapter landed with `S07-06C`/`S07-06D`/`S07-06E`:
+`GarageS3Adapter` (`com.example.agentflow.storage.adapter`) implements the `put`, `get`, `head`,
+`list` and `delete` paths against the S3 API — streaming, bounded-memory, checksum-verified — bound
+to the configured bucket; `delete` is idempotent and `list` is paginated over a server-side prefix.
 Java-shaped signatures below are **indicative contract sketches** where they differ from the code;
 where the code is exact, the code is normative. Naming, annotations and exact method shapes must not
 deviate from this contract without an ADR.
@@ -252,7 +252,8 @@ the single substitution point. The suite lives next to the adapter (e.g. a share
 `storage` test source set, parameterized over `ObjectStoragePort`); the adapter supplies one instance
 and a fixture per run. The unit suite over the contract itself lands with `S07-06B`; the adapter's own
 unit suite (`GarageS3AdapterTest`) and integration suite (`GarageS3AdapterIT`, real Garage) land with
-`S07-06C` (put path), `S07-06D` (get path) and the full suite with `S07-06H`; this section is its specification.
+`S07-06C` (put path), `S07-06D` (get path) and `S07-06E` (head/list/delete); the full (§9-equivalent)
+suite against the real Garage fixture lands with `S07-06H`; this section is its specification.
 The unit suite covers the contract's invariants directly: type safety, provider neutrality, validation
 and failure encoding — it is not a Garage suite (that is `S07-06H`).
 
@@ -317,7 +318,7 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 | `S07-06B` (landed) | `ObjectStoragePort` + the value types (`ObjectReference`, `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`, `ObjectListPage`, `DeleteResult`, `ObjectStorageException`, `ObjectStorageErrorCode`) in code; §9 contract unit suite over the contract |
 | `S07-06C` (landed) | Garage `put` — streaming write, checksum-verified, deterministic overwrite on the same key |
 | `S07-06D` (landed) | Garage `get` streaming — lazy bounded-memory read, released stream, typed not-found |
-| `S07-06E` | `head` + paginated `list` + idempotent `delete` |
+| `S07-06E` (landed) | `head` + paginated `list` + idempotent `delete` |
 | `S07-06F` | Timeout/retry/error mapping |
 | `S07-06H` | Garage integration/contract test suite (the §9 suite against a real Garage) |
 
@@ -339,7 +340,7 @@ against this contract and ADR-024, never as shipped behaviour:
 | 7 | `S07-06B` (landed) | `ObjectStoragePort` + value types in code; §9 contract unit suite over the contract |
 | 7 | `S07-06C` (landed) | `put` — streaming write to Garage, deterministic replace on the same immutable key |
 | 7 | `S07-06D` (landed) | `get` — bounded streaming read, no `readAllBytes()`; stream released on success/failure/cancellation |
-| 7 | `S07-06E` | `head` + paginated `list` (server-side prefix only) + idempotent `delete` |
+| 7 | `S07-06E` (landed) | `head` + paginated `list` (server-side prefix only) + idempotent `delete` |
 | 7 | `S07-06F` | Timeout/retry classification and error mapping (`UNAVAILABLE`/`TIMEOUT` retryable, everything else not) |
 | 7 | `S07-06G` | Credentials: provisioning/admin vs runtime separation; tenant authorization stays in the consuming application service |
 | 7 | `S07-06H` | Garage integration/contract test suite — the §9 suite against a real Garage fixture |
