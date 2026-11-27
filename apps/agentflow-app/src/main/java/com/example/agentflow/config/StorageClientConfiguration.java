@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.http.apache5.Apache5HttpClient;
 import software.amazon.awssdk.regions.Region;
@@ -106,6 +107,13 @@ public class StorageClientConfiguration {
                 Apache5HttpClient.builder()
                     .connectionTimeout(Duration.ofSeconds(storage.getConnectionTimeoutSeconds()))
                     .socketTimeout(Duration.ofSeconds(storage.getRequestTimeoutSeconds())))
+            // Garage rejects the SDK's default trailing-checksum chunked body
+            // (requestChecksumCalculation
+            // DEFAULT since ~2.27) with "Invalid payload signature". Only send a checksum when the
+            // operation explicitly requires one — the object's own checksum is computed and carried
+            // by the adapter as the `checksum-sha256` object metadata, independent of the wire
+            // encoding.
+            .requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
             .overrideConfiguration(
                 ClientOverrideConfiguration.builder()
                     // The typed config bounds the number of retries (default 3); the retry

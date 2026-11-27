@@ -2,7 +2,7 @@
 
 > **Owner:** `storage` — provider-neutral object storage contract and the Garage adapter that
 > implements it.
-> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code).
+> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code).
 > **Authority:** `docs/architecture/object-storage.md` (the contract), `docs/adr/ADR-024-object-storage.md`
 > (consistency/security/lifecycle policy), `docs/architecture/module-map.md` (owners + dependency
 > direction) and `docs/architecture/module-api.md` (public-API boundary). They are the single source
@@ -54,7 +54,7 @@ PostgreSQL rows.
 ```text
 com.example.agentflow.storage/               ← public API boundary (this file)
 ├── (root)           contract: port, value types, error taxonomy, StorageValidation (internal)
-└── adapter/         GarageS3Adapter — the one adapter, internal — PENDING (S07-06C…S07-06H)
+└── adapter/         GarageS3Adapter — the one adapter, internal — `put` landed (S07-06C); `get`/`head`/`list`/`delete` pending (S07-06D…S07-06E)
 ```
 
 The root package is public: another module may import only the nine types above. `adapter`
@@ -77,6 +77,9 @@ The root package is public: another module may import only the nine types above.
   §6; invariant 8); structural secret-shaped metadata is rejected.
 - Failure codes are a contract, not a convention: a change to a code, a `retryable()` value or a
   constraint requires a contract revision (ADR), not a silent edit.
-- The adapter lands with `S07-06C`…`S07-06H` and consumes both this contract and the opt-in S3 client
-  foundation from `S07-06A` (`config.StorageClientConfiguration`).
+- The adapter is wired by `config.StorageAdapterConfiguration` (the same `@ConditionalOnProperty` as
+  the shared client) and consumes this contract and the opt-in S3 client foundation from `S07-06A`
+  (`config.StorageClientConfiguration`). `put` landed with `S07-06C` — streaming, bounded-memory,
+  checksum-verified, deterministic overwrite on the same key, bound to the configured bucket; the
+  remaining operations land with `S07-06D`…`S07-06H`.
 - A new `module → module` edge requires an ADR (root `AGENTS.md`).

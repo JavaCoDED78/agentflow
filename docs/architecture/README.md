@@ -158,10 +158,12 @@ build and repository, not assumed:
   the module map, the ownership boundary and the contract are in place — the
   contract is [`object-storage.md`](./object-storage.md), `S02-19`). As of `S07-06B`
   the module's root-package contract is in code — `ObjectStoragePort`, the value
-  types, the error taxonomy and the contract unit tests — with the `S07-06A`
-  typed `agentflow.storage.*` configuration (`AgentFlowProperties.Storage`) and its
-  opt-in singleton S3 client wiring (`StorageClientConfiguration`) under `config`;
-  the Garage adapter lands with `S07-06C`…`S07-06H`. Two further packages live under
+  types, the error taxonomy and the contract unit tests — and as of `S07-06C` its
+  Garage adapter's `put` path is in code (`GarageS3Adapter`, streaming,
+  checksum-verified, bound to the configured bucket); `get`/`head`/`list`/`delete`
+  land with `S07-06D`…`S07-06H`. The `S07-06A` typed `agentflow.storage.*`
+  configuration (`AgentFlowProperties.Storage`) and its opt-in singleton S3 client
+  wiring (`StorageClientConfiguration`) live under `config`. Two further packages live under
   the same root but are **not** domain modules: `config` (framework wiring —
   Hikari, rate limiter, Redis, MCP/OpenAPI beans, the storage S3 client) and
   `tooling` (build tooling — `FlywayMigrate`, `OpenApiContractTool`). Today Garage /
@@ -186,6 +188,6 @@ build and repository, not assumed:
 
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
-- The full `storage` module implementation and its integration scenarios — the typed `agentflow.storage.*` configuration and the opt-in singleton S3 client wiring landed with `S07-06A`; the `ObjectStoragePort` contract landed with `S07-06B` (the root-package models, port, error taxonomy and contract unit suite) — [`object-storage.md`](./object-storage.md) — and the consistency/security/lifecycle policy is fixed ([`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`); the Garage adapter lands with `S07-06C`/`S07-06H` (§11.1 of `object-storage.md` enumerates the planned Sprint 7/10/15 scenarios: `S07-06A`…`S07-06J` + `S07-07` — the adapter and checkpoint adapter, `S10-02`/`S10-02A`…`S10-02H` — bucket, provisioning and document storage, and `S15-22`/`S15-23`/`S15-24`/`S15-25` — Garage in Kubernetes, credentials, backup/restore and network policy). The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with the contract in code at `S07-06B` (`config` holds the `S07-06A` config/client foundation).
+- The full `storage` module implementation and its integration scenarios — the typed `agentflow.storage.*` configuration and the opt-in singleton S3 client wiring landed with `S07-06A`; the `ObjectStoragePort` contract landed with `S07-06B` (the root-package models, port, error taxonomy and contract unit suite) — [`object-storage.md`](./object-storage.md) — and the consistency/security/lifecycle policy is fixed ([`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`); the Garage adapter's `put` path landed with `S07-06C` (`GarageS3Adapter`); `get`/`head`/`list`/`delete` land with `S07-06D`…`S07-06H` (§11.1 of `object-storage.md` enumerates the planned Sprint 7/10/15 scenarios: `S07-06A`…`S07-06J` + `S07-07` — the adapter and checkpoint adapter, `S10-02`/`S10-02A`…`S10-02H` — bucket, provisioning and document storage, and `S15-22`/`S15-23`/`S15-24`/`S15-25` — Garage in Kubernetes, credentials, backup/restore and network policy). The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with the contract in code at `S07-06B` (`config` holds the `S07-06A` config/client foundation).
 
 No other index topic is planned beyond the items above.
