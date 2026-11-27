@@ -6,7 +6,7 @@
 > **Upstream reference:** `AGENTFLOW_ARCHITECTURE_AND_PLAN.md` (Sprint 2, `S02-18`/`S02-19`, Sprint 7 `S07-06A`…`S07-06H`) ·
 > `docs/architecture/module-map.md` ("Storage ownership and boundaries") ·
 > `docs/architecture/module-api.md` (`storage` row) ·
-> `ADR-013` (Garage is the local S3 backend) · `ADR-024` (`⚠ planned`, `S02-20` — consistency/security/lifecycle)
+> `ADR-013` (Garage is the local S3 backend) · `ADR-024` ([object-storage lifecycle/consistency/security](../adr/ADR-024-object-storage.md) — consistency/security/lifecycle, `S02-20`)
 > **Purpose:** the provider-neutral contract between the consuming modules and the object store — the five operations, the value types, the stream-ownership and idempotency rules, and the error policy — so that a future Garage adapter (`S07-06C`…`S07-06H`) is a conformance implementation, not a re-interpretation. It is written for the two sanctioned consumers (document originals, workflow checkpoints) and is the specification the contract test suite (`S07-06B`/`S07-06H`) verifies.
 
 ---
@@ -196,7 +196,7 @@ Guarantees:
   The `documents` row and the `workflow_step_runs.output_ref` row carry the reference/checksum/size;
   `storage` is the bytes only.
 - **No public URLs.** No public buckets, no anonymous access, no public URLs — an object is addressed
-  only through the app (see ADR-024, `⚠ planned`, `S02-20`).
+  only through the app (see [ADR-024](../adr/ADR-024-object-storage.md), `S02-20`).
 - **No retry loop.** `storage` classifies and reports; bounded backoff/jitter is the caller's policy.
 - **No provider types.** No AWS SDK / Garage class crosses the contract boundary in either direction
   (arguments, returns, exceptions). The gate is `StorageBoundaryTest` (contract purity) plus a
@@ -205,7 +205,7 @@ Guarantees:
   application-generated (§8).
 - **Not lifecycle/consistency policy.** Upload/delete state transitions, orphan cleanup, checksum
   verification, retry/compensation policy and the PostgreSQL↔Garage consistency gap are ADR-024's
-  business (`S02-20`, `⚠ planned`) — recorded there, not here.
+  business ([ADR-024](../adr/ADR-024-object-storage.md), `S02-20`) — recorded there, not here.
 
 ## 7. Sufficiency — document originals and workflow artifacts
 
@@ -299,7 +299,7 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 | Task | Role in the lifecycle |
 |---|---|
 | `S02-19` (this doc) | Defines the contract — the spec above |
-| `S02-20` (`⚠ planned`) | ADR-024: consistency/security/lifecycle — the PostgreSQL↔Garage gap, upload/delete state transitions, retry/compensation, orphan cleanup, checksum verification policy, Garage-outage policy, credential separation, key-convention reconciliation |
+| `S02-20` (`Accepted`) | ADR-024: consistency/security/lifecycle — the PostgreSQL↔Garage gap, upload/delete state transitions, retry/compensation, orphan cleanup, checksum verification policy, Garage-outage policy, credential separation, key-convention reconciliation |
 | `S07-06A` | AWS SDK for Java v2 + `agentflow.storage.*` typed config |
 | `S07-06B` | Contract unit tests (§9's suite) + `ObjectStoragePort` and the value types in code |
 | `S07-06C/D/E` | Garage `put` / `get` streaming / `head` + idempotent `delete` (+ `list`) |

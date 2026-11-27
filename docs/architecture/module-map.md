@@ -281,8 +281,9 @@ The object key is always server-generated and tenant-scoped (`knowledgebase`
 generates it for documents; `workflowexecution` for checkpoint artifacts);
 `storage` stores what it is told. The tenant scope is enforced by the owning
 module against PostgreSQL *before* the port is called — the adapter never
-decides access, it only moves bytes (the storage access policy is fixed in the
-ADR-024 / S07-06G work, which is planned; this map only fixes ownership).
+decides access, it only moves bytes (the storage access policy is fixed in
+[`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`; the adapter and its code land
+with `S07-06C`…`S07-06H`).
 
 ---
 
