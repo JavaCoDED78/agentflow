@@ -15,7 +15,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 /**
- * S02-09 architecture gate: the compile-time dependencies of the twelve modules form an acyclic
+ * S02-09 architecture gate: the compile-time dependencies of the thirteen modules form an acyclic
  * graph.
  *
  * <p>The gate imports the application packages with ArchUnit, derives the module-&gt;module edges

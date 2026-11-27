@@ -54,12 +54,15 @@ class PackageDependencyGraphTest {
     edges.put("agentcatalog", Set.of("identity"));
     edges.put("workflowdefinition", Set.of("agentcatalog"));
     edges.put("toolexecution", Set.of("agentcatalog", "audit", "workflowexecution"));
-    edges.put("knowledgebase", Set.of("ai", "workflowexecution"));
+    edges.put("knowledgebase", Set.of("ai", "workflowexecution", "storage"));
     edges.put("ingestion", Set.of("knowledgebase", "messaging", "ai"));
+    // S02-18: storage is owned by exactly two consumers — knowledgebase (arrow 22) and
+    // workflowexecution (arrow 23). No other module may depend on it.
+    edges.put("storage", Set.of());
     edges.put("ai", Set.of("toolexecution", "workflowexecution"));
     edges.put("usage", Set.of("ai", "workflowexecution"));
     edges.put("audit", Set.of("identity"));
-    edges.put("workflowexecution", Set.of("workflowdefinition", "messaging", "audit"));
+    edges.put("workflowexecution", Set.of("workflowdefinition", "messaging", "audit", "storage"));
     // S12-11: the DLQ inspection audit writes through `audit` (arrow 21, ADR-022); the graph stays
     // acyclic (messaging → audit → identity, messaging → common).
     edges.put("messaging", Set.of("messaging", "common", "audit"));

@@ -266,6 +266,7 @@ One owner per concept, matching the module map:
 | Approval | `workflowexecution` | `approvals` |
 | Usage / budget / quota | `usage` | `usage_records`, `tenant_budgets` |
 | Audit event | `audit` | `audit_events` |
+| Object storage (object reference/metadata, physical objects) | `storage` | none (PostgreSQL rows live in the owning module; bytes live in Garage) |
 
 ---
 

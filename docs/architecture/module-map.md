@@ -56,6 +56,7 @@ flowchart LR
         toolexec["toolexecution<br/>tool registry · permissions"]
         kb["knowledgebase<br/>documents · search · citations"]
         ingest["ingestion<br/>extract · chunk · embed · index"]
+        storage["storage<br/>ObjectStoragePort · adapter"]
         ai["ai<br/>planner · validation gate · finalizer"]
         usage["usage<br/>tokens · budgets · quotas"]
         audit["audit<br/>append-only events"]
@@ -81,6 +82,8 @@ flowchart LR
     wfexc -->|13| messaging
     wfexc -->|20| audit
     messaging -->|21| audit
+    kb -->|22| storage
+    wfexc -->|23| storage
     feedback["execution SPI<br/>StepHandler port (defined in wfexc)"]
 
     %% --- Feedback via the execution SPI: implementers depend on the port owner ---
@@ -93,22 +96,25 @@ flowchart LR
     identity -.-> kc
     agentcatalog -.-> kc
     audit -.-> kc
-    kb -.-> gar
-    ingest -.-> gar
+    storage -.-> gar
     ai -.-> model
     usage -.-> redis
     messaging -.-> pg
     messaging -.-> kfk
 ```
 
-A plain-language caption: *the twelve packages sit behind the trusted
+A plain-language caption: *the thirteen packages sit behind the trusted
 AgentFlow boundary (Level 1). The solid arrows are the only allowed compile-time
 dependencies between modules — every other dependency (Keycloak, PostgreSQL,
 Kafka, Redis, object storage, the model provider) is a runtime dependency of
 exactly one package, not a module edge. The dashed feedback arrow is the one
 sanctioned exception: `workflowexecution` owns the `StepHandler` execution port,
 and the packages that execute steps (`toolexecution`, `ai`, `knowledgebase`)
-depend on that port so the orchestrator never depends on them back.*
+depend on that port so the orchestrator never depends on them back. `storage` is
+the one module that owns **bytes**: its root package is the provider-neutral
+contract, its internal packages are the Garage adapter, and the domain modules
+that store or read objects (`knowledgebase`, `workflowexecution`) use only the
+root contract — never the adapter or the AWS SDK.*
 
 ---
 
@@ -124,10 +130,11 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `identity` | tenant context, claims → permissions mapping, the trusted source of tenant | Keycloak (OIDC/JWT), Spring Security |
 | `agentcatalog` | agent profiles, model policy, tool allowlist, tool risk classes | `identity`, PostgreSQL |
 | `workflowdefinition` | versioned workflow graph, DSL/graph validation, activation | `agentcatalog` |
-| `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, approvals, `StepHandler` port | `common` (error taxonomy, fingerprint, redaction), `workflowdefinition`, messaging (outbox/inbox), `audit` (approval decisions, arrow 20) |
+| `workflowexecution` | run/step state machine, lease + fencing, recovery, idempotency keys, approvals, `StepHandler` port | `common` (error taxonomy, fingerprint, redaction), `workflowdefinition`, messaging (outbox/inbox), `audit` (approval decisions, arrow 20), `storage` (public contract — large-payload checkpoints, arrow 23) |
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
-| `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), object storage |
-| `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19) |
+| `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), `storage` (public contract — upload/read object bytes) |
+| `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19); object bytes via `knowledgebase`'s `DocumentPayloadStore` — never `storage` directly |
+| `storage` | provider-neutral `ObjectStoragePort` contract (object references/metadata, checksums) and the Garage adapter that implements it; owns the physical objects in Garage | `AWS SDK for Java v2` (external), Garage S3 API (external); **no app-module dependencies** — no imports from another module, ever |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |
 | `audit` | security/business audit events, immutable append-only history | `common` (redaction), `identity` |
@@ -151,12 +158,12 @@ owner is responsible for forward-only migrations only.
 | `workflow_definitions` | `workflowdefinition` | `unique (tenant_id, name)` |
 | `workflow_definition_versions` | `workflowdefinition` | `unique (workflow_id, version)`; `graph_json` + checksum, immutable when activated |
 | `workflow_runs` | `workflowexecution` | `unique (tenant_id, idempotency_key)`; lease/fencing fields |
-| `workflow_step_runs` | `workflowexecution` | `unique (run_id, step_key, attempt)` |
+| `workflow_step_runs` | `workflowexecution` | `unique (run_id, step_key, attempt)`; `output_ref` (large-payload checkpoint, `S15-06`) points at an object in Garage — the row keeps only the reference/checksum/size, the bytes live in `storage` |
 | `workflow_events` | `messaging` | append-only domain facts |
 | `outbox_events` | `messaging` | DB outbox; state + outbox record in one transaction |
 | `inbox_messages` | `messaging` | PK `(consumer_name, event_id)`; dedup in the same transaction as the business change |
 | `knowledge_bases` | `knowledgebase` | `unique (tenant_id, name)` |
-| `documents` | `knowledgebase` | metadata row; payload stays in object storage (`object_key` + `sha256`) |
+| `documents` | `knowledgebase` | metadata row; payload stays in object storage (`object_key` + `sha256`) — the bytes are owned by `storage`, the row is owned by `knowledgebase` |
 | `document_chunks` | `knowledgebase` | `unique (document_id, chunk_index, pipeline_version)`; embedding + tenant filter; `search_vector` (generated `tsvector`, FTS index) |
 | `approvals` | `workflowexecution` | immutable-payload-bound pause point; `payload_fingerprint` binds the decision |
 | `usage_records` | `usage` | money is `NUMERIC`; `estimated` vs provider-reported |
@@ -195,6 +202,7 @@ enforcement is everywhere).
 | Event envelope + versioning; DLQ for investigation | `messaging` | every producer/consumer |
 | Document lifecycle + tenant-scoped object-key convention | `knowledgebase` | ingestion/RAG |
 | Retrieval tenant/ACL filter **before** top-k; citations only from real chunks | `knowledgebase` | every RAG call; empty retrieval reports "insufficient evidence" |
+| Object storage contract + physical-object ownership | `storage` | every byte storage (`knowledgebase` for documents, `workflowexecution` for large-payload checkpoints); `storage` never parses document state — it only moves bytes |
 | Extract → chunk → embed → index pipeline; ingestion idempotency (`tenant_id + sha256 + pipeline_version`) | `ingestion` | on upload/re-upload |
 | AI: untrusted planner, server-side validation gate, executor, result with citations | `ai` | before every execution |
 | Append-only audit immutability; no secrets/full prompts | `audit` | every audited action |
@@ -205,12 +213,84 @@ enforcement is everywhere).
 
 ---
 
+## Storage ownership and boundaries
+
+`storage` is a logical module (the 13th bounded context): a provider-neutral
+`ObjectStoragePort` contract plus the Garage adapter that implements it. It is the
+**single owner** of both the contract and the adapter — one module owns one
+responsibility, and the adapter is an internal implementation detail of that
+module, never a shared dependency. Nothing outside this module may reach the
+bytes.
+
+**What storage owns.**
+
+- The provider-neutral contract: `ObjectStoragePort` (`put` / `get/openStream` /
+  `head` / paginated `list` / `delete`), the request/response value types, and
+  `ObjectReference` (bucket, key, content type, size, SHA-256) — the contract
+  lives in the `storage` root package (its public API boundary).
+- The Garage adapter (`GarageS3Adapter`): the one class family that talks to the
+  AWS SDK for Java v2 / Garage S3 API.
+- The physical objects in Garage: no other module may read or write them — every
+  object access flows through the contract, and metadata lives in the consuming
+  module's PostgreSQL rows, never in the object itself (no secrets, no document
+  text, no PII in object metadata).
+
+**What storage never owns.**
+
+- No tables, no repositories, no status state machine: the document lifecycle is
+  `knowledgebase`'s, the checkpoint/`output_ref` lifecycle is `workflowexecution`'s.
+  `storage` never parses a document, a step outcome or a run state — it moves
+  bytes and reports what happened.
+- No metadata rows of any kind: `documents` (owned by `knowledgebase`) and
+  `workflow_step_runs.output_ref` (owned by `workflowexecution`) carry the
+  ref + checksum + size; the bytes live in Garage, owned by `storage`.
+
+**Allowed consumers — and the only ones.** `knowledgebase` (document originals:
+upload/read/delete of the object behind a `documents` row) and
+`workflowexecution` (large-payload checkpoint outputs, the `S15-06` path). Both
+consume the public contract through their own application services — for
+`knowledgebase` the `DocumentPayloadStore` opt-in read port and the upload path;
+for `workflowexecution` the checkpoint adapter. **No other module** may depend on
+`storage`: `ingestion` reads the object bytes through `knowledgebase`'s
+`DocumentPayloadStore` (never through `storage` directly), and every other
+module is a non-consumer (it has nothing to store). These are the only two
+sanctioned edges into `storage`.
+
+**Dependency direction and the adapter boundary.** The consumer → `storage` edges
+are the only arrows *into* `storage`. `storage` depends on nothing in the
+application — not even imported from another module (the contract is
+provider-neutral and `storage` itself has no application dependencies). The
+adapter sub-package (`com.example.agentflow.storage.adapter`) is internal to the
+module: no other module may import it or any AWS SDK / Garage class — not at
+compile time, not as a transitive reference. The architecture test
+(`StorageBoundaryTest`) enforces this: a domain module importing the adapter, the
+AWS SDK, or a Garage type fails `./gradlew check`. `storage`'s root package never
+imports the adapter or AWS SDK either — the public contract is provider-neutral.
+
+**Metadata vs. bytes (the ownership split).** The metadata row is owned by the
+consuming module; the object is owned by `storage`:
+
+| Object kind | Metadata row (owner) | Bytes (owner) |
+|---|---|---|
+| Document original | `documents` (`knowledgebase`): `object_key`, `sha256`, `size_bytes`, `mime_type`, `pipeline_version` | `storage` (Garage) |
+| Workflow large-payload checkpoint | `workflow_step_runs.output_ref` (`workflowexecution`): ref + checksum + size + `output_schema_version` | `storage` (Garage) |
+
+The object key is always server-generated and tenant-scoped (`knowledgebase`
+generates it for documents; `workflowexecution` for checkpoint artifacts);
+`storage` stores what it is told. The tenant scope is enforced by the owning
+module against PostgreSQL *before* the port is called — the adapter never
+decides access, it only moves bytes (the storage access policy is fixed in the
+ADR-024 / S07-06G work, which is planned; this map only fixes ownership).
+
+---
+
 ## Dependency direction
 
 The numbered arrows in the diagram are the **only** allowed compile-time `module -> module`
 edges, as tabulated below. They follow the plan's §4.2 "outgoing dependencies"
 column and the glossary's ownership, plus the ADR-recorded later edges (18, `ADR-015`;
-19, `ADR-016`; 20, `ADR-018`). Everything else is a runtime dependency of
+19, `ADR-016`; 20, `ADR-018`), the storage ownership edges (22, 23 — `S02-18`) and the
+`S12-11` DLQ audit edge (21, `ADR-022`). Everything else is a runtime dependency of
 a single package (Keycloak, PostgreSQL, Kafka, Redis, object storage, the
 model provider) and is **not** a module edge.
 
@@ -233,6 +313,8 @@ model provider) and is **not** a module edge.
 | 19 | `ingestion -> ai` | the pipeline embeds chunk sets through the neutral embedding port (`EmbeddingGenerationService`; S10-12; ADR-016) |
 | 20 | `workflowexecution -> audit` | the human-approval decision is written to the append-only audit trail in the same transaction as the decision (S11-04; ADR-018) |
 | 21 | `messaging -> audit` | the DLQ inspection audit is written through the public `AuditService` port — a `READ` on the operator `DLQ` resource (S12-11; ADR-022) |
+| 22 | `knowledgebase -> storage` | the document object is stored/read/deleted through the public storage contract — the metadata row stays in PostgreSQL (`S02-18`) |
+| 23 | `workflowexecution -> storage` | large-payload checkpoint outputs are externalized through the public storage contract (`S15-06`; `S02-18`) |
 | 14–16 | `toolexecution -> workflowexecution`, `ai -> workflowexecution`, `knowledgebase -> workflowexecution` | **the execution SPI**: these packages implement the `StepHandler` port that `workflowexecution` owns (open decision §4) |
 | 17 | `workflowexecution -> toolexecution/ai/knowledgebase` | **runtime only**, via the SPI (never a compile edge) |
 
@@ -283,6 +365,11 @@ root `AGENTS.md` dependency rules). The resolution (plan open decision §4.2.3):
   outside the table above; `S02-09` additionally rejects any cycle in the compile
   graph, so even a newly added (table-allowed) edge that would close a loop is
   caught.
+- **Storage boundary (S02-18).** `StorageBoundaryTest` rejects a direct import of
+  the Garage adapter (`com.example.agentflow.storage.adapter.*`) or of AWS SDK /
+  Garage classes by any domain module, and rejects the storage root package
+  importing the adapter or AWS SDK — the contract stays provider-neutral while
+  the adapter stays private. Both are enforced at `./gradlew check`.
 - **Table ownership in migrations.** Every table belongs to one module; this is
   obvious from the migration name/comment (`apps/agentflow-app/AGENTS.md`).
 - **Glossary consistency (§13).** The concept → owner table in the domain
