@@ -209,13 +209,15 @@ The contract is in code (`S07-06B`): `ObjectStoragePort` and the value types
 (`ObjectReference`, `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`,
 `ObjectListPage`, `DeleteResult`) plus the `ObjectStorageException` +
 `ObjectStorageErrorCode` failure taxonomy, in `com.example.agentflow.storage`;
-the Garage adapter's `put` path is in code (`S07-06C`): `GarageS3Adapter`
-(`com.example.agentflow.storage.adapter`, bound to the configured bucket) streams
-the caller's stream through a bounded, checksum-verified reader, carries the
+the Garage adapter's `put` and `get` paths are in code (`S07-06C`/`S07-06D`):
+`GarageS3Adapter` (`com.example.agentflow.storage.adapter`, bound to the configured bucket)
+streams the caller's stream through a bounded, checksum-verified reader, carries the
 computed `sha256` + actual size in the returned reference and stamps the declared
-checksum on the object as `checksum-sha256` metadata, deterministically overwriting
-the same key on repeat `put` — `get`/`head`/`list`/`delete` remain pending
-(`S07-06D`…`S07-06H`).
+checksum on the object as `checksum-sha256` metadata, deterministically overwriting the
+same key on repeat `put`; `get` hands the SDK's lazy body stream to the caller (never buffers it),
+builds the metadata from the eagerly-parsed headers — requiring the stored `checksum-sha256` — and
+releases the stream on success/failure/cancellation; `head`/`list`/`delete` remain pending
+(`S07-06E`…`S07-06H`).
 
 The rules every object flow obeys (fixed in
 [`ADR-024`](docs/adr/ADR-024-object-storage.md)):
