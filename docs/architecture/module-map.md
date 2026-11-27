@@ -216,11 +216,13 @@ enforcement is everywhere).
 ## Storage ownership and boundaries
 
 `storage` is a logical module (the 13th bounded context): a provider-neutral
-`ObjectStoragePort` contract plus the Garage adapter that implements it. It is the
-**single owner** of both the contract and the adapter — one module owns one
-responsibility, and the adapter is an internal implementation detail of that
-module, never a shared dependency. Nothing outside this module may reach the
-bytes.
+`ObjectStoragePort` contract plus the Garage adapter that implements it. The
+contract is fixed in [`object-storage.md`](./object-storage.md) (`S02-19`) — the
+five operations, the value types, the stream-ownership and idempotency rules and
+the provider-neutral error policy. It is the **single owner** of both the contract
+and the adapter — one module owns one responsibility, and the adapter is an internal
+implementation detail of that module, never a shared dependency. Nothing outside
+this module may reach the bytes.
 
 **What storage owns.**
 

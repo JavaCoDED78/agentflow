@@ -129,9 +129,7 @@ Each table lists:
 
 ### `storage` — provider-neutral object storage contract, Garage adapter
 
-> **⚠ planned** — the module is not yet implemented (S02-18 fixes its ownership and boundaries;
-> the contract and the adapter land with S02-19/S07-06B). Until then this section documents the planned
-> public surface, not executable code.
+> **The contract is defined** (`S02-19`, [`object-storage.md`](./object-storage.md)) — the five operations (`put` / `get(openStream)` / `head` / paginated `list` / `delete`), `ObjectReference` and the request/response views, the stream-ownership and idempotency rules, the provider-neutral error taxonomy and the contract test suite (§9 there). The **module is not yet implemented** — the models, `ObjectStoragePort` and the adapter land with `S07-06B`/`S07-06C`…`S07-06H` (`⚠ planned`). Until then this section documents the planned public surface, not executable code.
 
 | Section | Contents |
 |---|---|
