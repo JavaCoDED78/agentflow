@@ -57,6 +57,7 @@ documentation entry point. The **project** entry point is the root
 | **ADR register** | Architecture decision records, statuses, lifecycle | [`../adr/README.md`](../adr/README.md) |
 | **Threat model** | Assets, attacker goals, trust boundaries, mitigations (tenant isolation, prompt injection, SSRF, log leaks) | [`../threat-model/README.md`](../threat-model/README.md) |
 | **Redis usage** | The single operational reference for every Redis use — key format, TTL, failure mode, config reference, observability (`ADR-021`, `S12-21`) | [`redis-usage.md`](./redis-usage.md) |
+| **Object storage** | The provider-neutral `ObjectStoragePort` contract — the five operations, `ObjectReference`/value types, stream ownership, idempotency and error policy (`S02-19`) | [`object-storage.md`](./object-storage.md) |
 
 ---
 
@@ -148,12 +149,14 @@ build and repository, not assumed:
   base package `com.example.agentflow` (main class
   `com.example.agentflow.AgentflowApplication`, `apps/agentflow-app/build.gradle.kts`).
   `storage` is the one module whose implementation does not exist yet (the plan,
-  the module map and the ownership boundary are in place; the contract and the adapter land with
-  `S02-19`/`S07-06B`) — it is absent from `src/` today, which is expected and tracked.
+  the module map, the ownership boundary and the contract are in place — the
+  contract is [`object-storage.md`](./object-storage.md), `S02-19`; the adapter and its
+  code land with `S07-06B`) — it is absent from `src/` today, which is expected and tracked.
   Two further packages live under the same root but are **not** domain modules: `config`
   (framework wiring — Hikari, rate limiter, Redis, MCP/OpenAPI beans) and `tooling`
   (build tooling — `FlywayMigrate`, `OpenApiContractTool`). There is no `storage`
-  module yet — that is the pending `S02-18`; today Garage / S3 is an external
+  module yet — the ownership boundary and the contract are done (`S02-18`/`S02-19`);
+  the adapter implementation is pending (`S07-06B`). Today Garage / S3 is an external
   runtime dependency.
 - **External systems.** Keycloak (OIDC), the model provider, Garage / S3 object
   storage, PostgreSQL (+ pgvector / FTS), Kafka, Redis and OpenTelemetry are the
@@ -175,8 +178,7 @@ build and repository, not assumed:
 
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
-- `object-storage.md` — the provider-neutral `ObjectStoragePort` contract (`put` / `get` / `head` / `list` / `delete`, `ObjectReference`, tenant-scoped keys, checksum) — `S02-19`.
 - `ADR-024-object-storage.md` — Object Storage consistency, security and lifecycle (tenant-scoped key convention, no public buckets, credential separation, DB↔Garage consistency gap, upload/delete state transitions, retry, compensation, orphan cleanup, checksum verification, Garage-outage policy) — `S02-20`. Until it lands, the garage-local-stack decision stays recorded in [`ADR-013`](../adr/ADR-013-s3-object-storage-garage.md).
-- The `storage` module implementation — the `ObjectStoragePort` contract (`S02-19`) and the Garage adapter (`S07-06B`) are not built yet; the ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no code under `src/main/java/com/example/agentflow/storage/` today.
+- The `storage` module implementation — the `ObjectStoragePort` contract is defined (`S02-19`, [`object-storage.md`](./object-storage.md)); the Garage adapter and its code land with `S07-06B`/`S07-06H`. The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no code under `src/main/java/com/example/agentflow/storage/` today.
 
 No other index topic is planned beyond the items above.
