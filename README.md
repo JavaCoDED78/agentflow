@@ -205,6 +205,11 @@ Two consumers share this one contract: `knowledgebase` (document originals) and
 `workflowexecution` (large-payload checkpoints) — both go through the
 provider-neutral `ObjectStoragePort`, never the adapter (see
 [`docs/architecture/object-storage.md`](docs/architecture/object-storage.md)).
+The contract is in code (`S07-06B`): `ObjectStoragePort` and the value types
+(`ObjectReference`, `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`,
+`ObjectListPage`, `DeleteResult`) plus the `ObjectStorageException` +
+`ObjectStorageErrorCode` failure taxonomy, in `com.example.agentflow.storage`;
+the adapter remains pending (`S07-06C`…`S07-06H`).
 
 The rules every object flow obeys (fixed in
 [`ADR-024`](docs/adr/ADR-024-object-storage.md)):

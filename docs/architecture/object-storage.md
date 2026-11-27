@@ -26,13 +26,14 @@ module's public-API boundary, enforced by `StorageBoundaryTest` (no `storage.ada
 types, no Garage classes). The adapter is internal (`com.example.agentflow.storage.adapter`, `GarageS3Adapter`)
 and is never imported by any other module.
 
-**This document defines the contract, not the implementation.** The `storage` module has no code
-yet beyond the S07-06A foundation: the typed `agentflow.storage.*` config (`AgentFlowProperties.Storage`)
-and its opt-in singleton S3 client wiring (`StorageClientConfiguration`) exist today — no `storage`
-root-package code, port or adapter (`S07-06B` lands the models and port; `S07-06C`…`S07-06H` land the
-adapter). Every Java-shaped signature below is an **indicative contract sketch**, not compilable code —
-the signatures are normative in behaviour (arguments, return types, failure codes, semantics), not in
-syntax. Names, `@`-annotations and exact method shapes are settled at implementation time and must not
+**This document defines the contract; the code implements it.** The `storage` module lands its
+root-package contract in `S07-06B`: `ObjectStoragePort`, the value types (`ObjectReference`,
+`ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`, `ObjectListPage`, `DeleteResult`), the error
+carrier (`ObjectStorageException` + the `ObjectStorageErrorCode` taxonomy), provider-neutral validation
+(`StorageValidation`, package-private) and the §9 contract unit tests — all in code, verified by
+`StorageBoundaryTest` and the §9 unit suite. The adapter (`S07-06C`…`S07-06H`) remains pending.
+Java-shaped signatures below are **indicative contract sketches** where they differ from the code;
+where the code is exact, the code is normative. Naming, annotations and exact method shapes must not
 deviate from this contract without an ADR.
 
 ## 1. The operations
@@ -246,8 +247,9 @@ Unit tests for a future adapter are written through a **shared, parameterized co
 same suite drives any implementation of `ObjectStoragePort`, with the adapter under test injected as
 the single substitution point. The suite lives next to the adapter (e.g. a shared base class in the
 `storage` test source set, parameterized over `ObjectStoragePort`); the adapter supplies one instance
-and a fixture per run. The actual suite lands with `S07-06B` (contract unit tests) and `S07-06H`
-(integration); this section is its specification.
+and a fixture per run. The unit suite lands with `S07-06B` (contract unit tests over the contract itself) and the integration suite with `S07-06H`; this section is its specification.
+The unit suite covers the contract's invariants directly: type safety, provider neutrality, validation
+and failure encoding — it is not a Garage suite (that is `S07-06H`).
 
 | # | Case | Proves |
 |---|---|---|
@@ -267,10 +269,10 @@ Coverage discipline: the suite runs against **every** adapter (the current Garag
 `S07-06H` and any future provider), and it is reusable — a second provider adds a new adapter package
 and a new wiring of the same suite, not a new suite.
 
-## 10. Example calls (indicative — the module is not yet implemented)
+## 10. Example calls (indicative — the contract is in code; these calls remain illustrative)
 
-Illustrative pseudo-Java, shown for the two consumers. Signatures are indicative spec sketches; the
-real signatures are settled at `S07-06B` and must not drift from this contract.
+Illustrative pseudo-Java, shown for the two consumers. The signatures in code are normative; these
+examples are illustrative and must not drift from them without an ADR.
 
 ```java
 // knowledgebase — upload a document (S10-02's DocumentPayloadStore path)
@@ -307,7 +309,7 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 | `S02-19` (this doc) | Defines the contract — the spec above |
 | `S02-20` (`Accepted`) | ADR-024: consistency/security/lifecycle — the PostgreSQL↔Garage gap, upload/delete state transitions, retry/compensation, orphan cleanup, checksum verification policy, Garage-outage policy, credential separation, key-convention reconciliation |
 | `S07-06A` (landed) | AWS SDK for Java v2 + `agentflow.storage.*` typed config — validated `@ConfigurationProperties` (endpoint/region/bucket/path-style/timeouts/retry limits), env-var credentials, singleton `S3Client` wiring, opt-in |
-| `S07-06B` | Contract unit tests (§9's suite) + `ObjectStoragePort` and the value types in code |
+| `S07-06B` (landed) | `ObjectStoragePort` + the value types (`ObjectReference`, `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`, `ObjectListPage`, `DeleteResult`, `ObjectStorageException`, `ObjectStorageErrorCode`) in code; §9 contract unit suite over the contract |
 | `S07-06C/D/E` | Garage `put` / `get` streaming / `head` + idempotent `delete` (+ `list`) |
 | `S07-06F` | Timeout/retry/error mapping |
 | `S07-06H` | Garage integration/contract test suite (the §9 suite against a real Garage) |
@@ -319,13 +321,14 @@ Garage-specific type. Unit tests for future adapters are specified in §9 and la
 ### 11.1 Integration scenarios — Sprint 7 / 10 / 15 (planned)
 
 These are the cross-module scenarios that exercise the contract end to end. **None of them is built
-today** — the `storage` module has no code — so they are recorded here as planned, each checked
+today** — the `storage` root-package contract is in code (`S07-06B`, landed), but the adapter and the
+consuming paths are not — so they are recorded here as planned, each checked
 against this contract and ADR-024, never as shipped behaviour:
 
 | Sprint | Task | Scenario (planned) |
 |---|---|---|
 | 7 | `S07-06A` (landed) | AWS SDK for Java v2 + validated `agentflow.storage.*` typed config (endpoint/region/bucket/timeouts); secrets only from env/Secret references |
-| 7 | `S07-06B` | `ObjectStoragePort` + value types in code; §9 contract unit suite over the contract |
+| 7 | `S07-06B` (landed) | `ObjectStoragePort` + value types in code; §9 contract unit suite over the contract |
 | 7 | `S07-06C` | `put` — streaming write to Garage, deterministic replace on the same immutable key |
 | 7 | `S07-06D` | `get` — bounded streaming read, no `readAllBytes()`; stream released on success/failure/cancellation |
 | 7 | `S07-06E` | `head` + paginated `list` (server-side prefix only) + idempotent `delete` |
