@@ -19,7 +19,7 @@ flowchart TB
         client["Client — browser / CLI<br/>(the domain analyst)"]
         keycloak["Keycloak — IdP / OIDC"]
         model["Model provider — cloud ChatModel<br/>(OpenAI-compatible)"]
-        storage["Object storage — Garage / S3"]
+        storage["Object storage — Garage / S3<br/>(documents + checkpoints)"]
         exttools["External tools — allowlisted side effects"]
     end
 
@@ -37,8 +37,8 @@ flowchart TB
     agentflow -->|"LLM call: a typed plan request<br/>cost capped by the budget"| model
     model -->|"plan / output — UNTRUSTED<br/>never changes permissions or policies"| agentflow
 
-    %% Documents: big payloads leave the DB, only a ref + checksum stays.
-    agentflow -->|"store / fetch document<br/>tenant-scoped key + SHA-256"| storage
+    %% Documents + checkpoints: big payloads leave the DB, only ref + checksum stay.
+    agentflow -->|"store / fetch object bytes<br/>tenant-scoped key + SHA-256"| storage
     storage -->|"object bytes + checksum"| agentflow
 
     %% Tools: allowlisted, schema-validated, approval-gated for side effects.
@@ -50,9 +50,9 @@ flowchart TB
 A plain-language caption: *the domain analyst works through a Client, is
 authenticated by Keycloak (which is the only trusted source of tenant and
 permission scopes), and talks to AgentFlow over HTTPS. AgentFlow calls a
-cost-capped cloud model, stores documents in object storage, and invokes
-allowlisted external tools — every output that crosses the trusted boundary is
-treated as untrusted.*
+cost-capped cloud model, stores document originals and large-payload workflow
+checkpoints in object storage, and invokes allowlisted external tools — every
+output that crosses the trusted boundary is treated as untrusted.*
 
 ---
 
@@ -73,7 +73,7 @@ treated as untrusted.*
 | **Client** (browser / CLI) | The domain analyst; starts logins, uploads, runs, approvals and queries. | Input is untrusted. The **tenant is never read from the request** — only from the verified JWT (`ADR-007`). |
 | **Keycloak** (IdP / OIDC) | Authenticates the user, issues the JWT bearing `tenant_id` and permission scopes (`workflow:read`, `document:read`, `run:approve`, …). | **Trusted source of identity.** AgentFlow validates the issuer, audience and signature; credentials travel Client ↔ Keycloak only, never to AgentFlow. |
 | **Model provider** (cloud ChatModel, OpenAI-compatible) | Receives a schema-constrained *plan request* and returns a plan. | **Untrusted planner.** Output is validated server-side (`ADR-006`) and can never change permissions, policies or allowlists. Cost is capped by the budget. |
-| **Object storage** (Garage / S3) | Holds the original documents; the DB keeps only a ref + `SHA-256` checksum. | Large payloads leave the trusted DB; the object key is tenant-scoped and the checksum drives ingestion idempotency. |
+| **Object storage** (Garage / S3) | Holds document originals and large-payload workflow checkpoints behind a server-generated, tenant-scoped key; the DB keeps only the ref + `SHA-256` checksum. | Large payloads leave the trusted DB; the object key is tenant-scoped and the checksum drives ingestion idempotency ([`object-storage.md`](object-storage.md), [`ADR-024`](../adr/ADR-024-object-storage.md)). |
 | **External tools** (allowlisted side effects) | Registered, schema-validated actions with a risk class; side-effecting ones pause at a `HUMAN_APPROVAL` node. Results are **untrusted** input. | Calls are permission- and budget-checked before execution; tool credentials come from secret management, not from the model or request. |
 
 Internal infrastructure — PostgreSQL (+ pgvector/FTS), Kafka and Redis — lives
@@ -96,10 +96,14 @@ there, never the workflow state, the lease or the inbox.
   JWT (tenant + permission scopes), which is the *only* secret AgentFlow trusts
   for identity. Model and tool secrets are injected from secret management and
   never logged, never sent to the model, and never come from the request.
-- **Documents.** The client uploads to AgentFlow, which stores the object in
-  object storage under a tenant-scoped key and writes one DB row; on retrieval,
-  tenant/ACL-filtered fragments are sent to the model as untrusted content.
-  Large payloads never live in the database.
+- **Documents and checkpoints.** The client uploads to AgentFlow, which stores
+  the original object in object storage under a server-generated, tenant-scoped
+  key (`documents/<tenantId>/<documentId>[.<ext>]`) and writes one DB row; large-payload checkpoint outputs are stored the same way
+  (`checkpoints/<tenantId>/<runId>/<stepRunId>[.<ext>]`, `S07-07`). Only the ref
+  + `SHA-256` checksum + size stay in PostgreSQL. On retrieval, tenant/ACL-filtered
+  fragments are sent to the model as untrusted content; large payloads never live
+  in the database and are addressed only through the app (no public buckets or
+  permanent URLs).
 - **AI output.** The model proposes a plan; a server-side validation gate decides
   what is allowed. The model is never an authorization authority, and generated
   documents/fragments are content, not policy.

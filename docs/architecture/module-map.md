@@ -134,7 +134,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
 | `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), `storage` (public contract — upload/read object bytes) |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19); object bytes via `knowledgebase`'s `DocumentPayloadStore` — never `storage` directly |
-| `storage` | provider-neutral `ObjectStoragePort` contract (object references/metadata, checksums) and the Garage adapter that implements it; owns the physical objects in Garage | `AWS SDK for Java v2` (external), Garage S3 API (external); **no app-module dependencies** — no imports from another module, ever |
+| `storage` | provider-neutral `ObjectStoragePort` contract (object references/metadata, checksums) and the Garage adapter that implements it; owns the physical objects in Garage · contract [`object-storage.md`](./object-storage.md) (`S02-19`) · consistency/security/lifecycle policy [ADR-024](../adr/ADR-024-object-storage.md) (`S02-20`) — both consumers (`knowledgebase`, `workflowexecution`) use the contract, never the adapter | `AWS SDK for Java v2` (external), Garage S3 API (external); **no app-module dependencies** — no imports from another module, ever |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |
 | `audit` | security/business audit events, immutable append-only history | `common` (redaction), `identity` |
@@ -158,7 +158,7 @@ owner is responsible for forward-only migrations only.
 | `workflow_definitions` | `workflowdefinition` | `unique (tenant_id, name)` |
 | `workflow_definition_versions` | `workflowdefinition` | `unique (workflow_id, version)`; `graph_json` + checksum, immutable when activated |
 | `workflow_runs` | `workflowexecution` | `unique (tenant_id, idempotency_key)`; lease/fencing fields |
-| `workflow_step_runs` | `workflowexecution` | `unique (run_id, step_key, attempt)`; `output_ref` (large-payload checkpoint, `S15-06`) points at an object in Garage — the row keeps only the reference/checksum/size, the bytes live in `storage` |
+| `workflow_step_runs` | `workflowexecution` | `unique (run_id, step_key, attempt)`; `output_ref` (large-payload checkpoint, `S07-07`) points at an object in Garage — the row keeps only the reference/checksum/size, the bytes live in `storage` |
 | `workflow_events` | `messaging` | append-only domain facts |
 | `outbox_events` | `messaging` | DB outbox; state + outbox record in one transaction |
 | `inbox_messages` | `messaging` | PK `(consumer_name, event_id)`; dedup in the same transaction as the business change |
@@ -249,7 +249,7 @@ this module may reach the bytes.
 
 **Allowed consumers — and the only ones.** `knowledgebase` (document originals:
 upload/read/delete of the object behind a `documents` row) and
-`workflowexecution` (large-payload checkpoint outputs, the `S15-06` path). Both
+`workflowexecution` (large-payload checkpoint outputs, the `S07-07` path). Both
 consume the public contract through their own application services — for
 `knowledgebase` the `DocumentPayloadStore` opt-in read port and the upload path;
 for `workflowexecution` the checkpoint adapter. **No other module** may depend on
@@ -317,7 +317,7 @@ model provider) and is **not** a module edge.
 | 20 | `workflowexecution -> audit` | the human-approval decision is written to the append-only audit trail in the same transaction as the decision (S11-04; ADR-018) |
 | 21 | `messaging -> audit` | the DLQ inspection audit is written through the public `AuditService` port — a `READ` on the operator `DLQ` resource (S12-11; ADR-022) |
 | 22 | `knowledgebase -> storage` | the document object is stored/read/deleted through the public storage contract — the metadata row stays in PostgreSQL (`S02-18`) |
-| 23 | `workflowexecution -> storage` | large-payload checkpoint outputs are externalized through the public storage contract (`S15-06`; `S02-18`) |
+| 23 | `workflowexecution -> storage` | large-payload checkpoint outputs are externalized through the public storage contract (`S07-07`; `S02-18`) |
 | 14–16 | `toolexecution -> workflowexecution`, `ai -> workflowexecution`, `knowledgebase -> workflowexecution` | **the execution SPI**: these packages implement the `StepHandler` port that `workflowexecution` owns (open decision §4) |
 | 17 | `workflowexecution -> toolexecution/ai/knowledgebase` | **runtime only**, via the SPI (never a compile edge) |
 

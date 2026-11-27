@@ -131,7 +131,7 @@ never from the client's filename, body, query parameter or a Kafka header
 | Kind | Key convention |
 |---|---|
 | Document original | `documents/<tenantId>/<documentId>[.<ext>]` (`S02-19`; the extension is a content-type hint from a closed whitelist, never a path segment) |
-| Workflow large-payload checkpoint | `checkpoints/<tenantId>/<runId>/<stepRunId>[.<ext>]` (`S15-06` must implement exactly this) |
+| Workflow large-payload checkpoint | `checkpoints/<tenantId>/<runId>/<stepRunId>[.<ext>]` (`S07-07` must implement exactly this) |
 
 `storage` treats the key as an opaque, structurally-validated string (blank,
 oversized, control characters, `..` segments rejected) and never derives or
@@ -163,7 +163,7 @@ the MVP. Retention is owned by the consumer's state machine:
   below).
 - *Workflow checkpoints* — retained until the run reaches a terminal state and
   the checkpoint is no longer needed for recovery; cleanup is the
-  `workflowexecution`-owned fix-up step (`S15-06`), which deletes the object
+  `workflowexecution`-owned fix-up step (`S07-07`), which deletes the object
   and clears the `output_ref`.
 
 **9. Failure behaviour and compensation.**
@@ -238,8 +238,8 @@ never contain credentials, document text, prompts or object content.
   tenant scope is enforced by the owning module (the contract stays
   provider-neutral); no public buckets, no permanent URLs, credentials never
   leak into the contract, the rows, the logs or the telemetry. This is the
-  contract every Sprint 7/10/15 task (`S07-06A`…`S07-06H`, `S10-02`, `S15-06`)
-  must be checked against.
+  contract every Sprint 7/10/15 task (`S07-06A`…`S07-06H`, `S07-07`, `S10-02`,
+  `S15-22`…`S15-25`) must be checked against.
 - **Negative / operational:**
   - The PostgreSQL↔Garage gap is real and visible: a crash between object
     upload and metadata commit leaves an orphan object (compensated or swept),
@@ -266,8 +266,11 @@ never contain credentials, document text, prompts or object content.
   - `S10-02` — `knowledgebase`'s upload path implements rule 2 (object → verify →
     metadata row + outbox in one transaction) and rule 7 (checksum re-verify on
     read).
-  - `S15-06` — `workflowexecution`'s checkpoint adapter implements the
+  - `S07-07` — `workflowexecution`'s checkpoint adapter implements the
     checkpoint key convention (rule 6), the retention fix-up (rule 8) and the
     orphan sweep integration.
+  - `S15-22`/`S15-23`/`S15-24`/`S15-25` — Garage in the local Kubernetes cluster,
+    bucket/runtime-credential provisioning, backup/restore and the network-policy
+    + smoke test — re-verify this policy against the cluster deployment.
   - A signed-URL path, if ever needed, must be a new, bounded design — not a
     silent exception.
