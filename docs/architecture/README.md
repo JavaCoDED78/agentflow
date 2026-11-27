@@ -154,16 +154,17 @@ build and repository, not assumed:
   `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`, matching the
   base package `com.example.agentflow` (main class
   `com.example.agentflow.AgentflowApplication`, `apps/agentflow-app/build.gradle.kts`).
-  `storage` is the one module whose implementation does not exist yet (the plan,
+  `storage` is the one module whose implementation is not complete yet (the plan,
   the module map, the ownership boundary and the contract are in place — the
-  contract is [`object-storage.md`](./object-storage.md), `S02-19`; the adapter and its
-  code land with `S07-06B`) — it is absent from `src/` today, which is expected and tracked.
-  Two further packages live under the same root but are **not** domain modules: `config`
-  (framework wiring — Hikari, rate limiter, Redis, MCP/OpenAPI beans) and `tooling`
-  (build tooling — `FlywayMigrate`, `OpenApiContractTool`). There is no `storage`
-  module yet — the ownership boundary and the contract are done (`S02-18`/`S02-19`);
-  the adapter implementation is pending (`S07-06B`). Today Garage / S3 is an external
-  runtime dependency.
+  contract is [`object-storage.md`](./object-storage.md), `S02-19`). As of `S07-06A`
+  the module has no root-package code yet: the typed `agentflow.storage.*`
+  configuration (`AgentFlowProperties.Storage`) and its opt-in singleton S3 client
+  wiring (`StorageClientConfiguration`) exist under `config` — the models, port
+  and Garage adapter land with `S07-06B`/`S07-06C`. Two further packages live under
+  the same root but are **not** domain modules: `config` (framework wiring —
+  Hikari, rate limiter, Redis, MCP/OpenAPI beans, the storage S3 client) and
+  `tooling` (build tooling — `FlywayMigrate`, `OpenApiContractTool`). Today Garage /
+  S3 is an external runtime dependency.
 - **External systems.** Keycloak (OIDC), the model provider, Garage / S3 object
   storage, PostgreSQL (+ pgvector / FTS), Kafka, Redis and OpenTelemetry are the
   runtime dependencies named in the system context and module map; Spring AI is
@@ -184,6 +185,6 @@ build and repository, not assumed:
 
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
-- The `storage` module implementation and its integration scenarios — the `ObjectStoragePort` contract is defined (`S02-19`, [`object-storage.md`](./object-storage.md)) and the consistency/security/lifecycle policy is fixed ([`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`); the Garage adapter and its code land with `S07-06B`/`S07-06H` (§11.1 of `object-storage.md` enumerates the planned Sprint 7/10/15 scenarios: `S07-06A`…`S07-06J` + `S07-07` — the adapter and checkpoint adapter, `S10-02`/`S10-02A`…`S10-02H` — bucket, provisioning and document storage, and `S15-22`/`S15-23`/`S15-24`/`S15-25` — Garage in Kubernetes, credentials, backup/restore and network policy). The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no code under `src/main/java/com/example/agentflow/storage/` today.
+- The full `storage` module implementation and its integration scenarios — the typed `agentflow.storage.*` configuration and the opt-in singleton S3 client wiring landed with `S07-06A`; the `ObjectStoragePort` contract is defined (`S02-19`, [`object-storage.md`](./object-storage.md)) and the consistency/security/lifecycle policy is fixed ([`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`); the models, port and Garage adapter land with `S07-06B`/`S07-06C`/`S07-06H` (§11.1 of `object-storage.md` enumerates the planned Sprint 7/10/15 scenarios: `S07-06A`…`S07-06J` + `S07-07` — the adapter and checkpoint adapter, `S10-02`/`S10-02A`…`S10-02H` — bucket, provisioning and document storage, and `S15-22`/`S15-23`/`S15-24`/`S15-25` — Garage in Kubernetes, credentials, backup/restore and network policy). The ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no `storage` root-package code yet (`config` holds the `S07-06A` config/client foundation).
 
 No other index topic is planned beyond the items above.

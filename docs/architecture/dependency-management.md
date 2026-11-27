@@ -41,6 +41,20 @@ Verified against the published artifacts (Gradle `dependencies` resolution):
 | `org.apache.tomcat.embed` | `11.0.24` | Boot BOM | |
 | `org.yaml:snakeyaml` | `2.6` | Boot BOM | |
 | `jakarta.annotation:jakarta.annotation-api` | `3.0.0` | Boot BOM | |
+| `software.amazon.awssdk:s3` | `2.59.6` | AWS SDK v2 BOM (`software.amazon.awssdk:bom`) | Added in `S07-06A`; pinned via `gradle/libs.versions.toml`, `platform(...)` import |
+| `software.amazon.awssdk:apache5-client` | `2.59.6` | AWS SDK v2 BOM | Added in `S07-06A`; the Apache 5.x (Apache5HttpClient) HTTP client behind the singleton S3 client — the deprecated 4.x `apache-client` is deliberately not used |
+
+The AWS SDK for Java v2 (`software.amazon.awssdk:s3` + `apache5-client`, 2.59.6) is
+managed by the AWS SDK BOM (`platform(...)`), **not** by the Spring Boot BOM — it is a
+third-party S3-client dependency with its own release train, so it does not participate in the
+Boot-managed Spring/Jackson/Tomcat graph. (The deprecated 4.x `apache-client` is not used; the
+singleton client builds through `Apache5HttpClient` and the `StandardRetryStrategy` API, both
+non-deprecated.) Every `software.amazon.awssdk` artifact in the
+resolution converges to `2.59.6` (169 artifacts, zero forced `x -> y` overrides); the
+`docs/architecture/dependency-insight.txt` report is a Sprint 1 snapshot and is not regenerated per
+task — the `S07-06A` verification is the lockfile diff (`apps/agentflow-app/gradle.lockfile`) and a
+`dependencies --configuration compileClasspath` walk, both green. See `gradle/libs.versions.toml`
+(`aws-sdk-v2`) and `apps/agentflow-app/gradle.lockfile`.
 
 Spring AI 2.0.1 adds version constraints only for the artifacts it manages
 (notably Jackson 3.x). It does not pin Spring Framework, so the Boot 4.1.1 BOM

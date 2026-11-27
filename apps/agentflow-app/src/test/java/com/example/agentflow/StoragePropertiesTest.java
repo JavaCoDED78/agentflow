@@ -47,7 +47,87 @@ class StoragePropertiesTest {
           assertThat(storage.getRegion()).isEqualTo("garage");
           // The endpoint is environment-specific and supplied by a profile (never defaulted here).
           assertThat(storage.getEndpoint()).isNull();
+          // The S07-06A defaults: opt-in client, path-style addressing, bounded transport settings.
+          assertThat(storage.isEnabled()).isFalse();
+          assertThat(storage.isPathStyleAddressing()).isTrue();
+          assertThat(storage.getConnectionTimeoutSeconds()).isEqualTo(5);
+          assertThat(storage.getRequestTimeoutSeconds()).isEqualTo(30);
+          assertThat(storage.getMaxRetryAttempts()).isEqualTo(3);
         });
+  }
+
+  @Test
+  void storage_transport_settings_bind_from_agentflow_storage() {
+    runner
+        .withPropertyValues(
+            "agentflow.storage.enabled=true",
+            "agentflow.storage.path-style-addressing=false",
+            "agentflow.storage.connection-timeout-seconds=10",
+            "agentflow.storage.request-timeout-seconds=45",
+            "agentflow.storage.max-retry-attempts=7")
+        .run(
+            context -> {
+              assertThat(context.getStartupFailure()).isNull();
+              Storage storage = context.getBean(AgentFlowProperties.class).getStorage();
+              assertThat(storage.isEnabled()).isTrue();
+              assertThat(storage.isPathStyleAddressing()).isFalse();
+              assertThat(storage.getConnectionTimeoutSeconds()).isEqualTo(10);
+              assertThat(storage.getRequestTimeoutSeconds()).isEqualTo(45);
+              assertThat(storage.getMaxRetryAttempts()).isEqualTo(7);
+            });
+  }
+
+  @Test
+  void a_zero_connection_timeout_fails_startup() {
+    runner
+        .withPropertyValues("agentflow.storage.connection-timeout-seconds=0")
+        .run(
+            context -> {
+              Throwable failure = context.getStartupFailure();
+              assertThat(failure).isInstanceOf(ConfigurationPropertiesBindException.class);
+              assertThat(failureText(failure))
+                  .contains("agentflow.storage.connection-timeout-seconds");
+            });
+  }
+
+  @Test
+  void a_zero_request_timeout_fails_startup() {
+    runner
+        .withPropertyValues("agentflow.storage.request-timeout-seconds=0")
+        .run(
+            context -> {
+              Throwable failure = context.getStartupFailure();
+              assertThat(failure).isInstanceOf(ConfigurationPropertiesBindException.class);
+              assertThat(failureText(failure))
+                  .contains("agentflow.storage.request-timeout-seconds");
+            });
+  }
+
+  @Test
+  void a_negative_max_retry_attempts_fails_startup() {
+    runner
+        .withPropertyValues("agentflow.storage.max-retry-attempts=-1")
+        .run(
+            context -> {
+              Throwable failure = context.getStartupFailure();
+              assertThat(failure).isInstanceOf(ConfigurationPropertiesBindException.class);
+              assertThat(failureText(failure)).contains("agentflow.storage.max-retry-attempts");
+            });
+  }
+
+  /**
+   * Collect the full causal chain into one text blob, so the property name surfaces wherever it
+   * appears.
+   */
+  private static String failureText(Throwable failure) {
+    StringBuilder text =
+        new StringBuilder(failure.getMessage() == null ? "" : failure.getMessage());
+    for (Throwable t = failure.getCause(); t != null; t = t.getCause()) {
+      if (t.getMessage() != null) {
+        text.append('\n').append(t.getMessage());
+      }
+    }
+    return text.toString();
   }
 
   @Test

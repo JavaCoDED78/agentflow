@@ -48,7 +48,7 @@ public class AgentFlowProperties {
   @Valid private final Tools tools = new Tools();
   @Valid private final Ai ai = new Ai();
   @Valid private final Upload upload = new Upload();
-  private final Storage storage = new Storage();
+  @Valid private final Storage storage = new Storage();
   private final Ingestion ingestion = new Ingestion();
   private final Chunking chunking = new Chunking();
   @Valid private final Retrieval retrieval = new Retrieval();
@@ -1706,31 +1706,76 @@ public class AgentFlowProperties {
   }
 
   /**
-   * Object-storage (Garage) connection and access settings (S10-02). Bound from {@code
+   * Object-storage (Garage) connection and access settings (S07-06A, S10-02). Bound from {@code
    * agentflow.storage.*}. This group describes <b>which</b> bucket the document payloads live in,
-   * <b>where</b> the S3-compatible API is, and the <b>access policy</b>; the S3 client that
-   * consumes it (built in {@code S10-03}) reads and writes payloads through the app only, never
-   * through a public or anonymous URL (see the {@code S10-02} acceptance). The credentials
-   * themselves come from the environment ({@code AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY} / {@code
-   * AGENTFLOW_OBJECT_STORAGE_SECRET_KEY}), never from configuration or source (invariant 8).
+   * <b>where</b> the S3-compatible API is, the <b>access policy</b>, and the bounded client
+   * transport settings consumed by the S3 client (built in {@code S10-03}); payloads are read and
+   * written through the app only, never through a public or anonymous URL (see the {@code S10-02}
+   * acceptance). The credentials themselves come from the environment ({@code
+   * AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY} / {@code AGENTFLOW_OBJECT_STORAGE_SECRET_KEY}), never from
+   * configuration or source (invariant 8) — this class has no credential field.
    *
-   * <p>The bucket is <b>private</b>: {@link #getPublicAccess()} defaults to {@link
-   * PublicAccess#DISABLED}, so no object is ever addressable through a public URL without
-   * authorization. Objects are read and written only through the app, which owns the credentials
-   * and re-checks the tenant (invariant 1) on every access; the object-key convention that
-   * namespaces every key by {@code tenantId} ({@link
+   * <p>The client is <b>opt-in</b>: {@link Storage#isEnabled()} defaults to {@code false}, so the
+   * app boots and passes readiness with no endpoint and no credentials; a profile or storage
+   * consumer sets it to {@code true} and the {@code agentflow.storage.*} typed config above is the
+   * only thing it can bind. The bucket is <b>private</b>: {@link Storage#getPublicAccess()}
+   * defaults to {@link PublicAccess#DISABLED}, so no object is ever addressable through a public
+   * URL without authorization. Objects are read and written only through the app, which owns the
+   * credentials and re-checks the tenant (invariant 1) on every access; the object-key convention
+   * that namespaces every key by {@code tenantId} ({@link
    * com.example.agentflow.knowledgebase.domain.DocumentObjectKey}) is a defence-in-depth on top of
    * that app-layer decision.
    */
   public static class Storage {
 
     /**
+     * Whether the S3 client is wired (default {@code false}). When {@code false} no S3 client bean
+     * exists and the app boots and passes readiness with no object-storage endpoint and no
+     * credentials — the same opt-in shape as Redis (S12-16). A profile or a storage-role consumer
+     * sets it to {@code true}; the {@code agentflow.storage.*} typed config below is the only thing
+     * it can bind, and the credentials it needs stay in the environment, never here.
+     */
+    private boolean enabled = false;
+
+    /**
+     * Whether the S3 client uses path-style addressing (default {@code true}). Garage serves
+     * path-style SigV4 on {@code :3900}; virtual-hosted style is not the default and can be opted
+     * in explicitly. Never hardcoded here beyond the safe default.
+     */
+    private boolean pathStyleAddressing = true;
+
+    /**
      * The S3 endpoint (Garage, path-style SigV4). No default in the base profile: the endpoint is
      * environment-specific and is supplied by the local / kubernetes profiles (and the local {@code
-     * .env}, via {@code AGENTFLOW_OBJECT_STORAGE_ENDPOINT}). The S3 client (S10-03) requires it; a
-     * {@code null} endpoint fails clearly when the client is built, never silently.
+     * .env}, via {@code AGENTFLOW_OBJECT_STORAGE_ENDPOINT}). The S3 client requires it when the
+     * storage profile/role is enabled; a {@code null} endpoint fails clearly when the client is
+     * built, never silently.
      */
     private String endpoint = null;
+
+    /**
+     * Connection timeout, in seconds, before a connection is established. Bounded below so the
+     * client cannot hang a thread indefinitely waiting for the storage endpoint; a value below 1
+     * fails startup. Bound from {@code agentflow.storage.connection-timeout-seconds}.
+     */
+    @Min(value = 1, message = "agentflow.storage.connection-timeout-seconds must be at least 1")
+    private long connectionTimeoutSeconds = 5;
+
+    /**
+     * Request timeout, in seconds, for a single object request. Bounded below so a request cannot
+     * hang a thread indefinitely; a value below 1 fails startup. Bound from {@code
+     * agentflow.storage.request-timeout-seconds}.
+     */
+    @Min(value = 1, message = "agentflow.storage.request-timeout-seconds must be at least 1")
+    private long requestTimeoutSeconds = 30;
+
+    /**
+     * Maximum number of retry attempts the SDK makes for a single request (default {@code 3}).
+     * Bounded below at 0 (a fully disabled retry policy) so a negative value fails startup. Bound
+     * from {@code agentflow.storage.max-retry-attempts}.
+     */
+    @Min(value = 0, message = "agentflow.storage.max-retry-attempts must be at least 0")
+    private long maxRetryAttempts = 3;
 
     /** The bucket object payloads live in. Default {@code agentflow} (S01-15 / ADR-013). */
     private String bucket = "agentflow";
@@ -1760,6 +1805,76 @@ public class AgentFlowProperties {
      */
     public void setEndpoint(String endpoint) {
       this.endpoint = endpoint;
+    }
+
+    /**
+     * @return whether the S3 client is wired (default {@code false})
+     */
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    /**
+     * @param enabled whether the S3 client is wired (default {@code false})
+     */
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    /**
+     * @return whether the S3 client uses path-style addressing (default {@code true})
+     */
+    public boolean isPathStyleAddressing() {
+      return pathStyleAddressing;
+    }
+
+    /**
+     * @param pathStyleAddressing whether to use path-style addressing (default {@code true})
+     */
+    public void setPathStyleAddressing(boolean pathStyleAddressing) {
+      this.pathStyleAddressing = pathStyleAddressing;
+    }
+
+    /**
+     * @return the connection timeout in seconds (default {@code 5})
+     */
+    public long getConnectionTimeoutSeconds() {
+      return connectionTimeoutSeconds;
+    }
+
+    /**
+     * @param connectionTimeoutSeconds the connection timeout in seconds (default {@code 5})
+     */
+    public void setConnectionTimeoutSeconds(long connectionTimeoutSeconds) {
+      this.connectionTimeoutSeconds = connectionTimeoutSeconds;
+    }
+
+    /**
+     * @return the request timeout in seconds (default {@code 30})
+     */
+    public long getRequestTimeoutSeconds() {
+      return requestTimeoutSeconds;
+    }
+
+    /**
+     * @param requestTimeoutSeconds the request timeout in seconds (default {@code 30})
+     */
+    public void setRequestTimeoutSeconds(long requestTimeoutSeconds) {
+      this.requestTimeoutSeconds = requestTimeoutSeconds;
+    }
+
+    /**
+     * @return the maximum number of retry attempts (default {@code 3})
+     */
+    public long getMaxRetryAttempts() {
+      return maxRetryAttempts;
+    }
+
+    /**
+     * @param maxRetryAttempts the maximum number of retry attempts (default {@code 3})
+     */
+    public void setMaxRetryAttempts(long maxRetryAttempts) {
+      this.maxRetryAttempts = maxRetryAttempts;
     }
 
     /**

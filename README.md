@@ -238,20 +238,32 @@ scheduled operator-visible sweep (`S07-06G`/`S10-02F`), never blind deletion;
 retention is consumer-owned.
 
 The configuration is the typed `agentflow.storage.*` group — `@Validated`
-`@ConfigurationProperties` in `AgentFlowProperties.Storage`:
+`@ConfigurationProperties` in `AgentFlowProperties.Storage` (bound at startup):
 
+- `enabled` — default `false`. The client is **opt-in**: with the storage profile
+ /role disabled, nothing in the group is required and no S3 client is wired.
+- `endpoint` — environment-specific; supplied per profile (local / kubernetes),
+  never hardcoded. Required **only when enabled**; the S3 client (built in
+  `S07-06A`, wired as a singleton by `StorageClientConfiguration`) is created
+  from this group.
 - `bucket` — default `agentflow`, matching the Garage bucket in `infra/compose`.
 - `region` — default `garage` (Garage serves on region `garage`).
+- `path-style-addressing` — default `true` (path-style SigV4, the Garage default).
+- `connection-timeout-seconds` / `request-timeout-seconds` — default 5 / 30,
+  both `>= 1`.
+- `max-retry-attempts` — default 3, `>= 0`.
 - `public-access` — `disabled` by default; the bucket is private and an object
   is never addressable through a public or anonymous URL. `public` is an
   explicit operator opt-in only, never the default.
-- `endpoint` — environment-specific; supplied per profile (local / kubernetes),
-  never hardcoded. It is required by the S3 client (built in `S10-03`).
 
 The S3 credentials (`AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` /
 `AGENTFLOW_OBJECT_STORAGE_SECRET_KEY`) come from the environment only, never
-from configuration or source (invariant 8); the git-ignored local `.env`
-provides the localhost defaults — see [`.env.example`](.env.example).
+from configuration, properties or source (invariant 8); nothing in the typed
+group carries a credential field, so a secret can never be bound into config,
+logged or dumped by a properties export. A missing credential while the profile
+is enabled fails startup with a clear `IllegalStateException` (never a silent
+run). The git-ignored local `.env` provides the localhost defaults — see
+[`.env.example`](.env.example).
 
 ## Tests
 

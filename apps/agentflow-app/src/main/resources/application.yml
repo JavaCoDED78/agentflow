@@ -87,13 +87,27 @@ agentflow:
       pool-size: 8
       global-max-concurrency: 32
       per-tenant-max-concurrency: 8
-  # Object storage (Garage, S3-compatible) settings (S10-02). Bound from agentflow.storage.* and
-  # consumed by the S3 client built in S10-05. The bucket and the private (no public URL) policy are
-  # fixed here; the endpoint is environment-specific and supplied per profile (local / kubernetes),
-  # never hardcoded here. The S3 credentials come from the environment, never from configuration
-  # (invariant 8). The bucket is private by default (public-access: disabled): objects are read and
-  # written only through the app, never via a public or anonymous URL (the S10-02 acceptance).
+  # Object storage (Garage, S3-compatible) settings (S07-06A, S10-02). Bound from agentflow.storage.*
+  # and consumed by the S3 client (StorageClientConfiguration, opt-in behind agentflow.storage.enabled).
+  # The bucket and the private (no public URL) policy are fixed here; the endpoint is environment-specific
+  # and supplied per profile (local / kubernetes), never hardcoded here. The S3 credentials come from
+  # the environment, never from configuration (invariant 8) — the typed config carries no credential field.
+  # The client is opt-in (enabled: false by default) so the skeleton boots and passes readiness with no
+  # endpoint and no credentials; a profile or a storage consumer sets enabled: true. Path-style addressing is
+  # the default (Garage serves path-style SigV4); connection/request timeouts and the bounded retry
+  # budget are knobs in this group, never in the client wiring itself.
   storage:
+    # Disabled by default (mirrors the typed config default). Set to true in a profile or a storage-role
+    # consumer to wire the client; the endpoint is then required and the credentials come from the environment.
+    enabled: false
+    # Path-style addressing (Garage default); virtual-hosted style is an explicit opt-in.
+    path-style-addressing: true
+    # Bounds the client so it can never hang a thread indefinitely; profile/consumer overrides must stay
+    # >= 1 (bound validation).
+    connection-timeout-seconds: 5
+    request-timeout-seconds: 30
+    # Max retries per request; 0 disables retries entirely.
+    max-retry-attempts: 3
     bucket: agentflow
     region: garage
     public-access: disabled
