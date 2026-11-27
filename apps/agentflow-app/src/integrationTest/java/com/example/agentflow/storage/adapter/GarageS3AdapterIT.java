@@ -7,6 +7,7 @@ import com.example.agentflow.storage.CreateObjectRequest;
 import com.example.agentflow.storage.ObjectReference;
 import com.example.agentflow.storage.ObjectStorageErrorCode;
 import com.example.agentflow.storage.ObjectStorageException;
+import com.example.agentflow.storage.OpenedObject;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -38,8 +39,8 @@ import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 
 /**
- * Integration test for {@code S07-06C} — the {@code GarageS3Adapter} put path against a real Garage
- * container (the same image the compose stack runs, {@code dxflrs/garage:v2.4.1}).
+ * Integration test for {@code S07-06C/D} — the {@code GarageS3Adapter} put and get paths against a
+ * real Garage container (the same image the compose stack runs, {@code dxflrs/garage:v2.4.1}).
  *
  * <p>Mirrors the production wiring in {@code StorageClientConfiguration} (endpoint override, region
  * {@code garage}, path-style addressing, static environment credentials, bounded timeouts) so the
@@ -56,7 +57,7 @@ import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
  * plus the raw SDK confirmation.
  */
 @Testcontainers
-@DisplayName("Garage adapter put (integration, real Garage via Testcontainers)")
+@DisplayName("Garage adapter put and get (integration, real Garage via Testcontainers)")
 class GarageS3AdapterIT {
 
   private static final String BUCKET = "agentflow-it";
@@ -340,6 +341,134 @@ class GarageS3AdapterIT {
     assertThat(head.metadata()).containsEntry("checksum-sha256", sha256(bytes));
   }
 
+  // -------------------------------------------------------------------------------------------
+  // The get path — byte array, large stream, empty object, missing key
+  // -------------------------------------------------------------------------------------------
+
+  @Test
+  @DisplayName("a get round-trips the body byte-for-byte with the stored metadata")
+  void get_round_trips_the_body_and_metadata() throws Exception {
+    byte[] bytes = "the durable object body — S07-06D integration".getBytes();
+    String key = uniqueKey("it/get-byte-array");
+
+    ObjectReference reference =
+        adapter.put(
+            new CreateObjectRequest(
+                key,
+                new ByteArrayInputStream(bytes),
+                "application/octet-stream",
+                (long) bytes.length,
+                sha256(bytes),
+                Map.of()));
+
+    try (OpenedObject opened = adapter.get(key)) {
+      assertThat(opened.metadata().bucket()).isEqualTo(reference.bucket());
+      assertThat(opened.metadata().key()).isEqualTo(key);
+      assertThat(opened.metadata().contentType()).isEqualTo("application/octet-stream");
+      assertThat(opened.metadata().size()).isEqualTo(bytes.length);
+      assertThat(opened.metadata().sha256()).isEqualTo(sha256(bytes));
+
+      byte[] read = readAll(opened.stream());
+      assertThat(read)
+          .as("the get body must be byte-for-byte identical to the put body")
+          .isEqualTo(bytes);
+    }
+  }
+
+  @Test
+  @DisplayName("a large stream get reads the object in bounded chunks without heap-loading")
+  void get_reads_a_large_object_in_bounded_chunks() throws Exception {
+    long size = 2L * 1024 * 1024; // 2 MiB — far beyond a single bounded read window
+    String key = uniqueKey("it/get-large");
+
+    String declared = sha256OfGenerated(size);
+
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new GeneratingInputStream(size),
+            "application/octet-stream",
+            size,
+            declared,
+            Map.of()));
+
+    try (OpenedObject opened = adapter.get(key)) {
+      assertThat(opened.metadata().size()).isEqualTo(size);
+      assertThat(opened.metadata().sha256()).isEqualTo(declared);
+
+      byte[] buffer = new byte[64 * 1024];
+      long total = 0;
+      MessageDigest digest = newSha256();
+      int read;
+      while ((read = opened.stream().read(buffer)) != -1) {
+        digest.update(buffer, 0, read);
+        total += read;
+      }
+      assertThat(total).isEqualTo(size);
+      assertThat(bytesToHex(digest.digest())).isEqualTo(declared);
+    }
+  }
+
+  @Test
+  @DisplayName("a get on an empty object yields zero bytes and keeps the declared zero size")
+  void get_on_an_empty_object_yields_zero_bytes() throws Exception {
+    String key = uniqueKey("it/get-empty");
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new ByteArrayInputStream(new byte[0]),
+            "application/octet-stream",
+            0L,
+            sha256(new byte[0]),
+            Map.of()));
+
+    try (OpenedObject opened = adapter.get(key)) {
+      assertThat(opened.metadata().size()).isZero();
+      assertThat(opened.stream().read()).isEqualTo(-1);
+    }
+  }
+
+  @Test
+  @DisplayName("a get on a missing key is typed not-found and leaks no provider detail")
+  void get_on_a_missing_key_is_not_found() {
+    String key = uniqueKey("it/get-missing");
+
+    assertThatThrownBy(() -> adapter.get(key))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.NOT_FOUND);
+              assertThat(ise.getMessage()).isNotBlank();
+              assertThat(ise.getMessage()).doesNotContain(key);
+              assertThat(ise.getMessage()).doesNotContain("http");
+            });
+  }
+
+  @Test
+  @DisplayName("a get on an object written without a declared checksum is fail-closed")
+  void get_on_an_object_written_without_a_declared_checksum_fails_closed() throws Exception {
+    String key = uniqueKey("it/get-undeclared");
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new ByteArrayInputStream(new byte[] {1}),
+            "application/octet-stream",
+            1L,
+            null,
+            Map.of()));
+
+    // No checksum-sha256 metadata exists on the stored object — the get path refuses to invent one.
+    assertThatThrownBy(() -> adapter.get(key))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE);
+              assertThat(ise.getMessage()).contains("checksum");
+            });
+  }
+
   @Test
   @DisplayName("an empty object put round-trips with a zero size")
   void empty_object_put_round_trips_with_zero_size() {
@@ -352,13 +481,37 @@ class GarageS3AdapterIT {
                 new ByteArrayInputStream(new byte[0]),
                 "application/octet-stream",
                 0L,
-                null,
+                sha256(new byte[0]),
                 Map.of()));
 
     assertThat(reference.size()).isZero();
 
     HeadObjectResponse head = head(key);
     assertThat(head.contentLength()).isZero();
+  }
+
+  private static byte[] readAll(InputStream in) throws IOException {
+    byte[] buffer = new byte[64 * 1024];
+    var out = new java.io.ByteArrayOutputStream();
+    int read;
+    while ((read = in.read(buffer)) != -1) {
+      out.write(buffer, 0, read);
+    }
+    return out.toByteArray();
+  }
+
+  private static MessageDigest newSha256() {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (Exception exception) {
+      throw new IllegalStateException(exception);
+    }
+  }
+
+  private static String bytesToHex(byte[] bytes) {
+    StringBuilder sb = new StringBuilder();
+    for (byte b : bytes) sb.append(String.format("%02x", b & 0xff));
+    return sb.toString();
   }
 
   @Test

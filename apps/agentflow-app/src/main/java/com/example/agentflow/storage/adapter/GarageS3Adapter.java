@@ -20,11 +20,15 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
+import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.exception.NonRetryableException;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.AccessDeniedException;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 /**
@@ -47,8 +51,19 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * content type is passed as the object's {@code Content-Type}, and the caller's metadata is passed
  * through as-is. No content, key, credential or secret material is logged.
  *
- * <p>The {@code get} / {@code head} / {@code list} / {@code delete} operations are deliberately not
- * implemented yet — they land with {@code S07-06D}…{@code S07-06H}. They throw a typed {@link
+ * <p>{@code get} (S07-06D) opens the object for streaming read and returns an {@link OpenedObject}
+ * whose stream is caller-owned: the provider body stream is handed out lazily — no bytes are read
+ * in {@code get} itself — and it is released when the caller closes the object
+ * (try-with-resources), so reading is bounded-memory. A missing key is mapped to a typed {@code
+ * NOT_FOUND}; provider failures reuse the same provider-neutral error policy as {@code put}. The
+ * stored {@code checksum-sha256} object metadata — the only checksum stamped on the stored object
+ * (the caller's declared checksum, verified against the actual bytes by {@code put}) — is reported
+ * as the {@link OpenedObject} metadata's {@code sha256}; an object that carries no stored checksum
+ * (written without a declared checksum) is refused with {@code PERMANENT_FAILURE} rather than
+ * reported with a fabricated digest.
+ *
+ * <p>The {@code head} / {@code list} / {@code delete} operations are deliberately not implemented
+ * yet — they land with {@code S07-06E}…{@code S07-06H}. They throw a typed {@link
  * ObjectStorageException} naming the pending task rather than a raw {@code
  * UnsupportedOperationException}.
  */
@@ -136,20 +151,96 @@ public class GarageS3Adapter implements ObjectStoragePort {
     } catch (ObjectStorageException exception) {
       throw exception;
     } catch (Throwable throwable) {
-      throw mapPutFailure(throwable);
+      throw mapFailure(throwable, "put");
     } finally {
       closeQuietly(verifying);
     }
   }
 
-  // -------------------------------------------------------------------------------------------
-  // Not implemented yet — S07-06D/E/F/G/H.
-  // -------------------------------------------------------------------------------------------
-
   @Override
   public OpenedObject get(String key) throws ObjectStorageException {
-    throw notImplemented("get", "S07-06D");
+    // Key validation is caller-side and deterministic — it never reaches the network. The same
+    // rules are re-checked by the ObjectMetadata constructor that follows (via the contract's
+    // value types), so a rejected key never escapes twice with different codes.
+    validateKey(key);
+
+    // The SDK returns the streamed body directly: the headers are eagerly parsed while the body
+    // stream is lazy — no bytes are read in get itself. The response is opened eagerly and held
+    // by the adapter until the OpenedObject is handed out (or construction fails); the caller
+    // closes it (try-with-resources) to release the underlying connection.
+    ResponseInputStream<GetObjectResponse> stream;
+    try {
+      stream = s3Client.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build());
+    } catch (NoSuchKeyException exception) {
+      throw new ObjectStorageException(ObjectStorageErrorCode.NOT_FOUND, "object not found");
+    } catch (Throwable throwable) {
+      throw mapFailure(throwable, "get");
+    }
+    try {
+      GetObjectResponse response = stream.response();
+      if (response == null) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.PERMANENT_FAILURE,
+            "object storage get returned no response metadata");
+      }
+      return new OpenedObject(buildMetadata(response, key), stream);
+    } catch (Throwable failure) {
+      // The stream is released before the failure escapes — a rejected object never leaks.
+      closeQuietly(stream);
+      if (failure instanceof ObjectStorageException exception) {
+        throw exception;
+      }
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage get failed while building the result",
+          failure);
+    }
   }
+
+  /**
+   * Build the eager {@link ObjectMetadata} from the response's parsed headers. Every value is
+   * provider-supplied and validated — the adapter never invents a size, a content type, an ETag or
+   * a digest. The stored {@code checksum-sha256} object metadata is the only digest the object
+   * carries (the caller's declared checksum, verified by {@code put} against the actual bytes), so
+   * it is the only honest {@code sha256} to report; an object with no stored checksum is refused
+   * rather than reported with a fabricated digest.
+   */
+  private ObjectMetadata buildMetadata(GetObjectResponse response, String key) {
+    Long contentLength = response.contentLength();
+    if (contentLength == null) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage get returned no content length");
+    }
+    String contentType = response.contentType();
+    if (contentType == null || contentType.isBlank()) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage get returned no content type");
+    }
+    java.time.Instant lastModified = response.lastModified();
+    if (lastModified == null) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage get returned no last-modified instant");
+    }
+    String etag = response.eTag();
+    if (etag == null || etag.isBlank()) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage get returned no ETag");
+    }
+    Map<String, String> metadata = response.metadata();
+    String sha256 = metadata == null ? null : metadata.get(CHECKSUM_METADATA_KEY);
+    if (sha256 == null || sha256.isBlank()) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.PERMANENT_FAILURE,
+          "object storage get found no stored checksum on the object — it was written without a declared checksum");
+    }
+    return new ObjectMetadata(bucket, key, contentType, contentLength, sha256, lastModified, etag);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Not implemented yet — S07-06E/F/G/H.
+  // -------------------------------------------------------------------------------------------
 
   @Override
   public Optional<ObjectMetadata> head(String key) throws ObjectStorageException {
@@ -170,6 +261,37 @@ public class GarageS3Adapter implements ObjectStoragePort {
   // -------------------------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------------------------
+
+  /**
+   * The contract's structural key rules, repeated in the adapter — the {@code get} path takes a raw
+   * key and has no request object to validate on its behalf (the contract's own validation home,
+   * the package-private {@code StorageValidation}, is in the root package and is not visible to
+   * this adapter). The {@link ObjectMetadata} constructor re-runs the same rules. A rejected key
+   * never reaches the network.
+   */
+  private static void validateKey(String key) {
+    if (key == null || key.isBlank()) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.INVALID_KEY, "key must not be null or blank");
+    }
+    if (key.length() > 1024) {
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.INVALID_KEY,
+          "key must not exceed 1024 characters, was " + key.length());
+    }
+    for (int i = 0; i < key.length(); i++) {
+      if (key.charAt(i) < 0x20) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.INVALID_KEY, "key must not contain control characters");
+      }
+    }
+    for (String segment : key.split("/", -1)) {
+      if (segment.equals("..")) {
+        throw new ObjectStorageException(
+            ObjectStorageErrorCode.INVALID_KEY, "key must not contain '..' path segments");
+      }
+    }
+  }
 
   private static ObjectStorageException notImplemented(String operation, String task) {
     return new ObjectStorageException(
@@ -199,7 +321,10 @@ public class GarageS3Adapter implements ObjectStoragePort {
     }
   }
 
-  private ObjectStorageException mapPutFailure(Throwable throwable) {
+  private ObjectStorageException mapFailure(Throwable throwable, String operation) {
+    // The canonical provider-neutral error policy lives in one place — put and get both classify
+    // provider failures through this single mapper so neither can drift. The messages carry the
+    // operation name, never the key, the content, a credential or the provider's raw detail.
     // The verifying stream signals a deterministically rejectable payload failure with a
     // NonRetryableException — the SDK never retries it, and the message is key-free and
     // content-free.
@@ -211,37 +336,39 @@ public class GarageS3Adapter implements ObjectStoragePort {
     }
     if (throwable instanceof AccessDeniedException) {
       return new ObjectStorageException(
-          ObjectStorageErrorCode.ACCESS_DENIED, "object storage put was denied by the provider");
+          ObjectStorageErrorCode.ACCESS_DENIED,
+          "object storage " + operation + " was denied by the provider");
     }
     if (throwable instanceof AwsServiceException awsService) {
       int statusCode = awsService.statusCode();
       if (statusCode == 403) {
         return new ObjectStorageException(
-            ObjectStorageErrorCode.ACCESS_DENIED, "object storage put was denied by the provider");
+            ObjectStorageErrorCode.ACCESS_DENIED,
+            "object storage " + operation + " was denied by the provider");
       }
       if (statusCode == 408 || statusCode == 504) {
         return new ObjectStorageException(
-            ObjectStorageErrorCode.TIMEOUT, "object storage put timed out");
+            ObjectStorageErrorCode.TIMEOUT, "object storage " + operation + " timed out");
       }
       if (statusCode == 429 || statusCode >= 500) {
         return new ObjectStorageException(
-            ObjectStorageErrorCode.UNAVAILABLE, "object storage put is unavailable");
+            ObjectStorageErrorCode.UNAVAILABLE, "object storage " + operation + " is unavailable");
       }
       return new ObjectStorageException(
           ObjectStorageErrorCode.PERMANENT_FAILURE,
-          "object storage put was rejected by the provider");
+          "object storage " + operation + " was rejected by the provider");
     }
     if (throwable instanceof SdkClientException) {
-      // Transport-level fault — provider unreachable or the request body could not be sent.
+      // Transport-level fault — provider unreachable or the response could not be read.
       if (isTimeout(throwable)) {
         return new ObjectStorageException(
-            ObjectStorageErrorCode.TIMEOUT, "object storage put timed out");
+            ObjectStorageErrorCode.TIMEOUT, "object storage " + operation + " timed out");
       }
       return new ObjectStorageException(
-          ObjectStorageErrorCode.UNAVAILABLE, "object storage put is unavailable");
+          ObjectStorageErrorCode.UNAVAILABLE, "object storage " + operation + " is unavailable");
     }
     return new ObjectStorageException(
-        ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage put failed");
+        ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage " + operation + " failed");
   }
 
   private static boolean isTimeout(Throwable throwable) {
