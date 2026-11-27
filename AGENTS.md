@@ -63,6 +63,7 @@ Compose profiles: `core`, `messaging`, `identity`, `ai-local`, `observability`, 
 | `toolexecution` | typed tool registry, checks, timeout, schema-validated results |
 | `knowledgebase` | documents, access policy, chunk search, citations |
 | `ingestion` | extract → chunk → embed → index |
+| `storage` | provider-neutral object storage contract + Garage adapter; owns object bytes (`S02-18`) |
 | `ai` | provider adapter, prompts, Planner, structured output, evaluation |
 | `usage` | tokens/cost, budgets, quotas |
 | `audit` | append-only audit |

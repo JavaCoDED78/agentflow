@@ -177,14 +177,14 @@ flowchart TB
 | `toolexecution` | typed tool registry, timeout, permission check, result schema | agentcatalog, audit |
 | `knowledgebase` | document metadata, access policy, chunk search | storage public API, embedding port |
 | `storage` | provider-neutral `ObjectStoragePort`, object references/metadata, Garage S3 adapter | AWS SDK for Java v2, Garage S3 API |
-| `ingestion` | extract, chunk, embed, index, retry | knowledgebase, storage public API, messaging |
+| `ingestion` | extract, chunk, embed, index, retry | knowledgebase, messaging |
 | `ai` | model provider adapter, prompts, structured outputs, evaluation hooks | Spring AI, tool ports |
 | `usage` | token/cost metering, budgets, quotas | ai, workflowexecution |
 | `audit` | security and business audit events, immutable append-only history | identity |
 | `messaging` | outbox, inbox, event schemas, publisher/consumer configuration | PostgreSQL, Kafka |
 | `observability` | domain meters, trace attributes, correlation helpers | Micrometer, OTel |
 
-**Правило зависимостей:** доменные модули не импортируют web-контроллеры, Kafka listener'ы или инфраструктурные классы других модулей. `knowledgebase` и `workflowexecution` используют публичный контракт `storage`, но не импортируют `GarageS3Adapter` или AWS SDK types. События между модулями — через публичные типы или application services, а между процессами — через версионированные event contracts.
+**Правило зависимостей:** доменные модули не импортируют web-контроллеры, Kafka listener'ы или инфраструктурные классы других модулей. `knowledgebase` и `workflowexecution` используют публичный контракт `storage`, но не импортируют `GarageS3Adapter` или AWS SDK types. `ingestion` читает байты объектов через публичный API `knowledgebase` (opt-in `DocumentPayloadStore`), а не через `storage` напрямую — прямые зависимости от `storage` у ингестионного конвейера нет. События между модулями — через публичные типы или application services, а между процессами — через версионированные event contracts.
 
 ---
 

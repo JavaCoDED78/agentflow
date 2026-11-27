@@ -69,7 +69,7 @@ sync with the code — a stale diagram is worse than none.
 - **C4 Level 1 — system context** (`system-context.md`): the Client, Keycloak, the
   model provider, object storage and allowlisted external tools around the trusted
   AgentFlow boundary.
-- **C4 Level 2 — module map** (`module-map.md`): the twelve bounded contexts
+- **C4 Level 2 — module map** (`module-map.md`): the thirteen bounded contexts
   behind that boundary, their owners, and the allowed `module -> module` edges
   (the execution `StepHandler` SPI is the only sanctioned feedback path).
 - **Execution diagrams** — the run / step state machines (`run-state-machine.md`,
@@ -140,13 +140,16 @@ where possible (`S02-08` rejects any edge outside the module-map table;
 The module names and external systems in these documents are checked against the
 build and repository, not assumed:
 
-- **Modules.** The twelve modules in the module map (`identity`, `agentcatalog`,
+- **Modules.** The thirteen modules in the module map (`identity`, `agentcatalog`,
   `workflowdefinition`, `workflowexecution`, `toolexecution`, `knowledgebase`,
-  `ingestion`, `ai`, `usage`, `audit`, `messaging`, `observability`) plus the
+  `ingestion`, `storage`, `ai`, `usage`, `audit`, `messaging`, `observability`) plus the
   cross-cutting `common` package are present under
   `apps/agentflow-app/src/main/java/com/example/agentflow/<module>/`, matching the
   base package `com.example.agentflow` (main class
   `com.example.agentflow.AgentflowApplication`, `apps/agentflow-app/build.gradle.kts`).
+  `storage` is the one module whose implementation does not exist yet (the plan,
+  the module map and the ownership boundary are in place; the contract and the adapter land with
+  `S02-19`/`S07-06B`) — it is absent from `src/` today, which is expected and tracked.
   Two further packages live under the same root but are **not** domain modules: `config`
   (framework wiring — Hikari, rate limiter, Redis, MCP/OpenAPI beans) and `tooling`
   (build tooling — `FlywayMigrate`, `OpenApiContractTool`). There is no `storage`
@@ -172,8 +175,8 @@ build and repository, not assumed:
 
 **Planned — not yet created (marked `⚠ planned`, never linked):**
 
-- `object-storage.md` — the provider-neutral `ObjectStoragePort` contract (`put` / `get` / `head` / `list` / `delete`, `ObjectReference`, tenant-scoped keys, checksum) — `S02-18`/`S02-19`.
-- `ADR-024-object-storage.md` — Object Storage consistency, security and lifecycle (tenant-scoped key convention, no public buckets, credential separation, DB↔Garage consistency gap, upload/delete state transitions, retry, compensation, orphan cleanup, checksum verification, Garage-outage policy) — `S02-20`. Until it lands, the garage-local-stack decision stays recorded in [`ADR-013`](../adr/ADR-013-s3-object-storage-garage.md) and the `storage` module stays out of the module map (`S02-18`).
-- `storage` module — the `storage` bounded context is not yet in the module map (`S02-18` defines its ownership and the Garage adapter); today object storage is an external runtime dependency only.
+- `object-storage.md` — the provider-neutral `ObjectStoragePort` contract (`put` / `get` / `head` / `list` / `delete`, `ObjectReference`, tenant-scoped keys, checksum) — `S02-19`.
+- `ADR-024-object-storage.md` — Object Storage consistency, security and lifecycle (tenant-scoped key convention, no public buckets, credential separation, DB↔Garage consistency gap, upload/delete state transitions, retry, compensation, orphan cleanup, checksum verification, Garage-outage policy) — `S02-20`. Until it lands, the garage-local-stack decision stays recorded in [`ADR-013`](../adr/ADR-013-s3-object-storage-garage.md).
+- The `storage` module implementation — the `ObjectStoragePort` contract (`S02-19`) and the Garage adapter (`S07-06B`) are not built yet; the ownership boundary is in place (`S02-18`) — the module and its dependency edges (`knowledgebase → storage`, `workflowexecution → storage`) exist in the module map, with no code under `src/main/java/com/example/agentflow/storage/` today.
 
 No other index topic is planned beyond the items above.

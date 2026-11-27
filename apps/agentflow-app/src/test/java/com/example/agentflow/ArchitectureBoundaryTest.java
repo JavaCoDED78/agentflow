@@ -16,10 +16,10 @@ import java.util.Set;
  *
  * <p>Enforces, at {@code ./gradlew check} time, the compile-time module boundaries of the modular
  * monolith declared in {@code docs/architecture/module-map.md} (the dependency table: arrows 1-13
- * plus the execution {@code StepHandler} SPI arrows 14-16). For every module the rule forbids a
- * compile dependency to any other module that is <em>not</em> in that module's allowed column.
- * External dependencies (Spring, Jackson, jakarta, the database, Kafka, ...) are not module edges
- * and therefore are not forbidden, so they never trip the gate.
+ * plus the execution {@code StepHandler} SPI arrows 14-16 and the storage edges 22-23). For every
+ * module the rule forbids a compile dependency to any other module that is <em>not</em> in that
+ * module's allowed column. External dependencies (Spring, Jackson, jakarta, the database, Kafka,
+ * ...) are not module edges and therefore are not forbidden, so they never trip the gate.
  *
  * <p>Each module contributes one sub-rule; they are combined into a single {@code @ArchTest} so one
  * introduced violation anywhere fails the build. This is the S02-08 acceptance criterion.
@@ -34,6 +34,11 @@ import java.util.Set;
  * for the modules named in the map. Adding a module (which an ADR requires per {@code AGENTS.md})
  * means adding it to {@link #MODULES} and its allowed column; until then a compile edge to an
  * unknown package is not caught by this gate.
+ *
+ * <p>Known limitation: the analysed and forbidden sides are matched as exact packages ({@code
+ * com.example.agentflow.<module>} without a {@code ..} suffix), so subpackage classes (e.g. {@code
+ * knowledgebase.persistence}) are not covered by this gate. See the S02-18 report for the follow-up
+ * (subpackage-aware matching).
  *
  * <p>{@code @AnalyzeClasses} is mandatory on every ArchUnit 1.5.x test class: without it the engine
  * refuses the class and silently runs zero tests (a false pass), which is why the absence of this
@@ -53,6 +58,7 @@ class ArchitectureBoundaryTest {
           "toolexecution",
           "knowledgebase",
           "ingestion",
+          "storage",
           "ai",
           "usage",
           "audit",
@@ -68,13 +74,23 @@ class ArchitectureBoundaryTest {
           Map.entry("workflowdefinition", Set.of("workflowdefinition", "agentcatalog", "audit")),
           Map.entry(
               "workflowexecution",
-              Set.of("workflowexecution", "workflowdefinition", "messaging", "audit", "common")),
+              Set.of(
+                  "workflowexecution",
+                  "workflowdefinition",
+                  "messaging",
+                  "audit",
+                  "common",
+                  "storage")),
           Map.entry(
               "toolexecution",
               Set.of("toolexecution", "agentcatalog", "audit", "workflowexecution")),
           Map.entry(
-              "knowledgebase", Set.of("knowledgebase", "ai", "workflowexecution", "messaging")),
+              "knowledgebase",
+              Set.of("knowledgebase", "ai", "workflowexecution", "messaging", "storage")),
           Map.entry("ingestion", Set.of("ingestion", "knowledgebase", "messaging", "ai")),
+          // S02-18: storage is the sole owner of object bytes; only knowledgebase (documents) and
+          // workflowexecution (large-payload checkpoints) may compile-depend on it (arrows 22–23).
+          Map.entry("storage", Set.of("storage")),
           Map.entry("ai", Set.of("ai", "toolexecution", "workflowexecution")),
           Map.entry("usage", Set.of("usage", "ai", "workflowexecution")),
           Map.entry("audit", Set.of("audit", "identity", "common")),
@@ -113,6 +129,7 @@ class ArchitectureBoundaryTest {
   @ArchTest
   static final ArchRule moduleBoundaries =
       CompositeArchRule.of(buildBoundaryRules())
-          .because("docs/architecture/module-map.md dependency table (compile edges 1-13, 18, 19)")
+          .because(
+              "docs/architecture/module-map.md dependency table (compile edges 1-13, 18, 19, 22-23)")
           .allowEmptyShould(true);
 }
