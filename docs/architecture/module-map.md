@@ -134,7 +134,7 @@ allowed `module -> module` edges are the numbered arrows above and the table in
 | `toolexecution` | typed tool registry (in-memory `ToolRegistry`; register at startup, deduplicate on `name`/`version`, no dynamic registration), permission/budget check, timeout, JSON Schema-validated results | `agentcatalog`, `audit`, `workflowexecution` (SPI) |
 | `knowledgebase` | document metadata, access policy, tenant/ACL-filtered chunk search, citations | `ai` (embedding port: chunk embedding `S10-12`, query embedding `S10-14`), `messaging` (outbox, `S10-06`), `storage` (public contract — upload/read object bytes) |
 | `ingestion` | extract → chunk → embed → index, retry, ingestion idempotency | `knowledgebase`, messaging, `ai` (embedding port, arrow 19); object bytes via `knowledgebase`'s `DocumentPayloadStore` — never `storage` directly |
-| `storage` | provider-neutral `ObjectStoragePort` contract (object references/metadata, checksums) — in code at `S07-06B` — and the Garage adapter that implements it (`S07-06C`…`S07-06H`, pending); owns the physical objects in Garage · contract [`object-storage.md`](./object-storage.md) (`S02-19`) · consistency/security/lifecycle policy [ADR-024](../adr/ADR-024-object-storage.md) (`S02-20`) — both consumers (`knowledgebase`, `workflowexecution`) use the contract, never the adapter | `AWS SDK for Java v2` (external), Garage S3 API (external); **no app-module dependencies** — no imports from another module, ever |
+| `storage` | provider-neutral `ObjectStoragePort` contract (object references/metadata, checksums) — in code at `S07-06B` — and the Garage adapter that implements it (`S07-06C` put landed, `S07-06D`…`S07-06H` pending); owns the physical objects in Garage · contract [`object-storage.md`](./object-storage.md) (`S02-19`) · consistency/security/lifecycle policy [ADR-024](../adr/ADR-024-object-storage.md) (`S02-20`) — both consumers (`knowledgebase`, `workflowexecution`) use the contract, never the adapter | `AWS SDK for Java v2` (external), Garage S3 API (external); **no app-module dependencies** — no imports from another module, ever |
 | `ai` | model provider adapter, Planner, validation gate, executor, finalizer | `toolexecution` (tool port), `workflowexecution` (SPI), model provider |
 | `usage` | token/cost metering, budget reservation + settlement, quotas | `ai`, `workflowexecution` |
 | `audit` | security/business audit events, immutable append-only history | `common` (redaction), `identity` |
@@ -282,8 +282,8 @@ generates it for documents; `workflowexecution` for checkpoint artifacts);
 `storage` stores what it is told. The tenant scope is enforced by the owning
 module against PostgreSQL *before* the port is called — the adapter never
 decides access, it only moves bytes (the storage access policy is fixed in
-[`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`; the adapter and its code land
-with `S07-06C`…`S07-06H`).
+[`ADR-024`](../adr/ADR-024-object-storage.md), `S02-20`; the adapter's `put` path landed with
+`S07-06C`, the remaining operations with `S07-06D`…`S07-06H`).
 
 ---
 
