@@ -1,7 +1,5 @@
 # Changelog
 
-
-
 # Sprint 7 — Durable execution
 
 ## S07-06E — Garage S3 adapter: `head`, `list` and `delete` (S07-06E).
@@ -35,7 +33,6 @@ The adapter landed `put` and `get` in `S07-06C`/`S07-06D`; the remaining three o
 #### Schema / contract
 No migration, no contract change — `head`/`list`/`delete` are three of the five operations fixed in `object-storage.md` §1 / ADR-013/024; no new module edge, no persistence, no invariant change. No ADR — same rationale.
 
-
 ## S07-06D — Garage S3 adapter: streaming `get` (S07-06D).
 
 - **The lazy body, owned by the caller.** `GarageS3Adapter.get(String key)` implements the S07-06B `get` path: the S3 client is asked for the object with a key built from the caller's (structurally validated, never reinterpreted) `key`; the SDK's streamed body — `ResponseInputStream<GetObjectResponse>`, a lazily-read `InputStream` — is handed to the caller inside the returned `OpenedObject`, never buffered by the adapter. The adapter reads **no body bytes** at `get` time — no `readAllBytes()` anywhere in the production path. Metadata is built from the eagerly-parsed response headers (`contentLength` / `contentType` / `lastModified` / `eTag`) — never from a re-read of the body — so a metadata-only view and the body stream share one underlying response without the adapter holding bytes. The stream is released on success (the caller's `try`-with-resources closes it — the SDK's own `close()` cancels the bounded stream-abort task and tears down the connection) and on failure (the adapter closes it before the typed exception escapes — a rejected object never leaks).
@@ -45,11 +42,28 @@ No migration, no contract change — `head`/`list`/`delete` are three of the fiv
 - **Bounded reads, not bounded time.** The typed config and the shared client bound the transport (S07-06A) — connect/socket/request timeouts and bounded retries. The S3 SDK additionally owns the stream-abort bound (60 s default, fired when the stream was never read) and per-read socket-timeout behavior; the adapter does not add a second time budget in `get` and does not re-invent either. The contract's "bounded read" is a bounded-memory read — never heap-loading — and that is what the tests prove (a 2 MiB large stream read in 64 KiB chunks; the adapter itself performs zero reads).
 - **The client wiring stays as `S07-06C`.** The adapter remains the only place the AWS SDK may appear (`StorageBoundaryTest`), spring-wired through `config.StorageAdapterConfiguration` (`@ConditionalOnProperty` identical to the shared client, `agentflow.storage.enabled=true`), never per-request. No `head`/`list`/`delete` was implemented here — those overrides fail closed with the pending-task marker (`S07-06E`).
 
-**Verification.** `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterTest'` — BUILD SUCCESSFUL, **28 tests, 0 failures** (16 put/contract tests + 12 new get tests: lazy body never read before the caller asks for it, 4 MiB large stream read in 64 KiB chunks (with a both-call-count and per-read-size bound), empty object, blank/traversal key rejected before the provider, `NOT_FOUND`/`ACCESS_DENIED`/`UNAVAILABLE`/`TIMEOUT`/`PERMANENT_FAILURE` mapping, stream release on success and on metadata-failure, no leakage of provider internals into error messages) — XML-verified (`failures="0" errors="0" skipped="0"`). `./gradlew :apps:agentflow-app:integrationTest --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterIT'` — BUILD SUCCESSFUL, **10 tests, 0 failures** against a real `dxflrs/garage:v2.4.1` container (5 put tests + 5 get tests: byte-for-byte round-trip with metadata, 2 MiB large-stream get with bounded chunk reads and sha256 re-verification, empty object, missing key typed not-found, fail-closed get on an object written without a declared checksum) — XML-verified. `./gradlew :apps:agentflow-app:check` green (spotless + unit + architecture + OpenAPI, real exit 0).
+#### What changed
+- `GarageS3Adapter.get` — the lazy streamed body handed to the caller (never `readAllBytes()`; zero reads in the adapter), metadata built from the eagerly-parsed headers, validation before the provider, a typed miss and stream release on success and on failure; the shared error mapper (`mapFailure(throwable, operation)`) now serves `put` and `get`.
+- New unit tests in `GarageS3AdapterTest` (12 — lazy body never read before the caller asks, 4 MiB large stream read in 64 KiB chunks with a both-call-count and per-read-size bound, empty object, blank/traversal key rejected before the provider, the `NOT_FOUND`/`ACCESS_DENIED`/`UNAVAILABLE`/`TIMEOUT`/`PERMANENT_FAILURE` mapping, stream release on success and on metadata-failure, no provider internals leaking into error messages); new integration tests in `GarageS3AdapterIT` (5 — byte-for-byte round-trip with metadata, 2 MiB large-stream get with bounded chunk reads and sha256 re-verification, empty object, missing key typed not-found, fail-closed get on an object written without a declared checksum).
+- Docs — `object-storage.md`, `module-api.md`, `module-map.md`, `architecture/README.md`, `README.md`, `storage/AGENTS.md`, this devlog section, `CHANGELOG.md`.
 
-**Docs.** `docs/architecture/object-storage.md` (landed status paragraph, §11/§11.1 rows, §9 note — put + get), `docs/architecture/module-api.md` (adapter section — put + get implemented), `docs/architecture/module-map.md` (storage row — put + get landed, get pending-tasks note), `docs/architecture/README.md` (storage rows), `README.md` (Object storage — put + get in code), `apps/agentflow-app/src/main/java/com/example/agentflow/storage/AGENTS.md` (package layout + rules — get landed), `docs/devlog/sprint-07-durable-execution.md` (this section), `CHANGELOG.md` (this entry).
+#### Why
+The storage contract §9 requires a bounded-memory read — never heap-loading — and an honest metadata view: a caller that gets a plausible `ObjectMetadata` built from guessed headers would silently misread the object. `get` must therefore share one underlying response between the eagerly-parsed headers and the lazy body stream, refuse to return metadata for an object written without the stored checksum anchor, and release the stream on every path, including failure.
 
-No ADR — `get` is one of the five contract operations fixed in `object-storage.md` §1 / ADR-013/024; no new module edge, no persistence, no invariant change.
+#### Verification
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterTest'` — **28 tests, 0 failures** (16 put/contract + 12 new get tests) — XML-verified (`failures="0" errors="0" skipped="0"`).
+- `./gradlew :apps:agentflow-app:integrationTest --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterIT'` — **10 tests, 0 failures** against a real `dxflrs/garage:v2.4.1` container (5 put + 5 get tests) — XML-verified.
+- `./gradlew :apps:agentflow-app:check` — green (spotless + unit + architecture + OpenAPI).
+
+#### Tests
+- `GarageS3AdapterTest` — 28/28 (12 new get tests: lazy body never read before the caller asks for it, 4 MiB large stream read in 64 KiB chunks with a both-call-count and per-read-size bound, empty object, blank/traversal key rejected before the provider, `NOT_FOUND`/`ACCESS_DENIED`/`UNAVAILABLE`/`TIMEOUT`/`PERMANENT_FAILURE` mapping, stream release on success and on metadata-failure, no provider internals leaking into error messages).
+- `GarageS3AdapterIT` — 10/10 (5 get tests: byte-for-byte round-trip with metadata, 2 MiB large-stream get with bounded chunk reads and sha256 re-verification, empty object, missing key typed not-found, fail-closed get on an object written without a declared checksum).
+
+#### Docs
+`docs/architecture/object-storage.md` (landed status paragraph, §11/§11.1 rows, §9 note — put + get), `docs/architecture/module-api.md` (adapter section — put + get implemented), `docs/architecture/module-map.md` (storage row — put + get landed), `docs/architecture/README.md` (storage rows), `README.md` (Object storage — put + get in code), `apps/agentflow-app/src/main/java/com/example/agentflow/storage/AGENTS.md` (package layout + rules — get landed), `docs/devlog/sprint-07-durable-execution.md` (this section), `CHANGELOG.md` (this entry).
+
+#### Schema / contract
+No migration, no contract change — `get` is one of the five operations fixed in `object-storage.md` §1 / ADR-013/024; no new module edge, no persistence, no invariant change. No ADR — same rationale.
 
 ## S07-06C — Garage S3 adapter: streaming `put` to Garage (S07-06C).
 
@@ -59,9 +73,32 @@ No ADR — `get` is one of the five contract operations fixed in `object-storage
 - **Error mapping (honest, key-free).** `NonRetryableException` (verification failure) → `INVALID_REQUEST`; `AccessDeniedException` and any `403` → `ACCESS_DENIED`; `408`/`504` → `TIMEOUT`; `429`/`5xx` → `UNAVAILABLE` (retryable, `retryable() == true`); any other `AwsServiceException` → `PERMANENT_FAILURE`; `SdkClientException` → `TIMEOUT`/`UNAVAILABLE` (transport fault); anything else → `PERMANENT_FAILURE`. The message never echoes a provider exception detail, key or credential. Concurrency and idempotency: one put per caller stream, the stream is closed in `finally` (release survives failure), no retries of the adapter itself — retry policy stays the provider client's `StandardRetryStrategy` (S07-06A).
 - **The client wiring bug found and fixed.** The SDK's default `requestChecksumCalculation=DEFAULT` (since ~2.27) adds a trailing checksum chunk to every body, which Garage rejects with `Invalid payload signature`. The shared client now sets `RequestChecksumCalculation.WHEN_REQUIRED` — the adapter's own checksum is carried in the object metadata, independent of the wire encoding — so S3 puts and the S07-06A singleton client both work against a real Garage.
 
-**Verification.** `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterTest'` — BUILD SUCCESSFUL, **15 tests, 0 failures** (XML-verified); `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.StorageAdapterConfigurationTest' --tests 'com.example.agentflow.StorageClientConfigurationTest'` — BUILD SUCCESSFUL, **3 + 8 tests, 0 failures** (XML-verified — the disabled/enabled wiring is proven through the same `@ConditionalOnProperty` path as the client, and the adapter is only created together with its client); `./gradlew :apps:agentflow-app:integrationTest --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterIT' --rerun-tasks` — BUILD SUCCESSFUL, **5 tests, 0 failures** against a real `dxflrs/garage:v2.4.1` container (the byte-array put, the 2 MiB streaming put, the repeat-put identity, the empty object and the declared-checksum-mismatch rejection — each verified against the object's real `headObject` response: size, content type, `pipeline` metadata and the declared `checksum-sha256`). `./gradlew :apps:agentflow-app:check` green (unit + architecture + formatting + OpenAPI contract).
+#### What changed
+- `GarageS3Adapter` — `put` (bounded 64 KiB chunked `VerifyingInputStream`, declared `contentLength` required, never `readAllBytes()`; adapter-computed SHA-256 over the actual bytes; deterministic overwrite on the same key; no content/key/credential logged; honest error mapping via `mapFailure`).
+- `config.StorageAdapterConfiguration` — wires the adapter (`@ConditionalOnProperty` identical to the shared client). `StorageClientConfiguration` — `requestChecksumCalculation=WHEN_REQUIRED` (the Garage-compatible fix).
+- New unit tests in `GarageS3AdapterTest` (15 — bounded reader, declared-length mismatch, checksum mismatch, empty object, metadata pass-through, empty stream release on failure, error mapping per row, not-implemented ops fail closed) and in `StorageAdapterConfigurationTest` (3 — disabled → no adapter; enabled → one singleton adapter gated on the client; only created with its client); new integration tests in `GarageS3AdapterIT` (5 — byte-array put, 2 MiB streaming put, repeat-put identity, empty object, declared-checksum-mismatch rejection — each verified through the object's real `headObject`).
+- Docs — `object-storage.md`, `module-api.md`, `module-map.md`, `architecture/README.md`, `README.md`, `storage/AGENTS.md`, `CHANGELOG.md`, this devlog section.
 
-**Docs.** `docs/architecture/object-storage.md` (no-code paragraph → adapter-in-code; §11/§11.1 rows marked landed), `docs/architecture/module-api.md` (storage section — adapter in code), `docs/architecture/module-map.md` (storage row — put landed, get/head/list/delete pending), `docs/architecture/README.md` (storage rows), `README.md` (Object storage — the adapter put is in code), `CHANGELOG.md` (this entry), `storage/AGENTS.md` (adapter package — put landed). No ADR — the storage contract and policy are already ADR-013/024; this task lands no new module edge, adds no persistence and changes no invariant. The acceptance criterion "size/content type/checksum metadata confirmed by `head`" is proven through the SDK's own `headObject` in the integration suite (the honest confirmation that the object landed); the adapter's `head` is `S07-06E` — that criterion is honestly reported as pending there, not claimed here.
+#### Why
+The storage contract §9 requires bounded-memory writes and an honest record of what landed: the declared size/checksum must be verified against the actual bytes (a silent mis-sized or mis-checksummed write is the one failure mode that is not otherwise observable), and the Garage client must not add wire-level checksum chunks Garage rejects. `put` is the first landed operation and is the anchor `get`, `head`/`list`/`delete` build on.
+
+#### Verification
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterTest'` — **15 tests, 0 failures** (XML-verified).
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.StorageAdapterConfigurationTest' --tests 'com.example.agentflow.StorageClientConfigurationTest'` — **3 + 8 tests, 0 failures** (XML-verified).
+- `./gradlew :apps:agentflow-app:integrationTest --tests 'com.example.agentflow.storage.adapter.GarageS3AdapterIT' --rerun-tasks` — **5 tests, 0 failures** against a real `dxflrs/garage:v2.4.1` container — XML-verified.
+- `./gradlew :apps:agentflow-app:check` — green (unit + architecture + formatting + OpenAPI).
+
+#### Tests
+- `GarageS3AdapterTest` — 15/15: bounded reader, declared-length mismatch, checksum mismatch, empty object, metadata pass-through, empty stream release on failure, error mapping per row, not-implemented ops fail closed.
+- `StorageAdapterConfigurationTest` — 3/3: disabled → no adapter; enabled → one singleton adapter gated on the client; only created together with its client.
+- `StorageClientConfigurationTest` — 8/8.
+- `GarageS3AdapterIT` — 5/5: byte-array put, 2 MiB streaming put, repeat-put identity, empty object, declared-checksum-mismatch rejection — each verified through the object's real `headObject` (size, content type, `pipeline` metadata, declared `checksum-sha256`).
+
+#### Docs
+`docs/architecture/object-storage.md` (no-code paragraph → adapter-in-code; §11/§11.1 rows marked landed), `docs/architecture/module-api.md` (storage section — adapter in code), `docs/architecture/module-map.md` (storage row — put landed, get/head/list/delete pending), `docs/architecture/README.md` (storage rows), `README.md` (Object storage — the adapter put is in code), `CHANGELOG.md` (this entry), `storage/AGENTS.md` (adapter package — put landed).
+
+#### Schema / contract
+No migration, no contract change — the storage contract/policy are ADR-013/024; no new module edge, no persistence, no invariant change. The acceptance criterion "size/content type/checksum metadata confirmed by `head`" is proven through the SDK's own `headObject` in the integration suite (the honest confirmation that the object landed); the adapter's `head` is `S07-06E` — that criterion is honestly reported as pending there, not claimed here. No ADR — same rationale.
 
 ## S07-06B — Object Storage contract: ObjectStoragePort + value types + contract unit suite (S07-06B).
 
@@ -70,9 +107,31 @@ No ADR — `get` is one of the five contract operations fixed in `object-storage
 - **Contract unit tests — the §9 suite, in code over the contract itself.** The unit suite (`ObjectStoragePortContractTest`) pins the normative contract by reflection: the port exposes exactly `put`/`get`/`head`/`list`/`delete` with the contract's signatures (`head` returns `Optional<ObjectMetadata>`, `list` is `(prefix, cursor, limit)`), every public type in the root package is one of the sanctioned contract types, no public parameter/return/field references an AWS SDK or Garage type, and the error taxonomy's retryability predicate is honest (`UNAVAILABLE`/`TIMEOUT` retry, everything else not). The other suites cover the invariants directly: `ObjectReferenceTest` (key/bucket/content-type/size/sha256 validation), `CreateObjectRequestTest` (blank/oversized keys, content length, metadata bounds, stream presence), `ObjectMetadataTest` (metadata bounds and consistency), `ObjectListPageTest` (page/cursor bounds, limit, ordering), `OpenedObjectTest` (the close-releases-stream contract, close-failure propagation), `ObjectStorageExceptionTest` (typed code, cause, message redaction), `ObjectStoragePortContractTest` (the normative method shape, public-surface sanction, retryability). 78 tests green, 0 failures, XML-verified.
 - **Not implemented here, honestly.** The adapter (`S07-06C`…`S07-06H`) is not built — there is no real S3 call anywhere in this task; the suite is a unit suite over the contract, not an integration suite. Stream-ownership failure and checksum-mismatch-on-put cases are exercised at the contract boundary, not against a live Garage. The namespace rules, tenant-prefix and orphan-reconciliation rules remain document-only (`object-storage.md` §6, ADR-024).
 
-**Verification.** `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.storage.*'` — BUILD SUCCESSFUL, 78 tests, 0 failures (XML-verified per class); `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.architecture.*' --tests 'com.example.agentflow.ArchitectureBoundaryTest'` — StorageBoundaryTest (2) + PackageDependencyGraphTest (4) + NoCyclicModuleDependenciesTest (1) + ArchitectureBoundaryTest (1) + AiProviderPortArchitecturalTest (1) green; `spotlessApply` applied to the new files, `./gradlew :apps:agentflow-app:check` green (unit + architecture + formatting + OpenAPI contract). `./gradlew :apps:agentflow-app:compileJava` green.
+#### What changed
+- `com.example.agentflow.storage.ObjectStoragePort` — exactly five operations (`put` / `get` / `head` / `list` / `delete`), provider-neutral, no AWS SDK type anywhere in its surface.
+- The value types (records) — `ObjectReference`, `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`, `ObjectListPage`, `DeleteResult` — plus `ObjectStorageException` / `ObjectStorageErrorCode` (typed failure taxonomy, honest `retryable()`) and the package-private `StorageValidation` (one home for the key/sha256/size/content-type/metadata/cursor rules).
+- `StorageBoundaryTest` — pins the boundary (no domain module may import `storage.adapter.*` or `software.amazon.awssdk.*`); the unit suite pins the normative contract by reflection (exactly five operations, the normative signature shapes, the sanctioned public surface, the retryability predicate).
+- `storage/AGENTS.md` — the module's nested agent-instruction file (contract, boundary and rules restated).
+- Docs — `object-storage.md`, `module-api.md`, `module-map.md`, `architecture/README.md`, `README.md`, `CHANGELOG.md`, this devlog section.
 
-**Docs.** `docs/architecture/object-storage.md` (§0 no-code paragraph → contract-in-code; §9 unit-suite note; §10 indicative examples note; §11/§11.1 rows marked landed), `docs/architecture/module-api.md` (storage section — the landed public surface and the permitted-public-type list), `docs/architecture/module-map.md` (storage row — contract in code, adapter pending), `docs/architecture/README.md` (storage rows), `README.md` (Object storage — the contract is in code), `CHANGELOG.md` (this entry). No ADR — the storage contract is already ADR-013 / ADR-024; this task lands no new module edge and changes no persistence or invariant. Note: the `storage/AGENTS.md` nested agent-instruction file was created (the module's agent-instruction file, mirroring the other modules' — contract, boundary and rules restated); it is the refinement of the root `AGENTS.md`, never a relaxation of its invariants.
+#### Why
+The S07-06 contract is the load-bearing interface of the storage module: every future adapter (`S07-06C`…`S07-06H`) is a conformance pass against this reviewed spec — a reviewed contract, not a re-interpretation of the plan. The contract must be provider-neutral (no AWS SDK types in its surface), immutable and defensive-copy (value types never trust their caller), and carry exactly one error code per violation class.
+
+#### Verification
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.storage.*'` — **78 tests, 0 failures** (XML-verified per class).
+- `./gradlew :apps:agentflow-app:test --tests 'com.example.agentflow.architecture.*' --tests 'com.example.agentflow.ArchitectureBoundaryTest'` — StorageBoundaryTest (2) + PackageDependencyGraphTest (4) + NoCyclicModuleDependenciesTest (1) + ArchitectureBoundaryTest (1) + AiProviderPortArchitecturalTest (1) — green.
+- `spotlessApply` applied to the new files; `./gradlew :apps:agentflow-app:check` — green (unit + architecture + formatting + OpenAPI contract).
+
+#### Tests
+- `ObjectStoragePortContractTest` — the normative method shape (exactly five operations; `head` returns `Optional<ObjectMetadata>`; `list` is `(prefix, cursor, limit)`), the public-surface sanction (exactly the nine contract types; no AWS SDK/Garage class in any public parameter/return/field), and the honest retryability predicate.
+- `ObjectReferenceTest`, `CreateObjectRequestTest`, `ObjectMetadataTest`, `ObjectListPageTest`, `OpenedObjectTest`, `ObjectStorageExceptionTest` — the invariants directly (key/bucket/content-type/size/sha256 validation; key/content-length/metadata bounds; page/cursor bounds and ordering; close-releases-stream and close-failure propagation; typed code, cause, message redaction).
+- All green — **78 tests, 0 failures** (XML-verified).
+
+#### Docs
+`docs/architecture/object-storage.md` (§0 no-code paragraph → contract-in-code; §9 unit-suite note; §10 indicative examples note; §11/§11.1 rows marked landed), `docs/architecture/module-api.md` (storage section — the landed public surface and the permitted-public-type list), `docs/architecture/module-map.md` (storage row — contract in code, adapter pending), `docs/architecture/README.md` (storage rows), `README.md` (Object storage — the contract is in code), `CHANGELOG.md` (this entry), `storage/AGENTS.md` (the module's nested agent-instruction file).
+
+#### Schema / contract
+No migration, no persistence — the contract is code over the plain JDK, no tables, no repositories. No new module edge (the contract lives in `storage`'s root package). No ADR — the storage contract is already ADR-013 / ADR-024; this task lands no new module edge and changes no persistence or invariant.
 
 ## S07-06A — AWS SDK for Java v2 + typed `agentflow.storage.*` configuration (S07-06A).
 
@@ -81,9 +140,30 @@ No ADR — `get` is one of the five contract operations fixed in `object-storage
 - **Credentials live only in the environment — never in the typed config, never in Git, never in logs.** The S3 client is built from `AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` / `AGENTFLOW_OBJECT_STORAGE_SECRET_KEY` env vars (`StaticCredentialsProvider` with `AwsBasicCredentials`); the typed group has **no credential field** (asserted by reflection in the test — a name-bearing-`access`/`secret`/`password` check on every field of the group). A missing credential while the profile is enabled fails startup with a clear `IllegalStateException` naming both env vars — never a silent run. `StorageClientConfigurationTest` asserts the canary key never appears in any git-tracked file (git-scan, mirroring the S04/REDIS leak fixtures) and that the singleton bean's lifecycle logs carry only bucket/endpoint/path-style/timeout/retry values (no credential material).
 - **One client, no per-request factory.** The singleton `S3Client` bean is created once in a `@Configuration` class (`StorageClientConfiguration`, the same precedent as `RedisConnectionConfiguration`) — the adapter (`S07-06C`+) receives the shared client via injection; no per-request `S3Client` is constructed anywhere. `S3Client.builder()` is configured with `pathStyleAccessEnabled`, `region`, `Apache5HttpClient` `connectionTimeout`/`socketTimeout` from the typed config (the bounded transport settings), and a `StandardRetryStrategy` with `maxAttempts` = `max-retry-attempts` + 1 — the first attempt is always included, so `max-retry-attempts` keeps its documented "number of retries" semantics (never a hardcoded unbounded retry). The deprecated 4.x `ApacheHttpClient` and the `RetryPolicy`/`.retryPolicy(...)` API are not used: the SDK deprecated both in favour of `Apache5HttpClient` and the `RetryStrategy` API (`retryStrategy(...)`). The client is closed in `destroyMethod` so a test context shuts it down cleanly.
 
-**Verification.** `StoragePropertiesTest` (9 — typed defaults, transport settings bind, the three `@Min` bound failures walk the causal chain and assert the kebab-case property name surfaces in a clear error, the public-access default and opt-in lifecycle, invalid public-access fails) and `StorageClientConfigurationTest` (8 — disabled → no client; enabled → singleton client built, singleton-scoped, closed on shutdown; missing endpoint/access key/secret key fail startup; the full lifecycle event carries no credential material; a git-scan over every tracked file asserts the canary access key never leaks) — all green with fresh reports (`--rerun-tasks`: 17/17, 0 failures). `./gradlew :apps:agentflow-app:check` green (unit + architecture + formatting + OpenAPI contract). The `S07-06B` (models / `ObjectStoragePort`) and `S07-06C` (Garage adapter) tasks remain pending and consume this foundation.
+#### What changed
+- `gradle/libs.versions.toml` — `aws-sdk-v2 = "2.59.6"` + the AWS SDK BOM; `apps/agentflow-app/build.gradle.kts` — imports the BOM (`platform(...)`) and declares `s3` + `apache5-client`.
+- `AgentFlowProperties.Storage` — the typed `agentflow.storage.*` group (`enabled`, `endpoint`, `region`, `bucket`, `path-style-addressing`, `connection-timeout-seconds`, `request-timeout-seconds`, `max-retry-attempts`, `public-access`) — no credential field.
+- `StorageClientConfiguration` — the singleton `S3Client` bean, wired only when enabled (`@ConditionalOnProperty`), credentials from the env vars only; closed in `destroyMethod`.
+- `storage/AGENTS.md` — no change (not introduced by this task); docs — `object-storage.md`, `module-api.md`, `architecture/README.md`, `dependency-management.md`, `README.md`, `CHANGELOG.md`, this devlog section.
 
-**Docs.** `docs/architecture/object-storage.md` (the no-code paragraph now names the S07-06A foundation; §11 + §11.1 rows marked landed), `docs/architecture/module-api.md` (storage section: the S07-06A foundation + its `config` home + the boundary note), `docs/architecture/README.md` (storage row), `docs/architecture/dependency-management.md` (AWS SDK row + S07-06A note, honestly marked as a Sprint-1 snapshot not regenerated), `README.md` (Object storage — the typed group, full configuration reference and the required env vars), `CHANGELOG.md` (this entry). No ADR — no new module edge, no BOM bypass, no persistence change, no invariant change; the storage contract/policy are already ADR-013 / ADR-024.
+#### Why
+The storage foundation needs to be reviewed and validated before any adapter lands: the SDK must be BOM-pinned (never an inline pin or a moving version), the configuration must fail startup loudly rather than silently run without the settings it claims, and the client must be one bounded singleton rather than a per-request factory. Credentials must live only in the environment — never in Git, configuration, logs or metadata.
+
+#### Verification
+- `StoragePropertiesTest` — **9 tests** (typed defaults, transport settings bind, the three `@Min` bound failures walk the causal chain and assert the kebab-case property name surfaces in a clear error, the public-access default and opt-in lifecycle, invalid public-access fails) — green with fresh reports (`--rerun-tasks`).
+- `StorageClientConfigurationTest` — **8 tests** (disabled → no client; enabled → singleton client built, singleton-scoped, closed on shutdown; missing endpoint/access key/secret key fail startup; the full lifecycle event carries no credential material; a git-scan over every tracked file asserts the canary access key never leaks) — green, **17/17** total, 0 failures.
+- `./gradlew :apps:agentflow-app:check` — green (unit + architecture + formatting + OpenAPI contract).
+- `dependencies --configuration compileClasspath` — every `software.amazon.awssdk` artifact at `2.59.6`, zero forced overrides.
+
+#### Tests
+- `StoragePropertiesTest` — 9/9.
+- `StorageClientConfigurationTest` — 8/8.
+
+#### Docs
+`docs/architecture/object-storage.md` (the no-code paragraph now names the S07-06A foundation; §11 + §11.1 rows marked landed), `docs/architecture/module-api.md` (storage section: the S07-06A foundation + its `config` home + the boundary note), `docs/architecture/README.md` (storage row), `docs/architecture/dependency-management.md` (AWS SDK row + S07-06A note, honestly marked as a Sprint-1 snapshot not regenerated), `README.md` (Object storage — the typed group, full configuration reference and the required env vars), `CHANGELOG.md` (this entry).
+
+#### Schema / contract
+No migration, no contract change — the typed config group and the `S3Client` bean live in `config`, the same wiring-package precedent as Redis; no new module edge, no BOM bypass, no persistence or invariant change. No ADR — the storage contract/policy are already ADR-013 / ADR-024.
 
 ## S07-18 — Service identity for the durable worker (S07-18).
 
@@ -156,6 +236,16 @@ system audit record without being fabricated.
   the sweep scan carries the run's `created_by` (a run begun with an actor answers the requester; a
   run begun without one answers null — never a fabricated actor).
 - `:apps:agentflow-app:test --tests '*ApprovalExpirySchedulerTest'` — green.
+
+#### Tests
+- `ServiceIdentityTest` — **7/7** (DB-free — the stable subject, the never-presents-a-user-token contract, and the M2M guard: absent/blank secret refuses to build, a real secret constructs the stable subject).
+- `WorkflowWorkerTest` — one case: the stable subject is carried even with a per-instance lease id configured.
+- `ApprovalServiceTest` / `ApprovalRepositoryTest` — the expiry audit record carries the service-principal actor and the requester; the scan projection is extended with the requester (unit + mocked ResultSet).
+- `ApprovalDecisionWriteIT` — integration, real PostgreSQL: the sweep scan carries the run's `created_by` (a run begun with an actor answers the requester; a run begun without one answers null — never a fabricated actor).
+- `ApprovalExpirySchedulerTest` — green.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section.
 
 #### Schema / contract
 No migration, no new contract: the `EXPIRE` audit metadata gains the `requester=<subject>` segment
@@ -440,11 +530,8 @@ The worker loop (S07-08) ran each claimed run to completion, but nothing in prod
 Additive only: no new migration or column, no API change; the transition service keeps its existing lease-fenced `transition`, `pollOnce` gains a shutdown short-circuit, and the only new contract surface is the `AgentFlowProperties.Worker.*` config fields.
 ## S07-12 — Cancel a run (S07-12).
 
-
-
 - **Cooperative cancellation of a run (S07-12).** A user can now ask to cancel a run that is already running: `POST /api/v1/runs/{runId}/cancel` (in `WorkflowRunController`, returns `202`) hands the request to `RunService#requestCancellation(tenantId, runId, source)`, which moves the run `QUEUED → CANCEL_REQUESTED` through the run transition service. Cancel is **idempotent and one-way** (`RequestConflictException` if asked twice; a `no-op` when the run is already terminal or `CANCEL_REQUESTED`), so a duplicate request never fails loudly and never resurrects a run. The run stays `CANCEL_REQUESTED` until a worker observes it; the worker (`WorkflowWorker`) drains cooperatively rather than tearing anything down mid-flight. A step that is already `RUNNING` (holding its lease, executing its `StepHandler`) is **left to finish or fail on its own and its result is kept if it succeeded** — cancellation coordinates a stop at the next safe boundary, not a signal to abort a running side effect. The worker only moves the not-yet-started steps (`PENDING`/`READY`, and — via the new `RETRY_WAIT → CANCELLED` edge in `WorkflowStepState`, so a run parked in retry-backoff can still be cancelled) to `CANCELLED`; **every already-completed step's result and checkpoint is left untouched** (invariant 4: a completed result is never overwritten). Once every step is terminal, `reconcileRun` closes the run to `CANCELLED`. Cancellation therefore never erases a completed result and never moves an already-terminal run. This backs invariant 4 and the S07-12 acceptance criterion; it also fixes the race where a run whose last step is still running could otherwise appear cancelled while a completed result still sits on disk.
 - **Refuse cancel on an already-terminal run.** `POST /api/v1/runs/{runId}/cancel` on a run that has already reached a terminal state (`SUCCEEDED`/`FAILED`/`CANCELLED`) returns `409 Conflict` — the run transition service rejects the terminal→`CANCEL_REQUESTED` transition — so a late or duplicate cancel is a clear conflict, not a silent no-op and never a backwards state change.
-
 
 #### What changed
 - `workflowexecution.web.WorkflowRunController` — adds `POST /api/v1/runs/{runId}/cancel` returning `202 Accepted` (and, through `RunService`, `409` for a terminal run).
@@ -474,7 +561,6 @@ Without a cancel path a stuck or unwanted run can never be stopped; with a naive
 Additive only: no new migration or column (`status` is still `TEXT`; `CANCEL_REQUESTED`/`CANCELLED` already exist on `WorkflowRunState` and `WorkflowStepState`), no change to API pagination, event shapes, or the module boundary beyond the new `/cancel` endpoint; the transition service gains the cancel path, the repository keeps its existing lease-fenced `transition`, and no existing call path changed behaviour.
 ## S07-10 — A retry policy value object with reproducible, bounded backoff (S07-10).
 
-
 - **A retry policy value object with reproducible, bounded backoff (S07-10).** A failed step now has a *configured* answer to "how do I retry?" before the classifier (`S07-11`) even decides whether a fault is retryable. The new `RetryPolicy` (`workflowexecution.domain`, a `record`) is an immutable, dependency-free value object — value-equal like [`Checkpoint`](#s0707--persist-a-redacted-reusable-per-step-checkpoint-for-recovery-s0707) — that captures the five retry parameters: `maxAttempts`, `baseDelay`, `multiplier`, `maxDelay` and `jitter`. It exposes the delay before the next retry — exponential backoff `min(baseDelay * multiplier^(attemptsUsed-1), maxDelay)` — plus two seams that make it testable without the system clock or `Math.random` (invariant 10): `delayMillisForAttempt(attemptsUsed, jitter)` takes the jitter source as a parameter and `nextAttemptTime(from, attemptsUsed)` takes the reference instant. Because it only *computes* rather than sleeps, the worker stores the returned instant (in the attempt row, `S07-14`) and checks `now >= nextAttemptTime` instead of busy-looping. It is **bounded**: `isRetryAllowed(attemptsUsed)` is `attemptsUsed < maxAttempts`, so the `maxAttempts`-th failure is terminal and a step cannot retry forever. The `jitter` flag is honoured — the no-argument call applies full jitter (`random(0,1) * cappedDelay`, which keeps the maximum wait at the cap while spreading retries) when the flag is set and returns the plain capped delay otherwise.
 
 #### What changed
@@ -493,18 +579,15 @@ The classifier (`S07-11`) and the cooperative-shutdown path (`S07-13`) both need
 #### Tests
 `RetryPolicyTest` (14, DB-free, time and randomness injected): exponential backoff progression (`100, 200, 400, 800 ms`), the `maxDelay` cap (saturates, no overflow at `attemptsUsed=50`), a constant `multiplier=1.0`, jitter reproducibility under a fixed fraction, "full jitter never exceeds the cap" over `6 × 500` real draws, an out-of-range jitter fraction rejected, `isRetryAllowed` bounded by `maxAttempts`, `maxAttempts` bounds the total number of attempts, `nextAttemptTime` from an injected instant, value equality, and every invalid-construction case.
 
-#### Configuration
-New group `agentflow.worker.retry.*` (`max-attempts`, `base-delay-seconds`, `multiplier`, `max-delay-seconds`, `jitter`).
-
 #### Docs
 `docs/domain-glossary.md` §5 gains a *Retry policy* row; this devlog section; `CHANGELOG.md` `[Unreleased] → Added`.
 
+#### Schema / contract
+No migration, no contract, no schema change — `RetryPolicy` is a value object; the config group is new but it is configuration, not an API contract.
 
 ## S07-11 — Classify step failures for a retry decision (S07-11).
 
-
 - **Classify step failures into a retry decision (S07-11).** A step handler runs untrusted content (invariant 7) and can fail for many reasons; before a failed step is retried or declared terminal the worker must know *which* kind of fault it is, so a failed step's throwable is classified into one canonical {@link ErrorClass} from the shared `common` taxonomy (S02-10), and the retry decision is read off that class. This is the "retry classifier" named in [`docs/architecture/error-taxonomy.md`](../../docs/architecture/error-taxonomy.md). The new `StepFailureClassifier` (`workflowexecution.application`, a pure stateless function — shared through `StepFailureClassifier.defaults()`) maps the thrown throwable most-specifically-first: `ConflictException` and constraint/duplicate-key faults → {@link ErrorClass#CONFLICT}; malformed input (`IllegalArgumentException`, `IllegalStateException`, NPE, cast/format/regex) → {@link ErrorClass#VALIDATION}; `SecurityException` and Spring-Security authentication faults (recognised by the `org.springframework.security.*` class-name prefix, **not** by importing Security — no compile edge) → {@link ErrorClass#AUTHENTICATION}/{@link ErrorClass#AUTHORIZATION}; `SQLException`/connection resets/`ConnectException`/`UnknownHostException`/Kafka network/timeout faults → {@link ErrorClass#TRANSIENT_INFRA}/{@link ErrorClass#PROVIDER_TIMEOUT}; message heuristics cover HTTP 429 ("rate limit" / "throttl" / "too many requests" / "429") → {@link ErrorClass#PROVIDER_RATE_LIMIT} and "timeout"/"connection reset"/"unreachable" messages; a `null` throwable or anything unrecognized → {@link ErrorClass#INTERNAL} (permanent, operator-visible, never an unbounded retry). The retry decision is {@link ErrorClass#isRetryable()} (transient classes retry with bounded exponential backoff from the `RetryPolicy`, `S07-10`; every other class is permanent and the step ends {@link WorkflowStepState#FAILED}). The class mirrors the `messaging` inbox policy (`InboxErrorPolicy`) for the workflow failure surface. The persisted reason is {@link StepFailure#safeReason()} — the fault type and message redacted through the existing {@link CheckpointRedactor} and length-bounded to 300 chars — so the class never lands a secret, a full prompt or a document in `workflow_step_runs.error_summary` or a log (invariant 8).
-
 
 #### What changed
 - `workflowexecution.application.StepFailure` — the classification value object (`record StepFailure(ErrorClass, String)`; `isRetryable()` delegates to `ErrorClass.isRetryable()`); value-equal, pure, like `Checkpoint`.
@@ -535,15 +618,34 @@ The `error-taxonomy.md` documents the {@link ErrorClass} taxonomy but nothing ma
 #### Schema / contract
 Additive only: no new column (`error_code`/`error_summary` already exist, `V3_3_6`, `S05-08`), no change to the API, the `WorkflowStepState` enum, event shapes, or the module boundary; the repository gains a second overload, the transition service a second overload, and no existing 6-arg call path changed behaviour.
 
-
 ## S07-09 — Stale-run recovery loop that re-claims runs whose lease expired (S07-09).
 
-- **Stale-run recovery loop that re-claims runs whose lease expired (S07-09).** The lease model [`ADR-011`](../../docs/adr/ADR-011-workflow-run-lease.md) — one live lease per run, fenced by a monotonic `lease_epoch` — is now *recovered* in code. The new `WorkflowRecoveryScheduler` (`workflowexecution.worker`, `@Component`) is the periodic scan the ADR describes: on a fixed cadence it finds the runs whose run-level lease has expired (`lease_owner` still set but `lease_until` already past) and re-claims each one atomically through the existing `RunLeaseService#claim(tenantId, runId)`, which bumps `lease_epoch` (so the dead owner is fenced, invariant 5) and resets `lease_until` (invariant 2: a stale run is paused, never lost). It is **enabled explicitly** (`@ConditionalOnProperty(prefix = "agentflow.worker", name = "recovery-enabled", havingValue = "true")` — `agentflow.worker.recovery-enabled=true`, default `false`), so lease recovery lives only where a live worker can drive a re-claimed run to progress, never "everywhere by default" (apps/agentflow-app AGENTS.md); it also needs a `WorkflowRunRepository` (`@ConditionalOnBean(DataSource.class)`, wired only when a database is configured). The scan is a **platform-wide** lease scan (`WorkflowRunRepository#findExpiredLeaseRuns(limit)`) — it reads rows by lease state, ordered `lease_until ASC`, bounded by `max-concurrent-runs`, so one pass re-claims a limited batch rather than table-scanning every run (ADR-011 operational consequence); every re-claim is still tenant-scoped through `claim` (invariant 1), so a cross-tenant id is indistinguishable from a missing run. A claim that returns `-1` (terminal run, a worker just took it, or a cross-tenant/missing id) is skipped — the re-claim is idempotent, so a duplicate is a no-op, not a lost run (invariant 3). Each successful reclaim publishes the new `agentflow.workflow.recoveries` counter once (invariant 9 — no `tenantId`/`runId` label). The scheduler owns the reclaim only, not the step execution: once re-claimed the run is owned by this worker and is driven by the [`S07-08`](../../docs/devlog/sprint-07-durable-execution.md) poll loop. **Config:** `agentflow.worker.recovery-enabled` (default `false`), `agentflow.worker.max-concurrent-runs` (default `8`), `agentflow.worker.recovery-fixed-rate-ms` (default `5000`, matching the ADR `recovery-interval-seconds`), wired into `AgentFlowProperties.Worker`; `@EnableScheduling` on `AgentflowApplication` backs the `@Scheduled` cadence. **Tests:** the DB-free `WorkflowRecoverySchedulerTest` (6 — reclaim + counter increment, skip a `-1` claim, claim only the runs that match, the scan is bounded by `max-concurrent-runs`, `IllegalStateException` when no database, and no tenant/run label on the counter) over mocked collaborators; the real-PostgreSQL acceptance suite `WorkflowRecoverySchedulerIT` (`src/integrationTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`): an expired run is re-claimed with the epoch bumped (`5 → 6`) and the lease reset; a terminal run is never re-claimed even with an expired lease; and `max-concurrent-runs = 3` bounds a pass that seeds ten expired runs to exactly three reclaims. The IT isolates each run in its own tenant and cleans the tenant up after each test (`@AfterEach`) because the scan is platform-wide. **Verification:** `:apps:agentflow-app:spotlessCheck` and `:apps:agentflow-app:test` are green (unit + architecture + formatting), and `:apps:agentflow-app:integrationTest --tests com.example.agentflow.workflowexecution.worker.WorkflowRecoverySchedulerIT` is green (3/3, real PostgreSQL). **No** migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); **no** contract, API, schema, dependency or module-boundary change (the scheduler imports only `workflowexecution`, `AgentFlowProperties`, and the external `micrometer` / JDK `javax.sql.DataSource`).
+- **Stale-run recovery loop that re-claims runs whose lease expired (S07-09).** The lease model [`ADR-011`](../../docs/adr/ADR-011-workflow-run-lease.md) — one live lease per run, fenced by a monotonic `lease_epoch` — is now *recovered* in code. The new `WorkflowRecoveryScheduler` (`workflowexecution.worker`, `@Component`) is the periodic scan the ADR describes: on a fixed cadence it finds the runs whose run-level lease has expired (`lease_owner` still set but `lease_until` already past) and re-claims each one atomically through the existing `RunLeaseService#claim(tenantId, runId)`, which bumps `lease_epoch` (so the dead owner is fenced, invariant 5) and resets `lease_until` (invariant 2: a stale run is paused, never lost). It is **enabled explicitly** (`@ConditionalOnProperty(prefix = "agentflow.worker", name = "recovery-enabled", havingValue = "true")` — `agentflow.worker.recovery-enabled=true`, default `false`), so lease recovery lives only where a live worker can drive a re-claimed run to progress, never "everywhere by default" (apps/agentflow-app AGENTS.md); it also needs a `WorkflowRunRepository` (`@ConditionalOnBean(DataSource.class)`, wired only when a database is configured). The scan is a **platform-wide** lease scan (`WorkflowRunRepository#findExpiredLeaseRuns(limit)`) — it reads rows by lease state, ordered `lease_until ASC`, bounded by `max-concurrent-runs`, so one pass re-claims a limited batch rather than table-scanning every run (ADR-011 operational consequence); every re-claim is still tenant-scoped through `claim` (invariant 1), so a cross-tenant id is indistinguishable from a missing run. A claim that returns `-1` (terminal run, a worker just took it, or a cross-tenant/missing id) is skipped — the re-claim is idempotent, so a duplicate is a no-op, not a lost run (invariant 3). Each successful reclaim publishes the new `agentflow.workflow.recoveries` counter once (invariant 9 — no `tenantId`/`runId` label). The scheduler owns the reclaim only, not the step execution: once re-claimed the run is owned by this worker and is driven by the [`S07-08`](../../docs/devlog/sprint-07-durable-execution.md) poll loop.
 
+#### What changed
+- `workflowexecution.worker.WorkflowRecoveryScheduler` (new, `@Component`) — the periodic re-claim scan; `findExpiredLeaseRuns` is the only scan query; each re-claim goes through the existing `RunLeaseService#claim` (epoch bump + `lease_until` reset) and publishes the `agentflow.workflow.recoveries` counter once per successful reclaim.
+- `WorkflowRunRepository#findExpiredLeaseRuns(limit)` — the bounded platform-wide lease scan (ordered `lease_until ASC`, `lease_owner` set + `lease_until < now()`, bounded by `max-concurrent-runs`).
+- `config.AgentFlowProperties.Worker` — new `recovery-enabled` (default `false`), `max-concurrent-runs` (default `8`) and `recovery-fixed-rate-ms` (default `5000`, matching the ADR `recovery-interval-seconds`).
+- `AgentflowApplication` — `@EnableScheduling` backs the `@Scheduled` cadence.
+
+#### Why
+A crashed worker leaves its run owned by a lease that expires — without the recovery loop the run would sit in the expired state until an operator noticed, violating the ADR-011 recovery model and invariant 2 (a stale run is paused, never lost). The scheduler restores the expired run to the live set through the same fenced claim path, so no un-fenced write is ever possible, and the scan is bounded and tenant-scoped so it cannot resurrect a terminal run or cross tenants.
+
+#### Verification
+- `:apps:agentflow-app:spotlessCheck` and `:apps:agentflow-app:test` — green (unit + architecture + formatting).
+- `:apps:agentflow-app:integrationTest --tests com.example.agentflow.workflowexecution.worker.WorkflowRecoverySchedulerIT` — **3/3** (real PostgreSQL, Testcontainers) — an expired run is re-claimed with the epoch bumped (`5 → 6`) and the lease reset; a terminal run is never re-claimed even with an expired lease; and `max-concurrent-runs = 3` bounds a pass that seeds ten expired runs to exactly three reclaims.
+
+#### Tests
+- `WorkflowRecoverySchedulerTest` — **6/6** (DB-free, mocked collaborators — reclaim + counter increment, skip a `-1` claim, claim only the runs that match, the scan is bounded by `max-concurrent-runs`, `IllegalStateException` when no database, and no tenant/run label on the counter).
+- `WorkflowRecoverySchedulerIT` — **3/3** (integration, real PostgreSQL; each run isolated in its own tenant with `@AfterEach` cleanup, because the scan is platform-wide).
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section.
+
+#### Schema / contract
+No migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); no contract, API, schema, dependency or module-boundary change (the scheduler imports only `workflowexecution`, `AgentFlowProperties`, and the external `micrometer` / JDK `javax.sql.DataSource`).
 
 ## S07-08 — A first workflow worker: a durable event loop that runs a claimed run to completion (S07-08).
-
-
 
 - **A first workflow worker: a durable event loop that runs a claimed run to completion (S07-08).** The worker polls a tenant for claimable runs, claims each one (`run.started`) by atomically acquiring the lease, loads the pinned definition version, materializes a `PENDING` row per graph node, and steps the run through the state machine until it is quiescent; it then reconciles the terminal state. A deterministic 2–3 step workflow now completes end to end (proven through the real state machine over a real PostgreSQL in {@link WorkflowWorkerEndToEndIT}, not a mock). The worker never sets status directly — every transition goes through the single transition service with the tenant-scoped conditional update and the `lease_epoch` fence (invariants 4 and 5). It re-checks the run's owner through the tenant-scoped `WorkflowRunRepository#findRun` before claiming (invariant 1), and it publishes the domain events (`run.started`, `step.ready/running/succeeded/failed/skipped`, `run.finished/failed`) that the transactional-outbox forwards — it never mutates state inline and holds no in-flight state of its own, so a restart leaves the run at its last persisted state for the recovery scheduler (S07-09) to resume.
 
@@ -557,11 +659,21 @@ Additive only: no new column (`error_code`/`error_summary` already exist, `V3_3_
 #### Why
 The worker is the consumer of the durable state machine: state changes only through the transition service (invariant 4), leases/fencing fence every step write (invariant 5), and tenant isolation flows through the parent run (invariant 1). Because it drives the persisted machine instead of holding state in memory, recovery never has to reconstruct an in-flight run. The acceptance criterion (a deterministic 2–3 step workflow completes) is backed by the real-machine integration test, not a mock, so the claim is a measurement rather than an assertion (AGENTS.md: any reliability/performance claim is backed by a test or a measurement).
 
+#### Verification
+- `WorkflowWorkerEndToEndIT` (integration, Testcontainers `pgvector/pgvector:0.8.6-pg18`) drives a deterministic two-step workflow through the real migrations, the real state machine and the real worker — asserting the run reaches `SUCCEEDED` with both step checkpoints persisted (`a-done`, `b-done`). This is the real proof of the "a deterministic 2–3 step workflow reaches completion" acceptance criterion (the sibling tasks S07-09/S07-14/S07-15/S07-18 re-verify the same path with the fencing, re-claim, attempt-history and crash-window extensions).
 
+#### Tests
+- `WorkflowWorkerTest` (unit, DB-free, mocked collaborators) — claim / poll / execute / quiesce / fence.
+- `DeterministicStepHandlerTest` (unit, DB-free) — the handler seam over mocked collaborators.
+- `WorkflowWorkerEndToEndIT` (integration, real PostgreSQL) — the end-to-end completion above.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added`; this devlog section.
+
+#### Schema / contract
+No new migration — the `workflow_step_runs` columns (`step_key`, `output_inline`, `lease_epoch`, `attempt`, `created_by`) are reused as-is; the three tenant-scoped repository methods are additive on the existing repository, so the contract surface grows by method, not by table or event shape. No change to the state machine, the API or the module boundary.
 
 ## S07-07 — Persist a redacted, reusable per-step checkpoint for recovery (S07-07).
-
-
 
 - **Persist a redacted, reusable per-step checkpoint for recovery (S07-07).** A completed step's
   output is now stored as a checkpoint the recovery path can reuse instead of re-executing the
@@ -610,11 +722,24 @@ contract a re-execution rather than a silent stale value. `output_ref` is left N
 object-storage path is out of scope until `S15-06`, so the mutual-exclusion `CHECK` simply protects
 that invariant for the future.
 
+#### Verification
+No exact test-count is recorded in the S07-07 entry (the verification was recorded in the S07-07 CHANGELOG summary and in sibling tasks' records); what the entry fixes and proves:
+- Unit tests cover the redactor rules, the adapter's redact/size-reuse decisions, and the repository's tenant/lease/status guard.
+- The migration is verified by the integration suite (`MigrationsTest`): `workflow_step_runs` nullable checkpoint columns, the S07-07/`workflowexecution` attribution and the `output_ref`/`output_inline` mutual exclusion.
 
+#### Tests
+- `CheckpointRedactor` — the redaction rules (bearer/authorization headers, secret JSON keys, social-security numbers, credit-card numbers, emails).
+- `CheckpointAdapter` — the redact/size-reuse decisions (stored `output_schema_version` match; inline-only output).
+- `WorkflowStepRunRepository` — the tenant/lease/status guard on `saveCheckpoint` (tenant-scoped, `lease_epoch` fence, `SUCCEEDED` step only).
+- `MigrationsTest` (integration, real PostgreSQL) — the nullable columns, the S07-07 attribution and the `output_ref`/`output_inline` mutual exclusion.
+
+#### Docs
+`CHANGELOG.md` `[Unreleased] → Added` (S07-07 entry, CHANGELOG-only summary); this devlog section.
+
+#### Schema / contract
+Additive only: one nullable column pair (`output_inline`, `output_schema_version`), the `CHECK(output_ref IS NULL OR output_inline IS NULL)` mutual-exclusion invariant, and no change to the `WorkflowStepState` enum, event shapes, the API or the module boundary — `Checkpoint`/`CheckpointSnapshot` live in `workflowexecution`.
 
 ## S07-06 — Persist the attempt lifecycle so the crash window is diagnosable (S07-06).
-
-
 
 - **Persist the attempt lifecycle so the crash window is diagnosable (S07-06).** The
   `workflow_step_runs` table gains an `attempt_started_at` marker: it is set to `now()` when the
@@ -674,37 +799,92 @@ re-claimed rather than silently failed.
 - Additive only: one nullable column. No change to the API, the `WorkflowStepState` enum, event
   shapes, or the module boundary. No new dependency.
 
-
-
 ## S07-05 — Run-level write fenced by `lease_epoch` (S07-05).
 
+- **Run-level write fenced by `lease_epoch` (S07-05).** The ADR-011 lease model now fences the run's *write*, not just the step's — a stale owner can no longer persist a result after its run has been re-claimed by another worker. Previously the run write (`WorkflowRunRepository#transition`) was guarded only by the optimistic-lock `version` (`AND status = ? AND version = ?`); `S07-05` adds the same fencing primitive the step write already used (`WorkflowStepRunRepository`), checking the run's `lease_epoch`: the new SQL is `... WHERE id = ? AND tenant_id = ? AND status = ? AND version = ? AND lease_epoch = ?`, and `transition` now takes an `expectedLeaseEpoch` argument. The single transition service (`RunStateMachineService`) reads the current snapshot through the tenant-scoped `WorkflowRunRepository#findState` (which now also selects `lease_epoch`) and echoes that epoch back on the write, so the read and the fence close on the same value. A zero-row update — the run is gone, belongs to another tenant, is no longer in the expected state, the `version` is stale, or the `lease_epoch` moved because another worker re-claimed the run — is mapped to `ConflictException` (HTTP 409) instead of silently overwriting the new owner.
 
+#### What changed
+- `WorkflowRunRepository#transition` — now takes `expectedLeaseEpoch`; the new SQL is `... WHERE id = ? AND tenant_id = ? AND status = ? AND version = ? AND lease_epoch = ?`.
+- `WorkflowRunRepository#findState` — now selects `lease_epoch`.
+- `RunStateMachineService` — threads the claimed epoch through every run transition (the read and the fence close on the same value).
+- `RunLeaseService` callers — the new `expectedLeaseEpoch` argument is threaded by every caller (the repository contract changed).
 
-- **Run-level write fenced by `lease_epoch` (S07-05).** The ADR-011 lease model now fences the run's *write*, not just the step's — a stale owner can no longer persist a result after its run has been re-claimed by another worker. Previously the run write (`WorkflowRunRepository#transition`) was guarded only by the optimistic-lock `version` (`AND status = ? AND version = ?`); `S07-05` adds the same fencing primitive the step write already used (`WorkflowStepRunRepository`), checking the run's `lease_epoch`: the new SQL is `... WHERE id = ? AND tenant_id = ? AND status = ? AND version = ? AND lease_epoch = ?`, and `transition` now takes an `expectedLeaseEpoch` argument. The single transition service (`RunStateMachineService`) reads the current snapshot through the tenant-scoped `WorkflowRunRepository#findState` (which now also selects `lease_epoch`) and echoes that epoch back on the write, so the read and the fence close on the same value. A zero-row update — the run is gone, belongs to another tenant, is no longer in the expected state, the `version` is stale, or the `lease_epoch` moved because another worker re-claimed the run — is mapped to `ConflictException` (HTTP 409) instead of silently overwriting the new owner. This satisfies the S07-05 acceptance criterion: **worker A cannot save a result after claim by worker B.** **Tests:** `WorkflowRunRepositoryTest` asserts the 6th bind (`lease_epoch`); `RunStateMachineServiceTest` and `TransitionTableServiceTest` were updated to the 6-arg signature (the stale-owner guard now flows through the service, so the happy-path verify checks `transition(runId, tenant, from, version, leaseEpoch, to)`); the DB-free conflict test still passes a stale epoch. A new real-PostgreSQL integration test (`WorkflowTransitionIntegrationTest#run_transition_with_a_stale_lease_epoch_is_a_conflict`) bumps the seeded run's `lease_epoch` and asserts the second worker's update matches zero rows and becomes a `409` while the run stays in its state — the mirror of the existing step-level `step_transition_with_a_stale_lease_epoch_is_a_conflict`. **Docs:** updated [`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md) (both the run and step writes now fence on `lease_epoch`; a run row added to the stale-owner table), `docs/architecture/run-state-machine.md` §4 (the conditional-update predicate), and `docs/architecture/module-api.md` (the run-write fence noted; the release job's `S07-05` reference was a stale attribution and is corrected — `S07-05` is this fence, not the release job). **Verification — all green:** `:apps:agentflow-app:compileTestJava`, `:compileIntegrationTestJava`, the unit suite (`workflowexecution`, 104 tests, 0 failures) and the transition integration suite (12 tests, 0 failures, real PostgreSQL via Testcontainers `pgvector/pgvector:0.8.6-pg18`). Additive to the schema (the `lease_epoch` column pre-exists, `V3_3_6`); it changes the repository contract (one more guarded parameter), so the new argument must be threaded by every caller.
+#### Why
+The ADR-011 lease model fences every worker write, but only the *step* write actually fenced on `lease_epoch` — the run-level write was guarded by the optimistic-lock `version` alone, so a stale owner could persist a result after re-claim. `S07-05` closes that gap: the run write fences on the same epoch the claim returned, so **worker A cannot save a result after claim by worker B** (the S07-05 acceptance criterion).
 
+#### Verification
+- `:apps:agentflow-app:compileTestJava`, `:compileIntegrationTestJava` — green.
+- Unit suite (`workflowexecution`) — **104 tests, 0 failures**.
+- Transition integration suite — **12 tests, 0 failures** (real PostgreSQL via Testcontainers `pgvector/pgvector:0.8.6-pg18`).
 
+#### Tests
+- `WorkflowRunRepositoryTest` — asserts the 6th bind (`lease_epoch`).
+- `RunStateMachineServiceTest` / `TransitionTableServiceTest` — updated to the 6-arg signature (happy-path verify checks `transition(runId, tenant, from, version, leaseEpoch, to)`; the stale-owner guard flows through the service).
+- `WorkflowTransitionIntegrationTest#run_transition_with_a_stale_lease_epoch_is_a_conflict` — bumps the seeded run's `lease_epoch` and asserts the second worker's update matches zero rows and becomes a `409` while the run stays in its state (the mirror of step-level `step_transition_with_a_stale_lease_epoch_is_a_conflict`).
+
+#### Docs
+[`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md) (both the run and step writes now fence on `lease_epoch`; a run row added to the stale-owner table), `docs/architecture/run-state-machine.md` §4 (the conditional-update predicate), `docs/architecture/module-api.md` (the run-write fence noted; the release job's `S07-05` reference was a stale attribution and is corrected — `S07-05` is this fence, not the release job).
+
+#### Schema / contract
+Additive to the schema (the `lease_epoch` column pre-exists, `V3_3_6`); it changes the repository contract (one more guarded parameter), so the new argument must be threaded by every caller. No migration, no contract/event change.
 
 ## S07-04 — Run-level lease heartbeat (`S07-04`).
 
+- **Run-level lease heartbeat (`S07-04`).** The ADR-011 lease model — one live lease per run, fenced by a monotonic `lease_epoch` — now renews itself in code so a running worker is never mistaken for a crashed owner and its run is not reclaimed prematurely. The new `RunHeartbeatService` (`workflowexecution.application`, `@Service`) extends the run's `lease_until` one lifetime per call, computed through the injected `Clock` (invariant 10 — never the system clock in domain/application code) as `lease_until = clock.instant() + duration-seconds`, and performs the renewal through the new `WorkflowRunRepository#heartbeat`: a single conditional `UPDATE workflow_runs SET lease_until = ? WHERE id = ? AND tenant_id = ? AND lease_owner = ? AND lease_epoch = ?`. The `WHERE` is the fence (invariant 5): the lease is renewed only while the run still belongs to the tenant, is still owned by this worker, and still holds the `lease_epoch` the claim returned — so **an old owner cannot renew its lease after it is re-claimed** (the S07-04 acceptance criterion; the returned row count is `0` = rejected). A heartbeat never bumps the epoch (only the claim does) and never clears the lease. Extension stops per the cancel policy automatically: once a run reaches a state that releases the lease (a `HUMAN_APPROVAL` pause or a cancelled run, per `step-state-machine.md` §10 / `run-state-machine.md`) its `lease_owner` is no longer this worker, so the fenced heartbeat matches zero rows and stops renewing. A rejected heartbeat is counted (`RunHeartbeatService#failedHeartbeats()`) — a per-process counter, carrying no `tenantId`/`runId` (invariant 9), for surfacing as a metric in the S07-09 recovery task. The bean wires only when a `WorkflowRunRepository` (a `@ConditionalOnBean(DataSource.class)` repository) is present, reporting `503`/throwing otherwise when no database is configured (S01-02), matching `RunLeaseService` and the transition service.
+- **Heartbeat woven into the worker loop (gap-b fix).** `RunHeartbeatService` existed but the event loop never called it (S07-08 executed each step synchronously with no lease renewal during a long-running step): a step longer than `duration-seconds` (30 s) would let the run-level lease expire mid-step, so the S07-09 recovery scan would re-claim a run this worker was still executing and fence its writes (a `409`). The fix drives the heartbeat from the step loop: `WorkflowWorker` now `implements DisposableBean`, holds a `RunHeartbeatService` and a single daemon-thread `ScheduledExecutorService`, and in `executeStep` starts a heartbeat task (one `heartbeat(tenantId, runId, owner, epoch)` per `heartbeat-interval-seconds`, on the dedicated thread) right after the step reaches `RUNNING` and cancels it in `finally` the instant the step concludes. The fence is the stable lease `owner` (`RunLeaseService#workerId()`, memoized — never regenerated per call) and the `epoch` `claim` returned, so the fenced update matches. **Critical detail:** the blocking `StepHandler#handle` must run *outside* the poll transaction — otherwise the fenced lease `UPDATE` blocks on the row lock the poll transaction holds from `claim` + `transitionRun(RUNNING)`, and the lease is still never extended. So `WorkflowWorker#pollOnce` is no longer `@Transactional`; the claim and each step/run transition commit through their own `@Transactional` `RunStateMachineService` method, leaving no lock held across the handler. `destroy()` shuts the scheduler down (S07-13 hygiene; the in-flight step's own heartbeat already stops when the step concludes).
 
+#### What changed
+- `RunHeartbeatService` (new, `@Service`) — clock-driven `lease_until` renewal (`clock.instant() + duration-seconds`) through `WorkflowRunRepository#heartbeat`, the fenced conditional update; `failedHeartbeats()` for the rejected case (no tenant/run label).
+- `WorkflowRunRepository#heartbeat` (new) — a single conditional `UPDATE workflow_runs SET lease_until = ? WHERE id = ? AND tenant_id = ? AND lease_owner = ? AND lease_epoch = ?`.
+- `WorkflowWorker` — now `implements DisposableBean`; holds a `RunHeartbeatService` and a single daemon-thread `ScheduledExecutorService`; in `executeStep` starts a heartbeat task after the step reaches `RUNNING` and cancels it in `finally`; `pollOnce` is no longer `@Transactional` (the claim and each step/run transition commit through their own `@Transactional` `RunStateMachineService` method — no lock is held across the handler).
 
-- **Run-level lease heartbeat (`S07-04`).** The ADR-011 lease model — one live lease per run, fenced by a monotonic `lease_epoch` — now renews itself in code so a running worker is never mistaken for a crashed owner and its run is not reclaimed prematurely. The new `RunHeartbeatService` (`workflowexecution.application`, `@Service`) extends the run's `lease_until` one lifetime per call, computed through the injected `Clock` (invariant 10 — never the system clock in domain/application code) as `lease_until = clock.instant() + duration-seconds`, and performs the renewal through the new `WorkflowRunRepository#heartbeat`: a single conditional `UPDATE workflow_runs SET lease_until = ? WHERE id = ? AND tenant_id = ? AND lease_owner = ? AND lease_epoch = ?`. The `WHERE` is the fence (invariant 5): the lease is renewed only while the run still belongs to the tenant, is still owned by this worker, and still holds the `lease_epoch` the claim returned — so **an old owner cannot renew its lease after it is re-claimed** (the S07-04 acceptance criterion; the returned row count is `0` = rejected). A heartbeat never bumps the epoch (only the claim does) and never clears the lease. Extension stops per the cancel policy automatically: once a run reaches a state that releases the lease (a `HUMAN_APPROVAL` pause or a cancelled run, per `step-state-machine.md` §10 / `run-state-machine.md`) its `lease_owner` is no longer this worker, so the fenced heartbeat matches zero rows and stops renewing. A rejected heartbeat is counted (`RunHeartbeatService#failedHeartbeats()`) — a per-process counter, carrying no `tenantId`/`runId` (invariant 9), for surfacing as a metric in the S07-09 recovery task. The bean wires only when a `WorkflowRunRepository` (a `@ConditionalOnBean(DataSource.class)` repository) is present, reporting `503`/throwing otherwise when no database is configured (S01-02), matching `RunLeaseService` and the transition service. **Tests:** the DB-free `RunHeartbeatServiceTest` (4 — the clock-driven renewed `lease_until`, `extended` only on a matching owner+epoch, rejection + failure counting when the run was re-claimed, and `503` when no database) and `WorkflowRunRepositoryHeartbeatTest` (3 — the fenced `WHERE`, the binds, and the zero-row rejection) through a mocked `JdbcTemplate`; the real-PostgreSQL acceptance suite `RunLeaseHeartbeatIT` (`src/integrationTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`): `old_owner_cannot_extend_after_reclaim` (claim → extend → re-claim bumps the epoch → stale owner's heartbeat matches 0 rows, new owner's extends) and `live_owner_heartbeat_extends_until_without_bumping_the_epoch`. **Verification:** `./gradlew check` is green (unit + architecture + spotless + OpenAPI contract gates, 413 unit tests + 6 architecture tests, 0 failures) and `./gradlew :apps:agentflow-app:integrationTest --tests *RunLeaseHeartbeatIT*` is green (2/2, real PostgreSQL). **No** migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); **no** contract, API, schema, dependency or module-boundary change. **Docs:** [`docs/architecture/module-api.md`](../../docs/architecture/module-api.md) now lists `RunLeaseService` (claim) and the new `RunHeartbeatService` (heartbeat) as the `workflowexecution` public lease services (correcting the earlier `LeaseService` placeholder that also bundled the not-yet-implemented release/recovery); [`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md) already fixes the heartbeat model and `docs/domain-glossary.md` §5 already canonicalizes the lease vocabulary; this entry records the implementation.
+#### Why
+Without the heartbeat a long-running step lets the run-level lease expire mid-step, so the S07-09 recovery scan would re-claim a run this worker is still executing and fence its writes (a `409`) — a healthy worker would be mistaken for a crashed owner. The heartbeat renews the lease on a fixed cadence through the same fenced update, and the step loop drives it so no lock is held across the handler.
 
-- **Heartbeat woven into the worker loop (gap-b fix).** `RunHeartbeatService` existed but the event loop never called it (S07-08 executed each step synchronously with no lease renewal during a long-running step): a step longer than `duration-seconds` (30 s) would let the run-level lease expire mid-step, so the S07-09 recovery scan would re-claim a run this worker was still executing and fence its writes (a `409`). The fix drives the heartbeat from the step loop: `WorkflowWorker` now `implements DisposableBean`, holds a `RunHeartbeatService` and a single daemon-thread `ScheduledExecutorService`, and in `executeStep` starts a heartbeat task (one `heartbeat(tenantId, runId, owner, epoch)` per `heartbeat-interval-seconds`, on the dedicated thread) right after the step reaches `RUNNING` and cancels it in `finally` the instant the step concludes. The fence is the stable lease `owner` (`RunLeaseService#workerId()`, memoized — never regenerated per call) and the `epoch` `claim` returned, so the fenced update matches. **Critical detail:** the blocking `StepHandler#handle` must run *outside* the poll transaction — otherwise the fenced lease `UPDATE` blocks on the row lock the poll transaction holds from `claim` + `transitionRun(RUNNING)`, and the lease is still never extended. So `WorkflowWorker#pollOnce` is no longer `@Transactional`; the claim and each step/run transition commit through their own `@Transactional` `RunStateMachineService` method, leaving no lock held across the handler. `destroy()` shuts the scheduler down (S07-13 hygiene; the in-flight step's own heartbeat already stops when the step concludes). **Tests:** the DB-free `WorkflowWorkerHeartbeatTest` (1 — a `SLOW` handler blocks on a latch while the cadence is at its minimum; asserts `heartbeat` is called with the exact `(tenant, run, owner, epoch)` fence while the step is in flight, then the run reconciles to `SUCCEEDED` after release) added to the existing `WorkflowWorkerTest`/`WorkerLifecycleTest`/`WorkflowWorkerShutdownTest` suites (all green). **No** migration, contract, API, schema, dependency or module-boundary change; the transaction-boundary change (one poll = several short commits instead of one) makes each durable state change immediately visible to recovery, which is the intended behaviour. **Docs:** this entry; `WorkflowWorker` Javadoc records the boundary.
+#### Verification
+- `./gradlew check` — green (unit + architecture + spotless + OpenAPI contract gates, **413 unit tests + 6 architecture tests, 0 failures**).
+- `./gradlew :apps:agentflow-app:integrationTest --tests *RunLeaseHeartbeatIT*` — **2/2** (real PostgreSQL): `old_owner_cannot_extend_after_reclaim` (claim → extend → re-claim bumps the epoch → stale owner's heartbeat matches 0 rows, new owner's extends) and `live_owner_heartbeat_extends_until_without_bumping_the_epoch`.
 
+#### Tests
+- `RunHeartbeatServiceTest` — **4/4** (clock-driven renewed `lease_until`; `extended` only on a matching owner+epoch; rejection + failure counting when the run was re-claimed; `503` when no database).
+- `WorkflowRunRepositoryHeartbeatTest` — **3/3** (the fenced `WHERE`, the binds, and the zero-row rejection — mocked `JdbcTemplate`).
+- `RunLeaseHeartbeatIT` — **2/2** (integration, real PostgreSQL).
+- `WorkflowWorkerHeartbeatTest` — **1/1** (a `SLOW` handler blocks on a latch while the cadence is at its minimum; asserts `heartbeat` is called with the exact `(tenant, run, owner, epoch)` fence while the step is in flight, then the run reconciles to `SUCCEEDED` after release) — added to the existing `WorkflowWorkerTest`/`WorkerLifecycleTest`/`WorkflowWorkerShutdownTest` suites (all green).
 
+#### Docs
+[`docs/architecture/module-api.md`](../../docs/architecture/module-api.md) now lists `RunLeaseService` (claim) and the new `RunHeartbeatService` (heartbeat) as the `workflowexecution` public lease services (correcting the earlier `LeaseService` placeholder that also bundled the not-yet-implemented release/recovery); [`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md) already fixes the heartbeat model and `docs/domain-glossary.md` §5 already canonicalizes the lease vocabulary; this entry records the implementation (and the `WorkflowWorker` Javadoc records the transaction-boundary contract).
+
+#### Schema / contract
+No migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); no contract, API, schema, dependency or module-boundary change. The transaction-boundary change (one poll = several short commits instead of one) makes each durable state change immediately visible to recovery, which is the intended behaviour.
 
 ## S07-03 — Atomic workflow-run claim (`S07-03`).
 
+- **Atomic workflow-run claim (`S07-03`).** The lease model [`ADR-011`](../../docs/adr/ADR-011-workflow-run-lease.md) fixes — one live lease per run, fenced by a monotonic `lease_epoch` — is now claimable in code. The new `RunLeaseService` (`workflowexecution.application`, `@Service`) claims a run before a worker executes it: it computes the lease expiry `lease_until = clock.instant() + duration-seconds` through the injected `Clock` (invariant 10 — never the system clock in domain/application code), resolves this worker's identity from `AgentFlowProperties.Worker.instance-id` (`agentflow.worker.instance-id`), generating a UUID when unset so `lease_owner` is never blank on the recovery scan, and performs the atomic claim through the new `WorkflowRunRepository#claim`. The claim is a single conditional `UPDATE workflow_runs SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1 WHERE id = ? AND tenant_id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND (lease_owner IS NULL OR lease_until < now()) RETURNING lease_epoch`: one statement, tenant-scoped in the `WHERE` (invariant 1), matching only a claimable run — not terminal and whose lease is absent or expired — so two racing workers end with exactly one winner (invariant 4) and a zero-row match is indistinguishable from a missing run. The returned `lease_epoch` is the fence the worker must echo on every subsequent write (`S07-05`); `claim` returns it, or `-1` when no row matched (a terminal run, a live owner, or a cross-tenant id). The lease tuning is configuration, not magic numbers — the new `AgentFlowProperties.Worker.Lease` group bound from `agentflow.worker.lease.*` (`duration-seconds = 30`, `heartbeat-interval-seconds = 10`, `recovery-interval-seconds = 5`, the ADR-011 ratios) — and the bean wires only when a `WorkflowRunRepository` (a `@ConditionalOnBean(DataSource.class)` repository) is present, reporting `503`/throwing otherwise when no database is configured (S01-02), matching the transition service.
 
+#### What changed
+- `RunLeaseService` (new, `@Service`) — clock-driven lease computation (`lease_until = clock.instant() + duration-seconds`), worker-identity resolution (`instance-id` or a generated UUID so `lease_owner` is never blank) and the atomic `claim` through `WorkflowRunRepository#claim`.
+- `WorkflowRunRepository#claim` (new) — the single conditional `UPDATE workflow_runs SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1 WHERE id = ? AND tenant_id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND (lease_owner IS NULL OR lease_until < now()) RETURNING lease_epoch` — one statement, tenant-scoped, matching only a claimable run.
+- `AgentFlowProperties.Worker.Lease` (new) — the lease tuning group bound from `agentflow.worker.lease.*`.
 
-- **Atomic workflow-run claim (`S07-03`).** The lease model [`ADR-011`](../../docs/adr/ADR-011-workflow-run-lease.md) fixes — one live lease per run, fenced by a monotonic `lease_epoch` — is now claimable in code. The new `RunLeaseService` (`workflowexecution.application`, `@Service`) claims a run before a worker executes it: it computes the lease expiry `lease_until = clock.instant() + duration-seconds` through the injected `Clock` (invariant 10 — never the system clock in domain/application code), resolves this worker's identity from `AgentFlowProperties.Worker.instance-id` (`agentflow.worker.instance-id`), generating a UUID when unset so `lease_owner` is never blank on the recovery scan, and performs the atomic claim through the new `WorkflowRunRepository#claim`. The claim is a single conditional `UPDATE workflow_runs SET lease_owner = ?, lease_until = ?, lease_epoch = lease_epoch + 1 WHERE id = ? AND tenant_id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND (lease_owner IS NULL OR lease_until < now()) RETURNING lease_epoch`: one statement, tenant-scoped in the `WHERE` (invariant 1), matching only a claimable run — not terminal and whose lease is absent or expired — so two racing workers end with exactly one winner (invariant 4) and a zero-row match is indistinguishable from a missing run. The returned `lease_epoch` is the fence the worker must echo on every subsequent write (`S07-05`); `claim` returns it, or `-1` when no row matched (a terminal run, a live owner, or a cross-tenant id). The lease tuning is configuration, not magic numbers — the new `AgentFlowProperties.Worker.Lease` group bound from `agentflow.worker.lease.*` (`duration-seconds = 30`, `heartbeat-interval-seconds = 10`, `recovery-interval-seconds = 5`, the ADR-011 ratios) — and the bean wires only when a `WorkflowRunRepository` (a `@ConditionalOnBean(DataSource.class)` repository) is present, reporting `503`/throwing otherwise when no database is configured (S01-02), matching the transition service. **Tests:** the DB-free `RunLeaseServiceTest` (4 — the clock-driven `lease_until`, epoch passthrough, `-1` on a zero-row claim, and the configured and generated worker ids) and `WorkflowRunRepositoryClaimTest` (2 — the SQL binds, the tenant-scoped `WHERE`, the terminal exclusion and the absent/expired-lease guard through a mocked `JdbcTemplate`); the real-PostgreSQL acceptance suite `RunLeaseClaimIT` (`src/integrationTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`, never `H2` per `AGENTS.md`): the S07-03 criterion `two_concurrent_claims_leave_exactly_one_owner` (two threads claim one row over independent physical connections, exactly one wins), plus a fresh claim, a live lease not being stolen, a terminal run never re-claimed and an expired lease reclaimed with the epoch bumped. **Verification:** `./gradlew clean check` is green (unit + architecture + spotless + OpenAPI contract gates, 0 failures) and `./gradlew :apps:agentflow-app:integrationTest --tests *RunLeaseClaimIT*` is green (5/5, real PostgreSQL). **No** migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); **no** contract or schema change. **Docs:** [`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md) already names `RunLeaseService` (S07-03) as the claim owner; `docs/domain-glossary.md` §5 already canonicalizes the lease vocabulary; this entry records the implementation.
+#### Why
+The ADR-011 lease model (one live lease per run, fenced by a monotonic `lease_epoch`) needed a single atomic claim path: without it, two racing workers could both execute the same run, and no fence would exist for the worker's later writes. `RunLeaseService#claim` makes the claim one tenant-scoped, epoch-bumping statement so two racing workers end with exactly one winner (invariant 4), and returns the `lease_epoch` the worker must echo on every subsequent write (`S07-05`).
 
+#### Verification
+- `./gradlew clean check` — green (unit + architecture + spotless + OpenAPI contract gates, 0 failures).
+- `./gradlew :apps:agentflow-app:integrationTest --tests *RunLeaseClaimIT*` — **5/5** (real PostgreSQL).
 
+#### Tests
+- `RunLeaseServiceTest` — **4/4** (DB-free — the clock-driven `lease_until`, epoch passthrough, `-1` on a zero-row claim, and the configured and generated worker ids).
+- `WorkflowRunRepositoryClaimTest` — **2/2** (the SQL binds, the tenant-scoped `WHERE`, the terminal exclusion and the absent/expired-lease guard — mocked `JdbcTemplate`).
+- `RunLeaseClaimIT` — **5/5** (integration, real PostgreSQL — the `two_concurrent_claims_leave_exactly_one_owner` criterion: two threads claim one row over independent physical connections, exactly one wins; plus a fresh claim, a live lease not being stolen, a terminal run never re-claimed and an expired lease reclaimed with the epoch bumped).
+
+#### Docs
+[`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md) already names `RunLeaseService` (S07-03) as the claim owner; `docs/domain-glossary.md` §5 already canonicalizes the lease vocabulary; this entry records the implementation.
+
+#### Schema / contract
+No migration change — the three lease columns already exist on `workflow_runs` (`V3_3_6`, `S05-08`); no contract or schema change.
 
 ## S07-02 — Workflow-run lease-recovery index (`S07-02`).
-
-
 
 - **Workflow-run lease-recovery index (`S07-02`).** The durable-execution Sprint 7 lease model
   (`ADR-011`) needs the recovery scheduler to find expired runs efficiently: a run whose
@@ -714,22 +894,28 @@ re-claimed rather than silently failed.
   on `lease_until` (`V3_3_13__add_lease_until_index.sql`,
   `workflow_runs_lease_until_idx`) that turns the recovery scan into an index range scan instead of
   a full table scan. The index is on the lease column only, keeps the lease state separate from the
-  run's business state, and does not duplicate any constraint. **Docs:** updated the migration
-  integration suite (`MigrationsTest`: the ordered apply list now ends at `3.3.13`, plus a
-  `lease_recovery_index_exists` assertion) and `docs/architecture/database-conventions.md` (the
-  index set). **Verification: PARTIAL —** the migration applies in order and the index exists, but
-  the real-PostgreSQL suite (`MigrationsTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`)
-  could not be run in this session because the Docker daemon is not reachable; it is the intended
-  verifier (`./gradlew integrationTest`) and must pass before merge. `./gradlew check` (compile +
-  formatting + architecture + unit gates) is the offline gate run here. The pre-existing columns
-  mean this is a purely additive, forward-only schema change (`ADR-008`); **no** Java, contract,
-  dependency or module-boundary change.
+  run's business state, and does not duplicate any constraint.
 
+#### What changed
+- `V3_3_13__add_lease_until_index.sql` (new migration) — `CREATE INDEX workflow_runs_lease_until_idx ON workflow_runs (lease_until)` — the recovery scan reads `lease_until` and orders by it, so this index is what makes the `findExpiredLeaseRuns` query an index range scan.
+- `MigrationsTest` (updated) — the ordered apply list now ends at `3.3.13`, plus a `lease_recovery_index_exists` assertion.
 
+#### Why
+The recovery scheduler (`S07-09`) finds expired runs by `lease_until < now()`, ordered `lease_until ASC`. Without the index, that is a full table scan of `workflow_runs` on every recovery pass; with it, the scan is a bounded index range scan.
+
+#### Verification
+- **PARTIAL —** the migration applies in order and the index exists, but the real-PostgreSQL suite (`MigrationsTest`, Testcontainers `pgvector/pgvector:0.8.6-pg18`) could not be run in this session because the Docker daemon is not reachable; it is the intended verifier (`./gradlew integrationTest`) and must pass before merge. `./gradlew check` (compile + formatting + architecture + unit gates) is the offline gate run here.
+
+#### Tests
+- `MigrationsTest` (integration, real PostgreSQL) — the ordered apply list ends at `3.3.13`, plus a `lease_recovery_index_exists` assertion. **Not run in this session** (see Verification).
+
+#### Docs
+`docs/architecture/database-conventions.md` (the index set); this devlog section.
+
+#### Schema / contract
+Forward-only, additive (`ADR-008`) — `V3_3_13__add_lease_until_index.sql`; the pre-existing columns mean no column or constraint change. **No** Java, contract, dependency or module-boundary change.
 
 ## S07-01 — Workflow-run lease, heartbeat and recovery model (`S07-01`).
-
-
 
 - **Workflow-run lease, heartbeat and recovery model (`S07-01`).** The durable-execution Sprint 7
   gets its lease decision recorded as [`ADR-011`](../../docs/adr/ADR-011-workflow-run-lease.md): a single
@@ -752,18 +938,28 @@ re-claimed rather than silently failed.
   ownership explicit and crash recovery possible, but a step whose external call crashed mid-flight is
   re-run after re-claim and recorded in attempt history (`S07-06`/`S07-14`), never pretended to be a
   single execution. Fence lives in PostgreSQL (`lease_epoch`), not JVM state (invariant 5). This is
-  the *decision*; the columns already exist (`V3_3_6__create_workflow_runs_and_steps.sql`, `S05-08`)
-  and the expired-lease index is now implemented (`S07-02`, `V3_3_13__add_lease_until_index.sql`),
-  but the claim/heartbeat/recovery services (`S07-03`, `S07-04`, `S07-09`) are not yet implemented,
-  and the ADR records that split honestly. The domain
+  the *decision*: the columns already exist (`V3_3_6__create_workflow_runs_and_steps.sql`, `S05-08`),
+  the expired-lease index is implemented (`S07-02`, `V3_3_13__add_lease_until_index.sql`), and the
+  claim/heartbeat/recovery services now exist (`S07-03` `RunLeaseService`, `S07-04` `RunHeartbeatService`,
+  `S07-09` `WorkflowRecoveryScheduler` — all documented in this file). The domain
   glossary §5 already canonicalizes this exact concept (`lease_owner`/`lease_until`/`lease_epoch`,
-  heartbeat, recovery job), so `docs/domain-glossary.md` needs no change. **Docs:** the new
-  [`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md); the ADR register
-  ([`docs/adr/README.md`](../../docs/adr/README.md), which was also missing the `ADR-010` row, now added)
-  and the [`docs/README.md`](../../docs/README.md) index tree (pointer to the new ADR, alongside the
-  `⚠ planned (S07-17)` `durable-execution.md` line). **Verification: documentation-only — there is no
-  `./gradlew check` gate for a docs change.** Link integrity verified: `git diff --check` passes and
-  every relative in-document link in the new and edited files resolves to a present, on-topic
-  destination (the cited ADR ids, `V3_3_6`, `WorkflowStepRunRepository`, `AgentFlowProperties.Worker.Lease`,
-  the glossary §5 entry and the `S07-02`…`S07-09`/`S07-15`/`S07-17` follow-ups all resolve and are
-  on-topic). **No** Java, contract, schema, migration or dependency change.
+  heartbeat, recovery job), so `docs/domain-glossary.md` needs no change.
+
+#### What changed
+- `docs/adr/ADR-011-workflow-run-lease.md` (new ADR) — the decision this section records.
+- The ADR register (`docs/adr/README.md`, which was also missing the `ADR-010` row, now added), and the `docs/README.md` index tree (pointer to the new ADR, alongside the `⚠ planned (S07-17)` `durable-execution.md` line).
+
+#### Why
+Without a recorded lease/fencing decision, workers could write without a fence, a crashed worker would poison the run silently, and the recovery scan would have no honest model to recover into. `ADR-011` makes the lease model explicit: one live lease per run, held by the worker instance that atomically claims it, expressed in three columns on `workflow_runs`, fenced by `lease_epoch`, detected and reclaimed by the recovery scan.
+
+#### Verification
+- **Documentation-only** — there is no `./gradlew check` gate for a docs change. Link integrity verified: `git diff --check` passes and every relative in-document link in the new and edited files resolves to a present, on-topic destination (the cited ADR ids, `V3_3_6`, `WorkflowStepRunRepository`, `AgentFlowProperties.Worker.Lease`, the glossary §5 entry and the `S07-02`…`S07-09`/`S07-15`/`S07-17` follow-ups all resolve and are on-topic).
+
+#### Tests
+None — documentation/ADR-only change; the model's implementation is tested by the later entries (`S07-02` `MigrationsTest`, `S07-03` `RunLeaseClaimIT`, `S07-04` `RunLeaseHeartbeatIT`, `S07-09` `WorkflowRecoverySchedulerIT`).
+
+#### Docs
+The new [`docs/adr/ADR-011-workflow-run-lease.md`](../../docs/adr/ADR-011-workflow-run-lease.md); the ADR register ([`docs/adr/README.md`](../../docs/adr/README.md), which was also missing the `ADR-010` row, now added) and the [`docs/README.md`](../../docs/README.md) index tree (pointer to the new ADR, alongside the `⚠ planned (S07-17)` `durable-execution.md` line).
+
+#### Schema / contract
+No Java, contract, schema, migration or dependency change — the three columns already exist (`V3_3_6__create_workflow_runs_and_steps.sql`, `S05-08`).
