@@ -29,6 +29,12 @@ springdoc = "3.1.1"
 # 4.1.1 stack (logback 1.5.38, Jackson 3.1.5). Older 7.x lines still target
 # com.fasterxml.jackson (Jackson 2) and would clash with Boot 4.1's Jackson 3.
 logstash-logback-encoder = "9.0"
+# AWS SDK for Java v2 (S07-06A): the official BOM-managed coordinates for the S3 client
+# (Garage, S3-compatible) and the Apache HTTP client that transports the requests. The BOM is
+# consumed with platform(...) in the app so every SDK transitive version comes from it — no
+# module pins an inline version (dependency-management.md). Verified against the official
+# releases before the bump (S01-08 / S07-06A).
+aws-sdk-v2 = "2.59.6"
 [libraries]
 # Bill-of-materials (BOM) artifacts are consumed with platform(...). They carry
 # every Spring-managed transitive version, so nothing is re-pinned elsewhere.
@@ -108,6 +114,14 @@ testcontainers-kafka = { module = "org.testcontainers:testcontainers-kafka" }
 # API. Test-only: it validates producer fixtures against the schema, so a breaking envelope change
 # fails CI. Apache-2.0.
 json-schema-validator = { module = "com.networknt:json-schema-validator", version = "3.0.8" }
+# AWS SDK for Java v2 (S07-06A): the BOM is consumed with platform(...) in the app; the S3 client
+# and the Apache HTTP client (the SDK requires an explicit HTTP client implementation on the
+# classpath — the lightweight url-connection-client is the alternative) are referenced by BOM-managed
+# name, so no version is pinned inline. The HTTP client is the documented default so connection /
+# request timeouts and bounded retries (agentflow.storage.*) actually bind.
+aws-sdk-bom = { module = "software.amazon.awssdk:bom", version.ref = "aws-sdk-v2" }
+aws-sdk-s3 = { module = "software.amazon.awssdk:s3" }
+aws-sdk-apache5-client = { module = "software.amazon.awssdk:apache5-client" }
 
 [plugins]
 # Gradle plugin versions live here too, so a module applies the Boot plugin

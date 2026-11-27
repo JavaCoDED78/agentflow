@@ -26,12 +26,14 @@ module's public-API boundary, enforced by `StorageBoundaryTest` (no `storage.ada
 types, no Garage classes). The adapter is internal (`com.example.agentflow.storage.adapter`, `GarageS3Adapter`)
 and is never imported by any other module.
 
-**This document defines the contract, not the implementation.** No `storage` code exists yet
-(`S07-06A`…`S07-06B` land the models and port; `S07-06C`…`S07-06H` land the adapter). Every Java-shaped
-signature below is an **indicative contract sketch**, not compilable code — the signatures are normative
-in behaviour (arguments, return types, failure codes, semantics), not in syntax. Names, `@`-annotations
-and exact method shapes are settled at implementation time and must not deviate from this contract
-without an ADR.
+**This document defines the contract, not the implementation.** The `storage` module has no code
+yet beyond the S07-06A foundation: the typed `agentflow.storage.*` config (`AgentFlowProperties.Storage`)
+and its opt-in singleton S3 client wiring (`StorageClientConfiguration`) exist today — no `storage`
+root-package code, port or adapter (`S07-06B` lands the models and port; `S07-06C`…`S07-06H` land the
+adapter). Every Java-shaped signature below is an **indicative contract sketch**, not compilable code —
+the signatures are normative in behaviour (arguments, return types, failure codes, semantics), not in
+syntax. Names, `@`-annotations and exact method shapes are settled at implementation time and must not
+deviate from this contract without an ADR.
 
 ## 1. The operations
 
@@ -304,7 +306,7 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 |---|---|
 | `S02-19` (this doc) | Defines the contract — the spec above |
 | `S02-20` (`Accepted`) | ADR-024: consistency/security/lifecycle — the PostgreSQL↔Garage gap, upload/delete state transitions, retry/compensation, orphan cleanup, checksum verification policy, Garage-outage policy, credential separation, key-convention reconciliation |
-| `S07-06A` | AWS SDK for Java v2 + `agentflow.storage.*` typed config |
+| `S07-06A` (landed) | AWS SDK for Java v2 + `agentflow.storage.*` typed config — validated `@ConfigurationProperties` (endpoint/region/bucket/path-style/timeouts/retry limits), env-var credentials, singleton `S3Client` wiring, opt-in |
 | `S07-06B` | Contract unit tests (§9's suite) + `ObjectStoragePort` and the value types in code |
 | `S07-06C/D/E` | Garage `put` / `get` streaming / `head` + idempotent `delete` (+ `list`) |
 | `S07-06F` | Timeout/retry/error mapping |
@@ -322,7 +324,7 @@ against this contract and ADR-024, never as shipped behaviour:
 
 | Sprint | Task | Scenario (planned) |
 |---|---|---|
-| 7 | `S07-06A` | AWS SDK for Java v2 + validated `agentflow.storage.*` typed config (endpoint/region/bucket/timeouts); secrets only from env/Secret references |
+| 7 | `S07-06A` (landed) | AWS SDK for Java v2 + validated `agentflow.storage.*` typed config (endpoint/region/bucket/timeouts); secrets only from env/Secret references |
 | 7 | `S07-06B` | `ObjectStoragePort` + value types in code; §9 contract unit suite over the contract |
 | 7 | `S07-06C` | `put` — streaming write to Garage, deterministic replace on the same immutable key |
 | 7 | `S07-06D` | `get` — bounded streaming read, no `readAllBytes()`; stream released on success/failure/cancellation |

@@ -122,6 +122,15 @@ dependencies {
     // skeleton boots and passes readiness without Redis. Nothing is pinned inline — the version
     // comes from the Spring Boot BOM via the catalog.
     implementation(libs.spring.boot.starter.data.redis)
+    // AWS SDK for Java v2 (S07-06A): the official BOM-managed S3 client + the Apache 5.x HTTP client
+    // (Apache5HttpClient) that transports the requests — the SDK requires an explicit HTTP client
+    // implementation on the classpath. The deprecated 4.x apache-client is not used (S07-06A fix). The SDK is opt-in behind agentflow.storage.enabled (StorageClientConfiguration) —
+    // the skeleton boots and passes readiness with no storage endpoint and no credentials — and the
+    // credentials are read from the environment, never from configuration. BOM-managed; nothing
+    // pinned inline.
+    implementation(platform(libs.aws.sdk.bom))
+    implementation(libs.aws.sdk.s3)
+    implementation(libs.aws.sdk.apache5.client)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Nimbus JOSE (com.nimbusds) is already on the test classpath transitively via the
