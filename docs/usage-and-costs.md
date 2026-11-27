@@ -137,8 +137,9 @@ is bounded before it runs, not billed afterwards. The value vocabulary is [`Budg
 [`BudgetMetric`](../apps/agentflow-app/src/main/java/com/example/agentflow/usage/domain/BudgetMetric.java)
 (`COST` / `TOKEN`), [`BudgetReservation`](../apps/agentflow-app/src/main/java/com/example/agentflow/usage/domain/BudgetReservation.java)
 (`reservationId`, `tenantId`, `runId`, `metric`, `reservedAmount`, `settledAt`, `reconciledAt`,
-`attempt`) and [`BudgetCheckResult`](../apps/agentflow-app/src/main/java/com/example/agentflow/usage/domain/BudgetCheckResult.java)
-(`allowed`, `reason`).
+`attempt`) and [`BudgetCheckResult`](../apps/agentflow-app/src/main/java/com/example/agentflow/workflowexecution/domain/BudgetCheckResult.java)
+(`allowed`, `reason`) — the outcome vocabulary of the `BudgetGuard` port, owned by `workflowexecution`,
+not by `usage`.
 
 ---
 

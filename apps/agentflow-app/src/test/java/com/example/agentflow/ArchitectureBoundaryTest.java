@@ -2,6 +2,7 @@ package com.example.agentflow;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
+import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
@@ -35,16 +36,19 @@ import java.util.Set;
  * means adding it to {@link #MODULES} and its allowed column; until then a compile edge to an
  * unknown package is not caught by this gate.
  *
- * <p>Known limitation: the analysed and forbidden sides are matched as exact packages ({@code
- * com.example.agentflow.<module>} without a {@code ..} suffix), so subpackage classes (e.g. {@code
- * knowledgebase.persistence}) are not covered by this gate. See the S02-18 report for the follow-up
- * (subpackage-aware matching).
+ * <p>Subpackage-aware: both the analysed and the forbidden sides are matched with the {@code ..}
+ * (subpackage-including) pattern, so a subpackage class such as {@code knowledgebase.persistence}
+ * importing a forbidden module fails the gate. Test classes are excluded ({@code
+ * ImportOption.DoNotIncludeTests}): this gate pins the compile-time boundaries of the production
+ * wiring, not of the test tree.
  *
  * <p>{@code @AnalyzeClasses} is mandatory on every ArchUnit 1.5.x test class: without it the engine
  * refuses the class and silently runs zero tests (a false pass), which is why the absence of this
  * annotation must never be removed.
  */
-@AnalyzeClasses
+@AnalyzeClasses(
+    packages = "com.example.agentflow",
+    importOptions = {ImportOption.DoNotIncludeTests.class})
 class ArchitectureBoundaryTest {
 
   private static final String ROOT = "com.example.agentflow";
@@ -107,12 +111,12 @@ class ArchitectureBoundaryTest {
       String[] forbidden =
           MODULES.stream()
               .filter(other -> !other.equals(module) && !allowed.contains(other))
-              .map(other -> ROOT + "." + other)
+              .map(other -> ROOT + "." + other + "..")
               .toArray(String[]::new);
       rules.add(
           noClasses()
               .that()
-              .resideInAPackage(ROOT + "." + module)
+              .resideInAPackage(ROOT + "." + module + "..")
               .should()
               .dependOnClassesThat()
               .resideInAnyPackage(forbidden)

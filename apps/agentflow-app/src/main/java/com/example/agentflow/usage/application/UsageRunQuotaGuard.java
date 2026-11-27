@@ -1,7 +1,7 @@
 package com.example.agentflow.usage.application;
 
-import com.example.agentflow.usage.domain.QuotaCheckResult;
 import com.example.agentflow.workflowexecution.application.RunQuotaGuard;
+import com.example.agentflow.workflowexecution.domain.QuotaCheckResult;
 import java.util.Objects;
 import java.util.UUID;
 import javax.sql.DataSource;

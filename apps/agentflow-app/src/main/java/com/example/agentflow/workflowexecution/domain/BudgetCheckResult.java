@@ -1,14 +1,15 @@
-package com.example.agentflow.usage.domain;
+package com.example.agentflow.workflowexecution.domain;
 
 import java.util.Objects;
 
 /**
- * The outcome of a budget check before an operation starts (S12-04 / {@code V3_3_26}): whether the
- * operation may proceed ({@link #allowed()}) and, when it may not, the human-readable reason. The
- * reason names the exhausted dimension and the remaining headroom without inventing a cost - the
- * identifiers here are monetary amounts, not high-cardinality metric labels (invariant 9).
+ * The outcome vocabulary of the BudgetGuard port owned by this module (S12-04): the outcome of a
+ * budget check before an operation starts (S12-04 / {@code V3_3_26}).
  *
- * @param allowed whether the operation stays within the budget
+ * <p>The reason names the exhausted dimension and the remaining headroom without inventing a cost -
+ * the identifiers here are small amounts, not high-cardinality metric labels (invariant 9).
+ *
+ * @param allowed whether the operation may proceed
  * @param reason the refusal reason, or {@code null} when {@link #allowed()} is {@code true}
  */
 public record BudgetCheckResult(boolean allowed, String reason) {

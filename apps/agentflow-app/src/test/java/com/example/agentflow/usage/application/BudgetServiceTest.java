@@ -3,12 +3,12 @@ package com.example.agentflow.usage.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.example.agentflow.usage.domain.BudgetCheckResult;
 import com.example.agentflow.usage.domain.BudgetDto;
 import com.example.agentflow.usage.domain.BudgetMetric;
 import com.example.agentflow.usage.domain.BudgetPeriod;
 import com.example.agentflow.usage.domain.BudgetReservation;
 import com.example.agentflow.usage.persistence.BudgetRepository;
+import com.example.agentflow.workflowexecution.domain.BudgetCheckResult;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
