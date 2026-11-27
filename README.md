@@ -209,15 +209,20 @@ The contract is in code (`S07-06B`): `ObjectStoragePort` and the value types
 (`ObjectReference`, `ObjectMetadata`, `CreateObjectRequest`, `OpenedObject`,
 `ObjectListPage`, `DeleteResult`) plus the `ObjectStorageException` +
 `ObjectStorageErrorCode` failure taxonomy, in `com.example.agentflow.storage`;
-the Garage adapter's `put` and `get` paths are in code (`S07-06C`/`S07-06D`):
-`GarageS3Adapter` (`com.example.agentflow.storage.adapter`, bound to the configured bucket)
-streams the caller's stream through a bounded, checksum-verified reader, carries the
-computed `sha256` + actual size in the returned reference and stamps the declared
+the Garage adapter's `put`, `get`, `head`, `list` and `delete` paths are in code
+(`S07-06C`/`S07-06D`/`S07-06E`): `GarageS3Adapter` (`com.example.agentflow.storage.adapter`, bound to
+the configured bucket) streams the caller's stream through a bounded, checksum-verified reader,
+carries the computed `sha256` + actual size in the returned reference and stamps the declared
 checksum on the object as `checksum-sha256` metadata, deterministically overwriting the
 same key on repeat `put`; `get` hands the SDK's lazy body stream to the caller (never buffers it),
 builds the metadata from the eagerly-parsed headers — requiring the stored `checksum-sha256` — and
-releases the stream on success/failure/cancellation; `head`/`list`/`delete` remain pending
-(`S07-06E`…`S07-06H`).
+releases the stream on success/failure/cancellation; `head` reports presence without throwing
+(a missing key yields `Optional.empty()`) with the same stored-checksum anchor; `list` pages over a
+server-side prefix (1–100 per page, cursor passed through to the provider) with one `listObjectsV2`
+call plus one bounded per-item `headObject` — the only honest source of the reference's
+`contentType`/`sha256` — and requires a strictly ascending page; `delete` is idempotent
+(`DELETED` on a present object, `ALREADY_ABSENT` on a missing one, never a failure, never opens
+content).
 
 The rules every object flow obeys (fixed in
 [`ADR-024`](docs/adr/ADR-024-object-storage.md)):

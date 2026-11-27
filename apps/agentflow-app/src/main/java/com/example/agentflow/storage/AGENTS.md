@@ -2,7 +2,7 @@
 
 > **Owner:** `storage` — provider-neutral object storage contract and the Garage adapter that
 > implements it.
-> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code), `S07-06D` (adapter `get` in code).
+> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code), `S07-06D` (adapter `get` in code), `S07-06E` (adapter `head`/`list`/`delete` in code).
 > **Authority:** `docs/architecture/object-storage.md` (the contract), `docs/adr/ADR-024-object-storage.md`
 > (consistency/security/lifecycle policy), `docs/architecture/module-map.md` (owners + dependency
 > direction) and `docs/architecture/module-api.md` (public-API boundary). They are the single source
@@ -54,7 +54,7 @@ PostgreSQL rows.
 ```text
 com.example.agentflow.storage/               ← public API boundary (this file)
 ├── (root)           contract: port, value types, error taxonomy, StorageValidation (internal)
-└── adapter/         GarageS3Adapter — the one adapter, internal — `put` and `get` landed (S07-06C/`S07-06D`); `head`/`list`/`delete` pending (S07-06E…S07-06H)
+└── adapter/         GarageS3Adapter — the one adapter, internal — `put`, `get`, `head`, `list` and `delete` landed (S07-06C/`S07-06D`/`S07-06E`); the full §9 suite lands with `S07-06H`
 ```
 
 The root package is public: another module may import only the nine types above. `adapter`
@@ -83,6 +83,13 @@ The root package is public: another module may import only the nine types above.
   checksum-verified, deterministic overwrite on the same key, bound to the configured bucket; `get`
   landed with `S07-06D` — the SDK's lazy body stream handed to the caller (never buffered), metadata
   built from the eagerly-parsed headers (requires the stored `checksum-sha256`), released on
-  success/failure/cancellation, `NOT_FOUND` on a missing key; the remaining operations land with
-  `S07-06E`…`S07-06H`.
+  success/failure/cancellation, `NOT_FOUND` on a missing key; `head` landed with `S07-06E` — presence
+  without throwing (a missing key yields `Optional.empty()`), the metadata built from the stored
+  headers (same stored-checksum anchor — never a fabricated digest); `list` landed with `S07-06E` —
+  paginated over a structurally-validated server-side prefix (1–100 per page, cursor passed through to
+  the provider), one `listObjectsV2` call plus one bounded per-item `headObject` (the only honest
+  source of the reference's `contentType`/`sha256`), strictly ascending pages, `PERMANENT_FAILURE` on
+  a truncated page without a cursor; `delete` landed with `S07-06E` — idempotent, `DELETED` on a
+  present object, `ALREADY_ABSENT` on a missing one, never a failure, never opens content, and does
+  not require the stored-checksum anchor; the full §9-equivalent suite lands with `S07-06H`.
 - A new `module → module` edge requires an ADR (root `AGENTS.md`).

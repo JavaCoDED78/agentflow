@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.agentflow.storage.CreateObjectRequest;
+import com.example.agentflow.storage.DeleteResult;
+import com.example.agentflow.storage.ObjectListPage;
+import com.example.agentflow.storage.ObjectMetadata;
 import com.example.agentflow.storage.ObjectReference;
 import com.example.agentflow.storage.ObjectStorageErrorCode;
 import com.example.agentflow.storage.ObjectStorageException;
@@ -16,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -39,8 +44,9 @@ import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 
 /**
- * Integration test for {@code S07-06C/D} — the {@code GarageS3Adapter} put and get paths against a
- * real Garage container (the same image the compose stack runs, {@code dxflrs/garage:v2.4.1}).
+ * Integration test for {@code S07-06C/D/E} — the {@code GarageS3Adapter} put, get and
+ * head/list/delete paths against a real Garage container (the same image the compose stack runs,
+ * {@code dxflrs/garage:v2.4.1}).
  *
  * <p>Mirrors the production wiring in {@code StorageClientConfiguration} (endpoint override, region
  * {@code garage}, path-style addressing, static environment credentials, bounded timeouts) so the
@@ -48,16 +54,17 @@ import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
  * prefix — no data is shared between tests and the container is discarded after the suite.
  *
  * <p>The written object's size, content type, metadata and the caller's declared checksum are
- * verified through the SDK's own {@code headObject} — the same operation the {@code S07-06E}
- * adapter will expose through {@code head}; it is not a substitute for that operation, it is the
- * honest confirmation that the object landed in Garage as written.
+ * verified through the SDK's own {@code headObject} — the same operation the {@code head} path
+ * exposes through the adapter; it is the honest confirmation that the object landed in Garage as
+ * written.
  *
  * <p>No bucket or key is accepted from the test body beyond what the adapter is configured — the
  * adapter is bound to its configured bucket — so every assertion uses the adapter's own reference
  * plus the raw SDK confirmation.
  */
 @Testcontainers
-@DisplayName("Garage adapter put and get (integration, real Garage via Testcontainers)")
+@DisplayName(
+    "Garage adapter put/get/head/list/delete (integration, real Garage via Testcontainers)")
 class GarageS3AdapterIT {
 
   private static final String BUCKET = "agentflow-it";
@@ -172,6 +179,10 @@ class GarageS3AdapterIT {
 
   private String uniqueKey(String prefix) {
     return prefix + "/" + UUID.randomUUID() + ".bin";
+  }
+
+  private String uniquePrefix(String prefix) {
+    return prefix + "/" + UUID.randomUUID() + "/";
   }
 
   private static String sha256(byte[] bytes) {
@@ -541,5 +552,297 @@ class GarageS3AdapterIT {
     // The object was never uploaded — the head call confirms nothing landed.
     assertThatThrownBy(() -> head(key))
         .isInstanceOf(software.amazon.awssdk.services.s3.model.NoSuchKeyException.class);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The head path (S07-06E) — presence, metadata, refuses undeclared objects
+  // -------------------------------------------------------------------------------------------
+
+  @Test
+  @DisplayName("head on a stored object returns the stored metadata")
+  void head_on_a_stored_object_returns_the_stored_metadata() {
+    byte[] bytes = "the head object body — S07-06E integration".getBytes();
+    String key = uniqueKey("it/head");
+    String declaredSha256 = sha256(bytes);
+
+    ObjectReference reference =
+        adapter.put(
+            new CreateObjectRequest(
+                key,
+                new ByteArrayInputStream(bytes),
+                "application/octet-stream",
+                (long) bytes.length,
+                declaredSha256,
+                Map.of("pipeline", "extract-v1")));
+
+    ObjectMetadata metadata = adapter.head(key).orElseThrow();
+
+    assertThat(metadata.bucket()).isEqualTo(reference.bucket());
+    assertThat(metadata.key()).isEqualTo(key);
+    assertThat(metadata.contentType()).isEqualTo("application/octet-stream");
+    assertThat(metadata.size()).isEqualTo(bytes.length);
+    assertThat(metadata.sha256()).isEqualTo(declaredSha256);
+    assertThat(metadata.lastModified()).isNotNull();
+    assertThat(metadata.etag()).isNotBlank();
+  }
+
+  @Test
+  @DisplayName("head on a missing key returns empty without throwing")
+  void head_on_a_missing_key_returns_empty() {
+    String key = uniqueKey("it/head-missing");
+
+    assertThat(adapter.head(key)).isEmpty();
+  }
+
+  @Test
+  @DisplayName("head on an empty object reports a zero size anchored to the stored digest")
+  void head_on_an_empty_object_reports_zero_size() {
+    String key = uniqueKey("it/head-empty");
+
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new ByteArrayInputStream(new byte[0]),
+            "application/octet-stream",
+            0L,
+            sha256(new byte[0]),
+            Map.of()));
+
+    ObjectMetadata metadata = adapter.head(key).orElseThrow();
+
+    assertThat(metadata.size()).isZero();
+    assertThat(metadata.sha256()).isEqualTo(sha256(new byte[0]));
+  }
+
+  @Test
+  @DisplayName("head on an object written without a declared checksum fails closed")
+  void head_on_an_object_written_without_a_declared_checksum_fails_closed() {
+    String key = uniqueKey("it/head-undeclared");
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new ByteArrayInputStream(new byte[] {1}),
+            "application/octet-stream",
+            1L,
+            null,
+            Map.of()));
+
+    assertThatThrownBy(() -> adapter.head(key))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE);
+              assertThat(ise.getMessage()).contains("checksum");
+            });
+  }
+
+  @Test
+  @DisplayName("head refuses a traversal key before hitting the provider")
+  void head_rejects_a_traversal_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.head("../traversal.bin"))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The list path (S07-06E) — pagination, validation, empty prefix
+  // -------------------------------------------------------------------------------------------
+
+  @Test
+  @DisplayName("list pages a prefix with a cursor and every item carries its stored metadata")
+  void list_paginates_a_prefix_with_a_cursor() {
+    String prefix = uniquePrefix("it/list");
+    int itemCount = 5;
+    String[] keys = new String[itemCount];
+    String[] sha256s = new String[itemCount];
+    for (int i = 0; i < itemCount; i++) {
+      byte[] bytes = ("list item " + i + " body").getBytes();
+      String key = prefix + String.format("item-%02d.bin", i);
+      keys[i] = key;
+      sha256s[i] = sha256(bytes);
+      adapter.put(
+          new CreateObjectRequest(
+              key,
+              new ByteArrayInputStream(bytes),
+              "application/octet-stream",
+              (long) bytes.length,
+              sha256s[i],
+              Map.of()));
+    }
+
+    // Page through with a small limit — every page carries a strictly ascending, non-overlapping
+    // set of keys, and the cursor chain terminates in an empty terminal page.
+    List<com.example.agentflow.storage.ObjectReference> seen = new ArrayList<>();
+    String cursor = null;
+    int pages = 0;
+    String previousKey = null;
+    while (true) {
+      ObjectListPage page = adapter.list(prefix, cursor, 2);
+      pages++;
+      assertThat(page.items()).isNotEmpty();
+      for (com.example.agentflow.storage.ObjectReference item : page.items()) {
+        assertThat(item.key()).startsWith(prefix);
+        if (previousKey != null) {
+          assertThat(item.key()).isGreaterThan(previousKey);
+        }
+        previousKey = item.key();
+        seen.add(item);
+      }
+      if (!page.hasMore()) {
+        assertThat(page.nextCursor()).isNull();
+        break;
+      }
+      assertThat(page.nextCursor()).isNotBlank();
+      cursor = page.nextCursor();
+      assertThat(pages).as("the pagination chain must terminate").isLessThan(itemCount);
+    }
+
+    assertThat(seen).hasSize(itemCount);
+    assertThat(
+            seen.stream().map(com.example.agentflow.storage.ObjectReference::key).sorted().toList())
+        .isEqualTo(java.util.Arrays.stream(keys).sorted().toList());
+    // Every item's metadata must match the put — the reference is built from the stored head, not
+    // from the list response.
+    for (com.example.agentflow.storage.ObjectReference item : seen) {
+      int index =
+          Integer.parseInt(
+              item.key().substring(prefix.length()).split("\\.")[0].substring("item-".length()));
+      assertThat(item.size()).isEqualTo(("list item " + index + " body").getBytes().length);
+      assertThat(item.sha256()).isEqualTo(sha256s[index]);
+    }
+  }
+
+  @Test
+  @DisplayName("list on a missing prefix returns an empty page without opening content")
+  void list_on_a_missing_prefix_returns_an_empty_page() {
+    String prefix = uniquePrefix("it/list-missing");
+
+    ObjectListPage page = adapter.list(prefix, null, 10);
+
+    assertThat(page.items()).isEmpty();
+    assertThat(page.hasMore()).isFalse();
+    assertThat(page.nextCursor()).isNull();
+  }
+
+  @Test
+  @DisplayName("list rejects a blank prefix before hitting the provider")
+  void list_rejects_a_blank_prefix_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("   ", null, 10))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+  }
+
+  @Test
+  @DisplayName("list rejects a traversal prefix before hitting the provider")
+  void list_rejects_a_traversal_prefix_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("../traversal/", null, 10))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+  }
+
+  @Test
+  @DisplayName("list rejects an out-of-range limit before hitting the provider")
+  void list_rejects_an_out_of_range_limit_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("it/list/", null, 0))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_REQUEST));
+  }
+
+  @Test
+  @DisplayName("list rejects a blank cursor before hitting the provider")
+  void list_rejects_a_blank_cursor_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("it/list/", "   ", 10))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_REQUEST));
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // The delete path (S07-06E) — idempotent removal
+  // -------------------------------------------------------------------------------------------
+
+  @Test
+  @DisplayName("delete removes a stored object and is idempotent on repeat")
+  void delete_removes_a_stored_object_and_is_idempotent() {
+    byte[] bytes = "the delete object body — S07-06E integration".getBytes();
+    String key = uniqueKey("it/delete");
+
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new ByteArrayInputStream(bytes),
+            "application/octet-stream",
+            (long) bytes.length,
+            sha256(bytes),
+            Map.of()));
+
+    assertThat(adapter.delete(key)).isEqualTo(DeleteResult.DELETED);
+    // The object is gone — head confirms it.
+    assertThat(adapter.head(key)).isEmpty();
+    // The second delete is an idempotent success — not a failure.
+    assertThat(adapter.delete(key)).isEqualTo(DeleteResult.ALREADY_ABSENT);
+  }
+
+  @Test
+  @DisplayName("delete on a missing object returns already-absent")
+  void delete_on_a_missing_object_returns_already_absent() {
+    String key = uniqueKey("it/delete-missing");
+
+    assertThat(adapter.delete(key)).isEqualTo(DeleteResult.ALREADY_ABSENT);
+  }
+
+  @Test
+  @DisplayName("delete on an empty object removes it")
+  void delete_on_an_empty_object_removes_it() {
+    String key = uniqueKey("it/delete-empty");
+
+    adapter.put(
+        new CreateObjectRequest(
+            key,
+            new ByteArrayInputStream(new byte[0]),
+            "application/octet-stream",
+            0L,
+            sha256(new byte[0]),
+            Map.of()));
+
+    assertThat(adapter.delete(key)).isEqualTo(DeleteResult.DELETED);
+    assertThat(adapter.head(key)).isEmpty();
+  }
+
+  @Test
+  @DisplayName("delete rejects a blank key before hitting the provider")
+  void delete_rejects_a_blank_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.delete("   "))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+  }
+
+  @Test
+  @DisplayName("delete rejects a traversal key before hitting the provider")
+  void delete_rejects_a_traversal_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.delete("../traversal.bin"))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
   }
 }

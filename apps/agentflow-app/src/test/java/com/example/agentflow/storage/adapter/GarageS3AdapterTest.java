@@ -10,6 +10,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.agentflow.storage.CreateObjectRequest;
+import com.example.agentflow.storage.DeleteResult;
+import com.example.agentflow.storage.ObjectListPage;
+import com.example.agentflow.storage.ObjectMetadata;
 import com.example.agentflow.storage.ObjectReference;
 import com.example.agentflow.storage.ObjectStorageErrorCode;
 import com.example.agentflow.storage.ObjectStorageException;
@@ -19,7 +22,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
@@ -27,19 +32,26 @@ import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.AccessDeniedException;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 /**
- * Unit tests for the {@code S07-06C/D} Garage adapter — the put path (the bounded chunked reader,
- * the declared length/checksum verification, the metadata pass-through) and the get path
- * (bounded-memory streaming, lazy body, typed not-found, stream release on success/failure).
- * DB-free: the shared {@link S3Client} is mocked; the mock reads the request body exactly like the
- * real SDK would (through the body's stream provider), so mid-stream verification failures behave
- * exactly as they do against the live endpoint, and the SDK never retries them.
+ * Unit tests for the {@code S07-06C/D/E} Garage adapter — the put path (the bounded chunked reader,
+ * the declared length/checksum verification, the metadata pass-through), the get path
+ * (bounded-memory streaming, lazy body, typed not-found, stream release on success/failure) and the
+ * head/list/delete paths (presence without throwing, paginated server-side listing, idempotent
+ * delete). DB-free: the shared {@link S3Client} is mocked; the mock reads the request body exactly
+ * like the real SDK would (through the body's stream provider), so mid-stream verification failures
+ * behave exactly as they do against the live endpoint, and the SDK never retries them.
  *
  * <p>The real Garage path (byte array + large stream + repeat-put determinism + size/content-type/
  * checksum-metadata confirmation) is covered by the integration suite — this class pins the
@@ -313,17 +325,569 @@ class GarageS3AdapterTest {
             });
   }
 
+  // ── head / list / delete (S07-06E) ──────────────────────────────────────────────────────
+
+  /** A stored-object response that validates the same way the real Garage response does. */
+  private HeadObjectResponse headResponse(long size, String contentType, Instant lastModified) {
+    return HeadObjectResponse.builder()
+        .contentLength(size)
+        .contentType(contentType)
+        .lastModified(lastModified)
+        .eTag("\"etag-1\"")
+        .metadata(Map.of("checksum-sha256", sha256("hello world".getBytes())))
+        .build();
+  }
+
+  private HeadObjectResponse headResponseMissingChecksum(long size) {
+    return HeadObjectResponse.builder()
+        .contentLength(size)
+        .contentType("application/octet-stream")
+        .lastModified(Instant.parse("2026-11-27T12:00:00Z"))
+        .eTag("\"etag-1\"")
+        .metadata(Map.of())
+        .build();
+  }
+
+  private static S3Object item(String key, long size) {
+    return S3Object.builder().key(key).size(size).eTag("\"etag-1\"").build();
+  }
+
+  /**
+   * Stub the per-item {@code headObject} for the given key→response map. Any key not present in the
+   * map throws {@link NoSuchKeyException}, exactly like the real client would for a missing object.
+   */
+  private void stubHeads(Map<String, HeadObjectResponse> responses) {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenAnswer(
+            inv -> {
+              HeadObjectRequest request = inv.getArgument(0);
+              HeadObjectResponse response = responses.get(request.key());
+              if (response != null) {
+                return response;
+              }
+              throw NoSuchKeyException.builder().build();
+            });
+  }
+
   @Test
-  void not_yet_implemented_operations_fail_closed_with_a_typed_rejection() {
-    assertThatThrownBy(() -> adapter.head("any/key"))
+  void head_returns_metadata_for_a_present_object() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(
+            headResponse(64L, "application/octet-stream", Instant.parse("2026-11-27T12:00:00Z")));
+
+    Optional<ObjectMetadata> metadata = adapter.head("tenant/doc/file.bin");
+
+    assertThat(metadata).isPresent();
+    ObjectMetadata value = metadata.orElseThrow();
+    assertThat(value.bucket()).isEqualTo(BUCKET);
+    assertThat(value.key()).isEqualTo("tenant/doc/file.bin");
+    assertThat(value.contentType()).isEqualTo("application/octet-stream");
+    assertThat(value.size()).isEqualTo(64);
+    assertThat(value.sha256()).isEqualTo(sha256("hello world".getBytes()));
+    assertThat(value.lastModified()).isEqualTo(Instant.parse("2026-11-27T12:00:00Z"));
+    assertThat(value.etag()).isEqualTo("\"etag-1\"");
+  }
+
+  @Test
+  void head_returns_empty_for_a_missing_key_without_throwing() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(NoSuchKeyException.builder().build());
+
+    assertThat(adapter.head("tenant/doc/missing.bin")).isEmpty();
+  }
+
+  @Test
+  void head_rejects_a_blank_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.head("   "))
         .isInstanceOf(ObjectStorageException.class)
-        .satisfies(e -> assertThat(((ObjectStorageException) e).getMessage()).contains("S07-06E"));
-    assertThatThrownBy(() -> adapter.list("any/prefix", null, 10))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+    verify(s3Client, never()).headObject(any(HeadObjectRequest.class));
+  }
+
+  @Test
+  void head_rejects_a_traversal_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.head("../evil.bin"))
         .isInstanceOf(ObjectStorageException.class)
-        .satisfies(e -> assertThat(((ObjectStorageException) e).getMessage()).contains("S07-06E"));
-    assertThatThrownBy(() -> adapter.delete("any/key"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+    verify(s3Client, never()).headObject(any(HeadObjectRequest.class));
+  }
+
+  @Test
+  void head_maps_access_denied_to_access_denied() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(AccessDeniedException.builder().statusCode(403).build());
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/secret.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.ACCESS_DENIED));
+  }
+
+  @Test
+  void head_maps_a_server_error_to_unavailable() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).build());
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.UNAVAILABLE));
+  }
+
+  @Test
+  void head_rejects_a_missing_checksum_metadata_and_never_reports_a_fabricated_digest() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(headResponseMissingChecksum(64L));
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE);
+              assertThat(ise.getMessage()).contains("checksum");
+            });
+  }
+
+  @Test
+  void head_rejects_a_response_missing_the_content_length() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(
+            HeadObjectResponse.builder()
+                .contentType("application/octet-stream")
+                .lastModified(Instant.parse("2026-11-27T12:00:00Z"))
+                .eTag("\"etag-1\"")
+                .metadata(Map.of("checksum-sha256", sha256("hello world".getBytes())))
+                .build());
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void head_rejects_a_response_missing_the_etag() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(
+            HeadObjectResponse.builder()
+                .contentLength(64L)
+                .contentType("application/octet-stream")
+                .lastModified(Instant.parse("2026-11-27T12:00:00Z"))
+                .metadata(Map.of("checksum-sha256", sha256("hello world".getBytes())))
+                .build());
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void head_rejects_a_response_missing_last_modified() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(
+            HeadObjectResponse.builder()
+                .contentLength(64L)
+                .contentType("application/octet-stream")
+                .eTag("\"etag-1\"")
+                .metadata(Map.of("checksum-sha256", sha256("hello world".getBytes())))
+                .build());
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void head_does_not_leak_provider_internals_or_the_object_key_in_error_messages() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(
+            new RuntimeException("secret internal: http://169.254.169.254/latest/meta-data"));
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.getMessage())
+                  .doesNotContain("169.254.169.254")
+                  .doesNotContain("meta-data")
+                  .doesNotContain("tenant/doc");
+            });
+  }
+
+  @Test
+  void head_on_an_empty_object_yields_a_zero_size_metadata_anchored_to_the_stored_digest() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(
+            HeadObjectResponse.builder()
+                .contentLength(0L)
+                .contentType("application/octet-stream")
+                .lastModified(Instant.parse("2026-11-27T12:00:00Z"))
+                .eTag("\"etag-1\"")
+                .metadata(Map.of("checksum-sha256", sha256(new byte[0])))
+                .build());
+
+    ObjectMetadata metadata = adapter.head("tenant/doc/empty.bin").orElseThrow();
+
+    assertThat(metadata.size()).isZero();
+    assertThat(metadata.sha256()).isEqualTo(sha256(new byte[0]));
+  }
+
+  @Test
+  void head_on_an_object_written_without_a_declared_checksum_is_refused() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(headResponseMissingChecksum(64L));
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void list_returns_a_page_with_typed_references_and_a_cursor_for_a_truncated_page() {
+    ListObjectsV2Response page =
+        ListObjectsV2Response.builder()
+            .contents(
+                List.of(item("checkpoints/run-1/0.bin", 10L), item("checkpoints/run-1/1.bin", 20L)))
+            .isTruncated(true)
+            .nextContinuationToken("cursor-2")
+            .build();
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(page);
+    stubHeads(
+        Map.of(
+            "checkpoints/run-1/0.bin",
+            headResponse(10L, "application/octet-stream", Instant.parse("2026-11-27T12:00:00Z")),
+            "checkpoints/run-1/1.bin",
+            headResponse(20L, "application/octet-stream", Instant.parse("2026-11-27T12:00:01Z"))));
+
+    ObjectListPage result = adapter.list("checkpoints/run-1/", null, 10);
+
+    assertThat(result.items()).hasSize(2);
+    assertThat(result.items().get(0).key()).isEqualTo("checkpoints/run-1/0.bin");
+    assertThat(result.items().get(0).size()).isEqualTo(10);
+    assertThat(result.items().get(1).key()).isEqualTo("checkpoints/run-1/1.bin");
+    assertThat(result.items().get(1).size()).isEqualTo(20);
+    assertThat(result.items().get(0).sha256()).isEqualTo(sha256("hello world".getBytes()));
+    assertThat(result.items().get(0).contentType()).isEqualTo("application/octet-stream");
+    assertThat(result.hasMore()).isTrue();
+    assertThat(result.nextCursor()).isEqualTo("cursor-2");
+
+    ArgumentCaptor<ListObjectsV2Request> captor =
+        ArgumentCaptor.forClass(ListObjectsV2Request.class);
+    verify(s3Client).listObjectsV2(captor.capture());
+    assertThat(captor.getValue().prefix()).isEqualTo("checkpoints/run-1/");
+    assertThat(captor.getValue().maxKeys()).isEqualTo(10);
+    assertThat(captor.getValue().continuationToken()).isNull();
+  }
+
+  @Test
+  void list_passes_the_continuation_token_through_to_the_provider() {
+    ListObjectsV2Response page =
+        ListObjectsV2Response.builder()
+            .contents(List.of(item("checkpoints/run-1/0.bin", 10L)))
+            .isTruncated(false)
+            .build();
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(page);
+    stubHeads(
+        Map.of(
+            "checkpoints/run-1/0.bin",
+            headResponse(10L, "application/octet-stream", Instant.now())));
+
+    adapter.list("checkpoints/run-1/", "cursor-1", 5);
+
+    ArgumentCaptor<ListObjectsV2Request> captor =
+        ArgumentCaptor.forClass(ListObjectsV2Request.class);
+    verify(s3Client).listObjectsV2(captor.capture());
+    assertThat(captor.getValue().continuationToken()).isEqualTo("cursor-1");
+  }
+
+  @Test
+  void list_returns_an_empty_page_for_a_missing_prefix_without_opening_content() {
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class)))
+        .thenReturn(ListObjectsV2Response.builder().contents(List.of()).isTruncated(false).build());
+
+    ObjectListPage result = adapter.list("checkpoints/does-not-exist/", null, 10);
+
+    assertThat(result.items()).isEmpty();
+    assertThat(result.hasMore()).isFalse();
+    assertThat(result.nextCursor()).isNull();
+    verify(s3Client, never()).headObject(any(HeadObjectRequest.class));
+  }
+
+  @Test
+  void list_rejects_a_blank_prefix_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("   ", null, 10))
         .isInstanceOf(ObjectStorageException.class)
-        .satisfies(e -> assertThat(((ObjectStorageException) e).getMessage()).contains("S07-06E"));
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+    verify(s3Client, never()).listObjectsV2(any(ListObjectsV2Request.class));
+  }
+
+  @Test
+  void list_rejects_a_traversal_prefix_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("../evil/", null, 10))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+    verify(s3Client, never()).listObjectsV2(any(ListObjectsV2Request.class));
+  }
+
+  @Test
+  void list_rejects_a_blank_cursor_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", "   ", 10))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_REQUEST));
+    verify(s3Client, never()).listObjectsV2(any(ListObjectsV2Request.class));
+  }
+
+  @Test
+  void list_rejects_a_zero_limit_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 0))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_REQUEST));
+    verify(s3Client, never()).listObjectsV2(any(ListObjectsV2Request.class));
+  }
+
+  @Test
+  void list_rejects_a_limit_above_the_max_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 101))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_REQUEST));
+    verify(s3Client, never()).listObjectsV2(any(ListObjectsV2Request.class));
+  }
+
+  @Test
+  void list_rejects_an_unordered_page_as_a_structural_provider_fault() {
+    ListObjectsV2Response page =
+        ListObjectsV2Response.builder()
+            .contents(
+                List.of(item("checkpoints/run-1/b.bin", 10L), item("checkpoints/run-1/a.bin", 20L)))
+            .isTruncated(false)
+            .build();
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(page);
+
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 10))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void list_rejects_a_truncated_page_that_carries_no_continuation_token() {
+    ListObjectsV2Response page =
+        ListObjectsV2Response.builder()
+            .contents(List.of(item("checkpoints/run-1/0.bin", 10L)))
+            .isTruncated(true)
+            .build();
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(page);
+
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 10))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void list_rejects_an_item_missing_a_key() {
+    ListObjectsV2Response page =
+        ListObjectsV2Response.builder()
+            .contents(List.of(S3Object.builder().size(10L).build()))
+            .isTruncated(false)
+            .build();
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(page);
+
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 10))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void list_fails_closed_when_an_item_cannot_be_headed() {
+    ListObjectsV2Response page =
+        ListObjectsV2Response.builder()
+            .contents(List.of(item("checkpoints/run-1/0.bin", 10L)))
+            .isTruncated(false)
+            .build();
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(page);
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(NoSuchKeyException.builder().build());
+
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 10))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.PERMANENT_FAILURE));
+  }
+
+  @Test
+  void list_maps_a_provider_failure_to_the_typed_taxonomy() {
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class)))
+        .thenThrow(AccessDeniedException.builder().statusCode(403).build());
+
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 10))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.ACCESS_DENIED));
+  }
+
+  @Test
+  void list_does_not_leak_provider_internals_or_the_object_key_in_error_messages() {
+    when(s3Client.listObjectsV2(any(ListObjectsV2Request.class)))
+        .thenThrow(
+            new RuntimeException("secret internal: http://169.254.169.254/latest/meta-data"));
+
+    assertThatThrownBy(() -> adapter.list("checkpoints/run-1/", null, 10))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.getMessage())
+                  .doesNotContain("169.254.169.254")
+                  .doesNotContain("meta-data")
+                  .doesNotContain("checkpoints/run-1");
+            });
+  }
+
+  @Test
+  void delete_returns_deleted_for_a_present_object() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(headResponse(64L, "application/octet-stream", Instant.now()));
+
+    DeleteResult result = adapter.delete("tenant/doc/file.bin");
+
+    assertThat(result).isEqualTo(DeleteResult.DELETED);
+    ArgumentCaptor<DeleteObjectRequest> captor = ArgumentCaptor.forClass(DeleteObjectRequest.class);
+    verify(s3Client).deleteObject(captor.capture());
+    assertThat(captor.getValue().bucket()).isEqualTo(BUCKET);
+    assertThat(captor.getValue().key()).isEqualTo("tenant/doc/file.bin");
+  }
+
+  @Test
+  void repeat_delete_returns_already_absent_on_the_second_call() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(headResponse(64L, "application/octet-stream", Instant.now()))
+        .thenThrow(NoSuchKeyException.builder().build());
+
+    assertThat(adapter.delete("tenant/doc/file.bin")).isEqualTo(DeleteResult.DELETED);
+    assertThat(adapter.delete("tenant/doc/file.bin")).isEqualTo(DeleteResult.ALREADY_ABSENT);
+  }
+
+  @Test
+  void delete_returns_already_absent_for_a_missing_object_without_deleting() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(NoSuchKeyException.builder().build());
+
+    assertThat(adapter.delete("tenant/doc/missing.bin")).isEqualTo(DeleteResult.ALREADY_ABSENT);
+    verify(s3Client, never()).deleteObject(any(DeleteObjectRequest.class));
+  }
+
+  @Test
+  void delete_rejects_a_blank_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.delete("   "))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+    verify(s3Client, never()).headObject(any(HeadObjectRequest.class));
+    verify(s3Client, never()).deleteObject(any(DeleteObjectRequest.class));
+  }
+
+  @Test
+  void delete_rejects_a_traversal_key_before_hitting_the_provider() {
+    assertThatThrownBy(() -> adapter.delete("../evil.bin"))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.INVALID_KEY));
+    verify(s3Client, never()).deleteObject(any(DeleteObjectRequest.class));
+  }
+
+  @Test
+  void delete_maps_access_denied_to_access_denied() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(AccessDeniedException.builder().statusCode(403).build());
+
+    assertThatThrownBy(() -> adapter.delete("tenant/doc/secret.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.ACCESS_DENIED));
+    verify(s3Client, never()).deleteObject(any(DeleteObjectRequest.class));
+  }
+
+  @Test
+  void delete_surfaces_a_provider_failure_during_the_delete() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(headResponse(64L, "application/octet-stream", Instant.now()));
+    when(s3Client.deleteObject(any(DeleteObjectRequest.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).build());
+
+    assertThatThrownBy(() -> adapter.delete("tenant/doc/file.bin"))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.UNAVAILABLE));
+  }
+
+  @Test
+  void delete_works_on_an_object_without_a_stored_checksum() {
+    // The presence check must not require the stored checksum anchor — delete is an idempotent
+    // delete, never a metadata report.
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenReturn(headResponseMissingChecksum(64L));
+
+    assertThat(adapter.delete("tenant/doc/no-checksum.bin")).isEqualTo(DeleteResult.DELETED);
+    verify(s3Client).deleteObject(any(DeleteObjectRequest.class));
+  }
+
+  @Test
+  void delete_does_not_leak_provider_internals_or_the_object_key_in_error_messages() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(
+            new RuntimeException("secret internal: http://169.254.169.254/latest/meta-data"));
+
+    assertThatThrownBy(() -> adapter.delete("tenant/doc/file.bin"))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.getMessage())
+                  .doesNotContain("169.254.169.254")
+                  .doesNotContain("meta-data")
+                  .doesNotContain("tenant/doc");
+            });
   }
 
   @Test
