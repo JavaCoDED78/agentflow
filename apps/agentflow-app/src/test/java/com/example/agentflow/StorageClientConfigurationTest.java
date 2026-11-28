@@ -215,8 +215,8 @@ class StorageClientConfigurationTest {
     // never be a bound value, an actuator entry or a toString value (S07-06A acceptance).
     Class<?> type = Storage.class;
     while (type != null && type != Object.class) {
-      // publicAccess is a legitimate, non-credential field (the access policy); the check targets
-      // credential-shaped names only.
+      // The structural check targets credential-shaped names only; there is no public-access
+      // knob anymore either (S07-06G) — the access policy is enforced by the absence of the field.
       for (Field field : type.getDeclaredFields()) {
         String name = field.getName().toLowerCase().replace("-", "").replace("_", "");
         assertThat(name)

@@ -1718,11 +1718,11 @@ public class AgentFlowProperties {
    * <p>The client is <b>opt-in</b>: {@link Storage#isEnabled()} defaults to {@code false}, so the
    * app boots and passes readiness with no endpoint and no credentials; a profile or storage
    * consumer sets it to {@code true} and the {@code agentflow.storage.*} typed config above is the
-   * only thing it can bind. The bucket is <b>private</b>: {@link Storage#getPublicAccess()}
-   * defaults to {@link PublicAccess#DISABLED}, so no object is ever addressable through a public
-   * URL without authorization. Objects are read and written only through the app, which owns the
-   * credentials and re-checks the tenant (invariant 1) on every access; the object-key convention
-   * that namespaces every key by {@code tenantId} ({@link
+   * only thing it can bind. The bucket is <b>private</b>: there is no public-access knob in this
+   * config — public / anonymous access is not configurable and is never permitted (invariant 8;
+   * ADR-024 rule 4). Objects are read and written only through the app, which owns the credentials
+   * and re-checks the tenant (invariant 1) on every access; the object-key convention that
+   * namespaces every key by {@code tenantId} ({@link
    * com.example.agentflow.knowledgebase.domain.DocumentObjectKey}) is a defence-in-depth on top of
    * that app-layer decision.
    */
@@ -1784,14 +1784,6 @@ public class AgentFlowProperties {
      * The S3 region. Garage serves on region {@code garage}; kept configurable for the S3 contract.
      */
     private String region = "garage";
-
-    /**
-     * Whether anonymous / public access to objects is permitted. {@link PublicAccess#DISABLED} by
-     * default: objects are addressed only through the app and never through a public or anonymous
-     * URL (the {@code S10-02} acceptance). {@link PublicAccess#PUBLIC} exists only so an operator
-     * can explicitly opt in; the platform never enables it by default (invariant 8).
-     */
-    private PublicAccess publicAccess = PublicAccess.DISABLED;
 
     /**
      * @return the S3 endpoint (nullable; supplied by a profile, required by the S3 client)
@@ -1903,32 +1895,6 @@ public class AgentFlowProperties {
      */
     public void setRegion(String region) {
       this.region = region;
-    }
-
-    /**
-     * @return whether anonymous / public access is permitted (default {@link
-     *     PublicAccess#DISABLED})
-     */
-    public PublicAccess getPublicAccess() {
-      return publicAccess;
-    }
-
-    /**
-     * @param publicAccess the access policy
-     */
-    public void setPublicAccess(PublicAccess publicAccess) {
-      this.publicAccess = publicAccess;
-    }
-
-    /**
-     * Object-access policy. {@link #DISABLED} (the default) means the bucket is private and objects
-     * are read only through the app; {@link #PUBLIC} opts an operator in to anonymous / public
-     * addressing, which the platform never enables by default (invariant 8 / the {@code S10-02}
-     * acceptance).
-     */
-    public enum PublicAccess {
-      DISABLED,
-      PUBLIC
     }
   }
 

@@ -41,6 +41,7 @@ timeout, a throttling classification or `429`/`5xx`, a `401`/`403`, a model-leve
 or a transport fault; only `UNAVAILABLE`/`TIMEOUT` are retryable (the retry loop itself lives in the
 bounded wired client, never in the adapter) and the provider's request/correlation id, when supplied,
 is preserved on the contract exception.
+The storage access policy landed with `S07-06G` — the runtime credential is least-privilege (read/write/head/list/delete on the working bucket only, never an administrative operation) and is never placed in object metadata, logs, traces or Kafka; public access is not configurable (fail-closed); tenant authorization stays with the consuming application service by PostgreSQL ownership record, never the adapter — see §11.2.
 Java-shaped signatures below are **indicative contract sketches** where they differ from the code;
 where the code is exact, the code is normative. Naming, annotations and exact method shapes must not
 deviate from this contract without an ADR.
@@ -343,6 +344,7 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 | `S07-06D` (landed) | Garage `get` streaming — lazy bounded-memory read, released stream, typed not-found |
 | `S07-06E` (landed) | `head` + paginated `list` + idempotent `delete` |
 | `S07-06F` (landed) | Unified error policy — one mapper for every operation, retryable/permanent classification, requestId correlation |
+| `S07-06G` (landed) | Storage access policy — least-privilege runtime credentials, public access not configurable, no administrative operations at the runtime credential, tenant authorization stays in the consuming application service |
 | `S07-06H` | Garage integration/contract test suite (the §9 suite against a real Garage) |
 
 The contract is **sufficient** for both document originals and workflow artifacts and is **not** a
@@ -365,7 +367,7 @@ against this contract and ADR-024, never as shipped behaviour:
 | 7 | `S07-06D` (landed) | `get` — bounded streaming read, no `readAllBytes()`; stream released on success/failure/cancellation |
 | 7 | `S07-06E` (landed) | `head` + paginated `list` (server-side prefix only) + idempotent `delete` |
 | 7 | `S07-06F` (landed) | Unified error policy — one mapper for every operation, `UNAVAILABLE`/`TIMEOUT` retryable, everything else not; requestId preserved when supplied |
-| 7 | `S07-06G` | Credentials: provisioning/admin vs runtime separation; tenant authorization stays in the consuming application service |
+| 7 | `S07-06G` (landed) | Credentials: provisioning/admin vs runtime separation; public access not configurable (fail-closed); tenant authorization stays in the consuming application service — never the adapter |
 | 7 | `S07-06H` | Garage integration/contract test suite — the §9 suite against a real Garage fixture |
 | 7 | `S07-06I` | `StorageHealthIndicator` + bounded storage metrics (`operation`, `result` — never tenant/key/filename) |
 | 7 | `S07-06J` | Garage adapter developer guide (`docs/storage/garage-s3.md`) |
@@ -383,6 +385,19 @@ against this contract and ADR-024, never as shipped behaviour:
 | 15 | `S15-23` | Kubernetes bucket + runtime credentials provisioning (`Secret` references, rotation) |
 | 15 | `S15-24` | Garage backup/restore — strategy, restore runbook, checksum verification of originals/checkpoints |
 | 15 | `S15-25` | NetworkPolicy + smoke test — only API/ingestion/workflow roles reach Garage; CRUD smoke via `GarageS3Adapter` |
+
+
+### 11.2 The storage access policy (landed — `S07-06G`)
+
+The storage access policy is the contract between the runtime environment and Garage: what the app is allowed to do with the runtime credential, what it must never do, and where tenant authorization lives. The concrete settings are fixed here; the ADR-024 ruling ([ADR-024](../adr/ADR-024-object-storage.md) rule 4/5) is the authority and this section records it in the operational detail.
+
+- **Runtime credential — least privilege.** The app uses one S3 key granted read/write/head/list/delete on the configured bucket only. The key is the single runtime credential the app reads; it is never used to create buckets, keys or metadata, never to revoke or inspect access keys, and never to grant or revoke policies — the adapter source contains no such call (asserted by the `StorageCredentialsSecurityTest` source scan: every `s3Client.<method>(` in the runtime adapter is one of the five contract operations).
+- **Provisioning/admin credential — separate and out-of-process.** Bucket and key creation, rotation and other administrative operations use a separate root/admin credential (or the `garage` CLI via `docker exec`, per ADR-013) — never the app's runtime credential, never the app's env/config. The admin path is operator-driven, out of the app process, and is not part of the runtime data path.
+- **Credentials come from the environment only.** The runtime credential is injected as `AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` / `AGENTFLOW_OBJECT_STORAGE_SECRET_KEY` — never from Git, the image, the application config file, logs, metrics, traces, prompts or responses. The typed `agentflow.storage.*` group carries no credential field (asserted by the `S07-06A` structural test), so a secret can never be bound into config, dumped by a properties export, or logged by Spring. The git-ignored local `.env` provides the localhost defaults; production uses a Kubernetes Secret mounted read-only.
+- **No credential leakage.** Object metadata is caller-supplied (bounded, never secret-shaped) plus the declared `checksum-sha256` — the adapter never stamps credential material (`put_metadata_never_carries_the_runtime_credential`). No error message, exception `toString()` or log line may contain the runtime credential — the contract boundary is message-safe (`error_path_never_echoes_the_runtime_credential`); the canary fixture is git-tracked-scanned by the `S07-06A` suite.
+- **No public access.** The bucket is private; public/anonymous access is not configurable. There is no public-access field or enum in `AgentFlowProperties.Storage` — public/anonymous access can never be opted in, only read through the app (an unknown `agentflow.storage.*` key, such as a stale `public-access=public`, is ignored and fails closed — the bucket stays private). ADR-024 rule 4 already ruled no public buckets; the config no longer carries a knob at all.
+- **Tenant authorization stays in the consuming application service.** `storage` never derives or checks tenant scope — the owning module (`knowledgebase`, `workflowexecution`) derives the tenant from the verified security context (or a stored event re-checked against PostgreSQL), checks access against its own metadata row `(tenantId, resourceId)` and generates the tenant-scoped key itself, then calls the port. The adapter never sees or checks `tenantId` (asserted by the source scan) — it only moves bytes. The adapter is not a tenant-authorization mechanism. The Sprint 10 acceptance (cross-tenant denial at `knowledgebase`) is the exercise of this policy, not a substitute for it.
+- **Tenant authorization is not a storage concern** — the port contract is pinned by `ObjectStoragePortContractTest` (exactly five provider-neutral operations, no AWS SDK types) and the adapter never implements it; a future second provider gains the same guarantee by the same scan.
 
 Every one of these scenarios must be checked against [ADR-024](../adr/ADR-024-object-storage.md)
 (upload/delete policy, failure behaviour, orphan reconciliation, credential separation) and this

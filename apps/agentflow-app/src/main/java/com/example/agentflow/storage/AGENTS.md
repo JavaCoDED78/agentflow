@@ -2,7 +2,7 @@
 
 > **Owner:** `storage` — provider-neutral object storage contract and the Garage adapter that
 > implements it.
-> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code), `S07-06D` (adapter `get` in code), `S07-06E` (adapter `head`/`list`/`delete` in code), `S07-06F` (unified error policy in code).
+> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code), `S07-06D` (adapter `get` in code), `S07-06E` (adapter `head`/`list`/`delete` in code), `S07-06F` (unified error policy in code), `S07-06G` (storage access policy in code).
 > **Authority:** `docs/architecture/object-storage.md` (the contract), `docs/adr/ADR-024-object-storage.md`
 > (consistency/security/lifecycle policy), `docs/architecture/module-map.md` (owners + dependency
 > direction) and `docs/architecture/module-api.md` (public-API boundary). They are the single source
@@ -75,6 +75,12 @@ The root package is public: another module may import only the nine types above.
   the port never sees or checks `tenantId`.
 - No secrets, prompts or document text in object metadata, logs, metrics or traces (contract §5.1 /
   §6; invariant 8); structural secret-shaped metadata is rejected.
+- The runtime credential is least-privilege (read/write/head/list/delete on the working bucket only,
+  never an administrative operation — the adapter source issues only the five contract SDK calls), the
+  runtime and admin credentials are separate (admin is operator-driven, out of the app process), no
+  public-access knob exists (fail-closed) and tenant authorization stays with the consuming application
+  service by PostgreSQL ownership record — never the adapter (`S07-06G`; see
+  [`docs/architecture/object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md) §11.2).
 - Failure codes are a contract, not a convention: a change to a code, a `retryable()` value or a
   constraint requires a contract revision (ADR), not a silent edit.
 - The adapter is wired by `config.StorageAdapterConfiguration` (the same `@ConditionalOnProperty` as
