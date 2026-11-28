@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.agentflow.config.AgentFlowProperties;
 import com.example.agentflow.config.AgentFlowProperties.Storage;
-import com.example.agentflow.config.AgentFlowProperties.Storage.PublicAccess;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
@@ -15,10 +14,11 @@ import org.springframework.boot.validation.autoconfigure.ValidationAutoConfigura
 /**
  * Proves the {@code S10-02} storage-config acceptance through the real {@code @Validated} +
  * {@code @ConfigurationProperties} binding path: the {@code agentflow.storage.*} group binds from
- * configuration with its safe defaults, the bucket is <b>private</b> by default (no public URL),
- * and an invalid value fails startup. DB-free: no {@code DataSource} / S3 dependency, so an {@link
- * ApplicationContextRunner} exercises the configuration-to-bean path without Testcontainers (the
- * same pattern {@code ToolExecutionConfigurationTest} uses for the tool caps).
+ * configuration with its safe defaults, the bucket is <b>private</b> — there is no public-access
+ * knob in the config, so public/anonymous access can never be opted in — and an invalid value fails
+ * startup. DB-free: no {@code DataSource} / S3 dependency, so an {@link ApplicationContextRunner}
+ * exercises the configuration-to-bean path without Testcontainers (the same pattern {@code
+ * ToolExecutionConfigurationTest} uses for the tool caps).
  */
 class StoragePropertiesTest {
 
@@ -131,15 +131,37 @@ class StoragePropertiesTest {
   }
 
   @Test
-  void the_bucket_is_private_by_default_so_no_object_has_a_public_url() {
-    // The S10-02 acceptance: an object is addressed only through the app, never via a public or
-    // anonymous URL. The default access policy is DISABLED, and it can only be changed by an
-    // explicit, opt-in configuration value (see {@link
-    // #public_access_is_reachable_only_by_opt_in()}).
-    runner.run(
-        context ->
-            assertThat(context.getBean(AgentFlowProperties.class).getStorage().getPublicAccess())
-                .isEqualTo(PublicAccess.DISABLED));
+  void no_public_access_knob_exists_in_the_storage_configuration() {
+    // S07-06G: public/anonymous access is forbidden — there is no public-access field anywhere in
+    // the storage config hierarchy, so an operator cannot opt into it, and any unknown
+    // `agentflow.storage.*` key (such as a stale `public-access=public`) is ignored and cannot
+    // change the bucket's access policy (fail-closed). The structure is the whole guarantee.
+    Class<?> type = Storage.class;
+    while (type != null && type != Object.class) {
+      for (java.lang.reflect.Field field : type.getDeclaredFields()) {
+        String name = field.getName().toLowerCase().replace("-", "").replace("_", "");
+        assertThat(name)
+            .as("the storage config must not carry a public-access knob")
+            .doesNotContain("publicaccess")
+            .doesNotContain("publicurl")
+            .doesNotContain("anonymous");
+      }
+      type = type.getSuperclass();
+    }
+  }
+
+  @Test
+  void a_stale_public_access_key_cannot_turn_public_access_on() {
+    // The documented fail-closed behavior: a config key that no longer exists is ignored, so the
+    // bucket stays private no matter what an operator wrote.
+    runner
+        .withPropertyValues("agentflow.storage.public-access=public")
+        .run(
+            context -> {
+              assertThat(context.getStartupFailure()).isNull();
+              Storage storage = context.getBean(AgentFlowProperties.class).getStorage();
+              assertThat(storage).as("the typed storage config must bind").isNotNull();
+            });
   }
 
   @Test
@@ -157,29 +179,5 @@ class StoragePropertiesTest {
               assertThat(storage.getBucket()).isEqualTo("other-bucket");
               assertThat(storage.getRegion()).isEqualTo("eu-west-1");
             });
-  }
-
-  @Test
-  void public_access_is_reachable_only_by_explicit_opt_in() {
-    // PUBLIC exists so an operator can opt in, but it is never the default. Asserting it binds to
-    // PUBLIC only when explicitly set proves the platform cannot reach it by accident.
-    runner
-        .withPropertyValues("agentflow.storage.public-access=public")
-        .run(
-            context ->
-                assertThat(
-                        context.getBean(AgentFlowProperties.class).getStorage().getPublicAccess())
-                    .isEqualTo(PublicAccess.PUBLIC));
-  }
-
-  @Test
-  void an_invalid_public_access_value_fails_startup_through_the_validated_binding() {
-    runner
-        .withPropertyValues("agentflow.storage.public-access=maybe")
-        .run(
-            context ->
-                assertThat(context.getStartupFailure())
-                    .isInstanceOf(ConfigurationPropertiesBindException.class)
-                    .hasMessageContaining("AgentFlowProperties"));
   }
 }

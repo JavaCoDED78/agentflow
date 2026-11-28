@@ -241,7 +241,17 @@ The rules every object flow obeys (fixed in
 - **Tenant authorization stays in the owning module.** `storage` never derives
   or checks tenant scope — the consuming application service authorizes against
   its PostgreSQL row (`(tenantId, resourceId)`) before the port is called; the
-  adapter only moves bytes.
+  adapter only moves bytes. The adapter is not a tenant-authorization mechanism —
+  it never sees or checks `tenantId`.
+- **Credentials and public access.** The runtime credential
+  (`AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` / `_SECRET_KEY`) is least-privilege —
+  read/write/head/list/delete on the configured bucket only — and is never used
+  for administrative operations (bucket/key creation, rotation, policies —
+  those are operator-driven, out of the app). It never reaches object metadata,
+  logs, traces or Kafka; no public-access knob exists in the config, so public
+  access can never be opted in. See
+  [`docs/architecture/object-storage.md`](docs/architecture/object-storage.md) §11.2 and
+  [ADR-024](docs/adr/ADR-024-object-storage.md) rule 4/5.
 - **Checksum verification.** Every `put` verifies the declared `sha256` and
   `contentLength` against the actual bytes (`INVALID_REQUEST` on mismatch); a
   consumer re-verifies the checksum at read before trusting the content. The
@@ -258,7 +268,7 @@ record, only after the object is stored and verified) and delete is
 object-then-terminal (`DELETED` is entered only after a successful object
 delete) — see [`ADR-024`](docs/adr/ADR-024-object-storage.md) for the full
 consistency/security/lifecycle policy. Orphan objects are reconciled by a
-scheduled operator-visible sweep (`S07-06G`/`S10-02F`), never blind deletion;
+scheduled operator-visible sweep (`S10-02F`), never blind deletion;
 retention is consumer-owned.
 
 The configuration is the typed `agentflow.storage.*` group — `@Validated`
@@ -276,9 +286,10 @@ The configuration is the typed `agentflow.storage.*` group — `@Validated`
 - `connection-timeout-seconds` / `request-timeout-seconds` — default 5 / 30,
   both `>= 1`.
 - `max-retry-attempts` — default 3, `>= 0`.
-- `public-access` — `disabled` by default; the bucket is private and an object
-  is never addressable through a public or anonymous URL. `public` is an
-  explicit operator opt-in only, never the default.
+- Public access is not configurable — the group carries no public-access
+  knob; the bucket is private and an object is never addressable through a
+  public or anonymous URL (an unknown `agentflow.storage.*` key is ignored,
+  so the bucket stays private).
 
 The S3 credentials (`AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` /
 `AGENTFLOW_OBJECT_STORAGE_SECRET_KEY`) come from the environment only, never

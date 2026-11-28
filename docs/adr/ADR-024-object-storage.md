@@ -106,6 +106,8 @@ time-bounded, tenant-scoped in the key convention and never the default.
   read/write/head/list/delete on the configured bucket only (Garage grants at
   the key level; a key is granted on buckets). The runtime key is never used to
   create buckets, keys or metadata.
+- *Runtime settings (concrete, `S07-06G`).* The runtime credential is injected as
+  `AGENTFLOW_OBJECT_STORAGE_ACCESS_KEY` / `AGENTFLOW_OBJECT_STORAGE_SECRET_KEY` — never from Git, the image, the application config file, logs, metrics, traces, prompts or responses. The typed `agentflow.storage.*` group carries no credential field (a structural check in the `S07-06A` suite), so a secret can never be bound into config or dumped by a properties export. No credential ever reaches object metadata, an error message or an exception `toString()` (the contract boundary is message-safe — `error_path_never_echoes_the_runtime_credential`), and the runtime adapter never issues an administrative SDK operation (the source scan asserts every `s3Client.<method>(` is one of the five contract operations). Public access is not configurable — there is no public-access knob in `AgentFlowProperties.Storage` at all (an unknown `agentflow.storage.*` key, such as a stale `public-access=public`, is ignored and fails closed); an operator never sees a public-access setting to enable. Tenant authorization is deliberately not implemented by the adapter — the owning module authorizes by PostgreSQL ownership record before the port is called (Sprint 10 acceptance).
 - *Provisioning/admin credential.* Bucket and key creation, rotation and other
   administrative operations use a separate root/admin credential (or the `garage`
   CLI via `docker exec`, per `ADR-013`) — never the app's runtime key, never
@@ -272,7 +274,10 @@ never contain credentials, document text, prompts or object content.
   - `S07-06C`/`S07-06D`/`S07-06H` — the Garage adapter implements the contract
     against this policy (streaming put/get, `head`, idempotent `delete`,
     checksum-verified writes, error classification).
-  - `S07-06G` — the orphan cleanup / reconciliation sweep (`list` over
+  - `S07-06G` (landed) — the storage access policy: least-privilege runtime
+    credentials, public access not configurable, no administrative operations at the
+    runtime credential, tenant authorization left to the consuming application service.
+  - `S10-02F` — the orphan cleanup / reconciliation sweep (`list` over
     tenant-scoped prefixes + `head` + a diff against the metadata rows,
     operator-visible output, never blind deletion).
   - `S10-02` — `knowledgebase`'s upload path implements rule 2 (object → verify →
