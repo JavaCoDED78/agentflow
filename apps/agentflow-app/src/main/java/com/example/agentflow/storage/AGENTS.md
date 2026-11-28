@@ -2,7 +2,7 @@
 
 > **Owner:** `storage` — provider-neutral object storage contract and the Garage adapter that
 > implements it.
-> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code), `S07-06D` (adapter `get` in code), `S07-06E` (adapter `head`/`list`/`delete` in code).
+> **Applies:** `S02-18` (ownership), `S02-19` (contract, [`object-storage.md`](../../../../../../../../../docs/architecture/object-storage.md)), `S07-06B` (contract in code), `S07-06C` (adapter `put` in code), `S07-06D` (adapter `get` in code), `S07-06E` (adapter `head`/`list`/`delete` in code), `S07-06F` (unified error policy in code).
 > **Authority:** `docs/architecture/object-storage.md` (the contract), `docs/adr/ADR-024-object-storage.md`
 > (consistency/security/lifecycle policy), `docs/architecture/module-map.md` (owners + dependency
 > direction) and `docs/architecture/module-api.md` (public-API boundary). They are the single source
@@ -54,7 +54,7 @@ PostgreSQL rows.
 ```text
 com.example.agentflow.storage/               ← public API boundary (this file)
 ├── (root)           contract: port, value types, error taxonomy, StorageValidation (internal)
-└── adapter/         GarageS3Adapter — the one adapter, internal — `put`, `get`, `head`, `list` and `delete` landed (S07-06C/`S07-06D`/`S07-06E`); the full §9 suite lands with `S07-06H`
+└── adapter/         GarageS3Adapter — the one adapter, internal — `put`, `get`, `head`, `list` and `delete` landed (S07-06C/`S07-06D`/`S07-06E`); one `mapFailure` mapper for every operation (`S07-06F`); the full §9 suite lands with `S07-06H`
 ```
 
 The root package is public: another module may import only the nine types above. `adapter`
@@ -91,5 +91,8 @@ The root package is public: another module may import only the nine types above.
   source of the reference's `contentType`/`sha256`), strictly ascending pages, `PERMANENT_FAILURE` on
   a truncated page without a cursor; `delete` landed with `S07-06E` — idempotent, `DELETED` on a
   present object, `ALREADY_ABSENT` on a missing one, never a failure, never opens content, and does
-  not require the stored-checksum anchor; the full §9-equivalent suite lands with `S07-06H`.
+  not require the stored-checksum anchor; every operation classifies failures through one shared
+  `mapFailure` mapper (`S07-06F`) — only `UNAVAILABLE`/`TIMEOUT` are retryable (the retry loop
+  lives in the bounded wired client, never in the adapter), and the provider request/correlation id is
+  preserved on the exception when supplied; the full §9-equivalent suite lands with `S07-06H`.
 - A new `module → module` edge requires an ADR (root `AGENTS.md`).

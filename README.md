@@ -222,7 +222,13 @@ server-side prefix (1–100 per page, cursor passed through to the provider) wit
 call plus one bounded per-item `headObject` — the only honest source of the reference's
 `contentType`/`sha256` — and requires a strictly ascending page; `delete` is idempotent
 (`DELETED` on a present object, `ALREADY_ABSENT` on a missing one, never a failure, never opens
-content).
+content). Every operation classifies failures through one shared `mapFailure` mapper (`S07-06F`) —
+a deterministic rejection, a typed miss, an SDK timeout, a throttling/`429`/`5xx`, a `401`/`403`,
+a model-level `400`, a `408`/`504` or a transport fault; only `UNAVAILABLE`/`TIMEOUT` are retryable
+(the retry loop itself lives in the bounded wired client, `StandardRetryStrategy` with
+`max-retry-attempts + 1` attempts, bounded connect/socket timeouts — never in the adapter) and the
+provider's request/correlation id, when supplied, is preserved on the exception
+(`ObjectStorageException.requestId()`), never fabricated.
 
 The rules every object flow obeys (fixed in
 [`ADR-024`](docs/adr/ADR-024-object-storage.md)):
