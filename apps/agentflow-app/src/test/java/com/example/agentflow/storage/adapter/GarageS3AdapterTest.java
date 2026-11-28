@@ -29,6 +29,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.core.ResponseInputStream;
+import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.AccessDeniedException;
@@ -37,6 +40,7 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.InvalidRequestException;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
@@ -1194,6 +1198,195 @@ class GarageS3AdapterTest {
                   .doesNotContain("169.254.169.254")
                   .doesNotContain("meta-data")
                   .doesNotContain("tenant/doc");
+            });
+  }
+
+  // ── S07-06F — unified error policy: retry classification + correlation ids ───────────────────
+
+  @Test
+  void a_throttling_service_failure_is_mapped_to_unavailable_and_carries_the_request_id() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(429).requestId("req-123").build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.code().retryable()).isTrue();
+              assertThat(ise.requestId()).contains("req-123");
+            });
+  }
+
+  @Test
+  void a_service_failure_preserves_the_provider_request_id() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).requestId("req-abc").build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.requestId()).contains("req-abc");
+            });
+  }
+
+  @Test
+  void a_request_id_is_never_fabricated_when_the_provider_supplies_none() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.requestId()).isEmpty();
+            });
+  }
+
+  @Test
+  void a_blank_request_id_is_treated_as_absent() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).requestId("   ").build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.requestId()).isEmpty();
+            });
+  }
+
+  @Test
+  void a_model_level_invalid_request_is_mapped_to_invalid_request_not_unavailable() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(InvalidRequestException.builder().statusCode(400).requestId("req-400").build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.INVALID_REQUEST);
+              assertThat(ise.code().retryable()).isFalse();
+              assertThat(ise.requestId()).contains("req-400");
+            });
+  }
+
+  @Test
+  void an_sdk_level_total_call_timeout_is_mapped_to_timeout() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(ApiCallTimeoutException.create(5000L));
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.TIMEOUT);
+              assertThat(ise.code().retryable()).isTrue();
+            });
+  }
+
+  @Test
+  void an_sdk_level_attempt_timeout_is_mapped_to_timeout() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(ApiCallAttemptTimeoutException.create(5000L));
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e ->
+                assertThat(((ObjectStorageException) e).code())
+                    .isEqualTo(ObjectStorageErrorCode.TIMEOUT));
+  }
+
+  @Test
+  void a_transport_failure_with_a_timeout_cause_is_mapped_to_timeout() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(
+            SdkClientException.builder()
+                .message("transport failure")
+                .cause(new java.net.SocketTimeoutException("timed out"))
+                .build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.TIMEOUT);
+              assertThat(ise.code().retryable()).isTrue();
+            });
+  }
+
+  @Test
+  void a_transport_failure_without_a_timeout_cause_is_mapped_to_unavailable() {
+    when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+        .thenThrow(SdkClientException.builder().message("connection refused").build());
+
+    assertThatThrownBy(() -> put("data".getBytes(), 4L, null))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.code().retryable()).isTrue();
+            });
+  }
+
+  @Test
+  void a_missing_key_is_mapped_to_not_found_and_carries_the_provider_request_id() {
+    when(s3Client.getObject(any(GetObjectRequest.class)))
+        .thenThrow(NoSuchKeyException.builder().requestId("req-404").build());
+
+    assertThatThrownBy(() -> adapter.get("tenant/doc/missing.bin"))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.NOT_FOUND);
+              assertThat(ise.code().retryable()).isFalse();
+              assertThat(ise.requestId()).contains("req-404");
+            });
+  }
+
+  @Test
+  void
+      a_service_failure_through_get_preserves_the_request_id_and_never_leaks_it_into_the_message() {
+    when(s3Client.getObject(any(GetObjectRequest.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).requestId("req-get").build());
+
+    assertThatThrownBy(() -> adapter.get("tenant/doc/file.bin"))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.requestId()).contains("req-get");
+              assertThat(ise.getMessage()).doesNotContain("req-get");
+            });
+  }
+
+  @Test
+  void head_and_delete_preserve_the_provider_request_id_on_service_failures() {
+    when(s3Client.headObject(any(HeadObjectRequest.class)))
+        .thenThrow(AwsServiceException.builder().statusCode(503).requestId("req-head").build());
+
+    assertThatThrownBy(() -> adapter.head("tenant/doc/file.bin"))
+        .isInstanceOf(ObjectStorageException.class)
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.requestId()).contains("req-head");
+            });
+
+    assertThatThrownBy(() -> adapter.delete("tenant/doc/file.bin"))
+        .satisfies(
+            e -> {
+              ObjectStorageException ise = (ObjectStorageException) e;
+              assertThat(ise.code()).isEqualTo(ObjectStorageErrorCode.UNAVAILABLE);
+              assertThat(ise.requestId()).contains("req-head");
             });
   }
 }

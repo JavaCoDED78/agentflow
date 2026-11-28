@@ -52,6 +52,31 @@ class ObjectStorageExceptionTest {
   }
 
   @Test
+  void the_request_id_is_carried_and_a_blank_one_is_treated_as_absent() {
+    ObjectStorageException withId =
+        new ObjectStorageException(
+            ObjectStorageErrorCode.UNAVAILABLE, "unavailable", null, "req-1");
+    assertThat(withId.requestId()).contains("req-1");
+
+    ObjectStorageException blank =
+        new ObjectStorageException(ObjectStorageErrorCode.UNAVAILABLE, "unavailable", null, "  ");
+    assertThat(blank.requestId()).isEmpty();
+
+    ObjectStorageException noId =
+        new ObjectStorageException(ObjectStorageErrorCode.UNAVAILABLE, "unavailable");
+    assertThat(noId.requestId()).isEmpty();
+  }
+
+  @Test
+  void the_toString_echoes_the_request_id_when_present_and_never_the_message() {
+    ObjectStorageException exception =
+        new ObjectStorageException(
+            ObjectStorageErrorCode.UNAVAILABLE, "secret message", null, "req-1");
+
+    assertThat(exception.toString()).contains("req-1").doesNotContain("secret message");
+  }
+
+  @Test
   void a_request_value_type_failure_carries_the_stable_code() {
     org.assertj.core.api.Assertions.assertThatThrownBy(
             () ->

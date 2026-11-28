@@ -35,6 +35,12 @@ carrier (`ObjectStorageException` + the `ObjectStorageErrorCode` taxonomy), prov
 `GarageS3Adapter` (`com.example.agentflow.storage.adapter`) implements the `put`, `get`, `head`,
 `list` and `delete` paths against the S3 API — streaming, bounded-memory, checksum-verified — bound
 to the configured bucket; `delete` is idempotent and `list` is paginated over a server-side prefix.
+The error policy landed with `S07-06F`: every operation classifies provider failures through one
+shared `mapFailure` mapper — a deterministic caller-side rejection, a typed miss, the SDK's own
+timeout, a throttling classification or `429`/`5xx`, a `401`/`403`, a model-level `400`, a `408`/`504`,
+or a transport fault; only `UNAVAILABLE`/`TIMEOUT` are retryable (the retry loop itself lives in the
+bounded wired client, never in the adapter) and the provider's request/correlation id, when supplied,
+is preserved on the contract exception.
 Java-shaped signatures below are **indicative contract sketches** where they differ from the code;
 where the code is exact, the code is normative. Naming, annotations and exact method shapes must not
 deviate from this contract without an ADR.
@@ -100,7 +106,23 @@ exceptions into these — no AWS SDK exception, class name or detail may escape 
 Retries (when a caller retries at all) are bounded and exponential with jitter, and applied only to
 `UNAVAILABLE` / `TIMEOUT` — never to `NOT_FOUND`, `ACCESS_DENIED`, `INVALID_*` or `PERMANENT_FAILURE`.
 The full retry policy is the caller's responsibility; `storage` classifies and reports, it does not
-sleep.
+sleep. In the current adapter, the bounded client is the **SDK client itself** — `StandardRetryStrategy`
+with `maxAttempts = agentflow.storage.max-retry-attempts + 1` (default 3 → at most 4 attempts) and
+bounded connect/socket timeouts — so the adapter issues exactly one request per operation and the
+bounded retry, backoff and jitter live in the wired client, never in the adapter and never as an
+unbounded loop. The adapter never re-tries internally and never swallows a failure.
+
+### 2.3.1 Correlation id — `ObjectStorageException.requestId()`
+
+When the provider supplies a request/correlation identifier (the S3 `x-amzn-request-id`, carried on
+the SDK's `AwsServiceException`), the adapter preserves it on the contract exception — the only
+safe value for tracing a failure back to the provider request. It is **never** fabricated: an
+exception that carries no provider-side identifier simply carries none (`Optional.empty()`). It is
+**never** a secret, header, credential or body — the adapter reads exactly the `requestId` value,
+and a blank value is treated as absent. `ObjectStorageException.toString()` echoes only the code
+and the optional correlation id — never the message (a message could carry a key) and never any
+header or credential. Typed caller-side rejections (`INVALID_KEY`/`INVALID_REQUEST`/`NOT_FOUND`
+miss) that never reach the provider carry no id.
 
 ## 3. Streaming and ownership
 
@@ -207,7 +229,7 @@ Guarantees:
   the metadata rows carry no credential-shaped values; logs, metrics, traces, prompts and responses
   never contain credentials, object content, document text, prompts or unrestricted keys (see
   [ADR-024](../adr/ADR-024-object-storage.md) rule 11 and `ADR-020`'s shared redaction gate).
-- **No retry loop.** `storage` classifies and reports; bounded backoff/jitter is the caller's policy.
+- **No retry loop in the adapter.** The retry budget lives in the wired bounded SDK client (`StandardRetryStrategy`, `maxAttempts = max-retry-attempts + 1`) and, if a caller wants its own, a bounded backoff on top. `storage` classifies and reports; the adapter issues exactly one request per operation and never sleeps, never retries internally and never swallows a failure.
 - **No provider types.** No AWS SDK / Garage class crosses the contract boundary in either direction
   (arguments, returns, exceptions). The gate is `StorageBoundaryTest` (contract purity) plus a
   reflection check in the contract suite (§9).
@@ -270,6 +292,7 @@ and failure encoding — it is not a Garage suite (that is `S07-06H`).
 | 9 | **Stream ownership** — the incoming stream is released after `put` (success and failure); the returned stream is released on success and failure | No leaked streams |
 | 10 | **Pagination** — `list` honours `limit`, returns ascending keys, yields a cursor whose page is stable, and `hasMore`/`nextCursor` are consistent with the data | Paginated listing |
 | 11 | **No provider leakage** — reflection over the public API: no `software.amazon.awssdk.*` (or Garage class) in any public parameter, return type or exception | Provider neutrality |
+| 12 | **Unified error policy** — every failure classifies through the single mapper (deterministic rejection / typed miss / SDK timeout / throttling / 401-403 / model-400 / timeout / 5xx / transport) with no drift between operations; correlation ids preserved when supplied, never fabricated; `UNAVAILABLE`/`TIMEOUT` are the only retryable codes | Error taxonomy, retry classification and correlation |
 
 Coverage discipline: the suite runs against **every** adapter (the current Garage adapter in
 `S07-06H` and any future provider), and it is reusable — a second provider adds a new adapter package
@@ -319,7 +342,7 @@ while (page.hasMore()) { page = storage.list("checkpoints/" + tenantId + "/", pa
 | `S07-06C` (landed) | Garage `put` — streaming write, checksum-verified, deterministic overwrite on the same key |
 | `S07-06D` (landed) | Garage `get` streaming — lazy bounded-memory read, released stream, typed not-found |
 | `S07-06E` (landed) | `head` + paginated `list` + idempotent `delete` |
-| `S07-06F` | Timeout/retry/error mapping |
+| `S07-06F` (landed) | Unified error policy — one mapper for every operation, retryable/permanent classification, requestId correlation |
 | `S07-06H` | Garage integration/contract test suite (the §9 suite against a real Garage) |
 
 The contract is **sufficient** for both document originals and workflow artifacts and is **not** a
@@ -341,7 +364,7 @@ against this contract and ADR-024, never as shipped behaviour:
 | 7 | `S07-06C` (landed) | `put` — streaming write to Garage, deterministic replace on the same immutable key |
 | 7 | `S07-06D` (landed) | `get` — bounded streaming read, no `readAllBytes()`; stream released on success/failure/cancellation |
 | 7 | `S07-06E` (landed) | `head` + paginated `list` (server-side prefix only) + idempotent `delete` |
-| 7 | `S07-06F` | Timeout/retry classification and error mapping (`UNAVAILABLE`/`TIMEOUT` retryable, everything else not) |
+| 7 | `S07-06F` (landed) | Unified error policy — one mapper for every operation, `UNAVAILABLE`/`TIMEOUT` retryable, everything else not; requestId preserved when supplied |
 | 7 | `S07-06G` | Credentials: provisioning/admin vs runtime separation; tenant authorization stays in the consuming application service |
 | 7 | `S07-06H` | Garage integration/contract test suite — the §9 suite against a real Garage fixture |
 | 7 | `S07-06I` | `StorageHealthIndicator` + bounded storage metrics (`operation`, `result` — never tenant/key/filename) |

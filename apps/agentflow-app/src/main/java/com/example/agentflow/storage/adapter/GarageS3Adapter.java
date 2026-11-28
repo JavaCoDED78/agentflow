@@ -24,16 +24,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.core.ResponseInputStream;
+import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.core.exception.NonRetryableException;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.AccessDeniedException;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.InvalidRequestException;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
@@ -82,6 +84,20 @@ import software.amazon.awssdk.services.s3.model.S3Object;
  * removed ({@code DELETED}), a missing one returns {@code ALREADY_ABSENT} — a success in either
  * case. All three operations are bound to the configured bucket and never accept one from the
  * caller.
+ *
+ * <p><b>Unified error policy (S07-06F).</b> Every operation classifies provider failures through
+ * the single {@code mapFailure} mapper, so no path can drift on the taxonomy: a deterministic
+ * caller-side rejection (verification failure, {@code INVALID_REQUEST}); a typed missing object
+ * ({@code NOT_FOUND}); the SDK's own per-attempt / total-call timeout ({@code TIMEOUT}); an
+ * explicit throttling classification or {@code 429}/{@code 5xx} ({@code UNAVAILABLE}); a {@code
+ * 401}/{@code 403} ({@code ACCESS_DENIED}); a model-level {@code 400} ({@code INVALID_REQUEST}); a
+ * {@code 408}/{@code 504} ({@code TIMEOUT}); any other structural {@code 4xx} ({@code
+ * PERMANENT_FAILURE}); a transport-level fault ({@code UNAVAILABLE} or {@code TIMEOUT} by cause);
+ * and anything else ({@code PERMANENT_FAILURE}). Only {@code UNAVAILABLE} and {@code TIMEOUT} are
+ * retryable, and the retry loop itself is never this module's business — the bounded SDK client
+ * owns it; the caller may add its own bounded backoff on top. Messages stay key-free and
+ * content-free; the provider's request/correlation id, when supplied, is preserved on the exception
+ * (never a secret).
  */
 public class GarageS3Adapter implements ObjectStoragePort {
 
@@ -188,7 +204,8 @@ public class GarageS3Adapter implements ObjectStoragePort {
     try {
       stream = s3Client.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build());
     } catch (NoSuchKeyException exception) {
-      throw new ObjectStorageException(ObjectStorageErrorCode.NOT_FOUND, "object not found");
+      throw new ObjectStorageException(
+          ObjectStorageErrorCode.NOT_FOUND, "object not found", null, requestIdFrom(exception));
     } catch (Throwable throwable) {
       throw mapFailure(throwable, "get");
     }
@@ -510,42 +527,100 @@ public class GarageS3Adapter implements ObjectStoragePort {
     }
   }
 
+  /**
+   * The unified storage error policy (S07-06F). Every operation classifies provider failures
+   * through this single mapper, so no path can drift on the taxonomy. The order is deliberate:
+   *
+   * <ol>
+   *   <li><b>Deterministic caller-side rejection</b> — a {@link NonRetryableException} anywhere in
+   *       the cause chain (verification failure) → {@code INVALID_REQUEST} (never retried, never
+   *       provider-side).
+   *   <li><b>Missing object</b> — a {@link NoSuchKeyException} (any 404-ish class) → {@code
+   *       NOT_FOUND} (typed miss, never a raw provider exception).
+   *   <li><b>SDK-level timeout</b> — the SDK's own per-attempt / total-call timeout classes →
+   *       {@code TIMEOUT} (retryable).
+   *   <li><b>Service failures</b> — an {@link AwsServiceException}: the SDK's explicit throttling
+   *       classification (or a {@code 429}) → {@code UNAVAILABLE} (retryable); a model {@link
+   *       InvalidRequestException} (a 400-shaped rejection) → {@code INVALID_REQUEST} (a
+   *       deterministic rejection); a {@code 401}/{@code 403} → {@code ACCESS_DENIED}; a {@code
+   *       408}/{@code 504} → {@code TIMEOUT}; a 5xx → {@code UNAVAILABLE} (retryable); anything
+   *       else (structural 4xx, e.g. malformed bucket config) → {@code PERMANENT_FAILURE}.
+   *   <li><b>Transport faults</b> — an {@link SdkClientException}: a timeout-shaped cause → {@code
+   *       TIMEOUT}; otherwise → {@code UNAVAILABLE} (retryable).
+   *   <li>Anything else — {@code PERMANENT_FAILURE}.
+   * </ol>
+   *
+   * <p>Only {@code UNAVAILABLE} and {@code TIMEOUT} are retryable; the retry loop itself is
+   * <b>not</b> this module's business — the bounded SDK client owns it (and the caller may add its
+   * own bounded backoff on top). Messages stay key-free, content-free and detail-free: no key,
+   * content, credential, header or raw provider detail ever reaches the contract boundary. The
+   * provider's request/correlation id, when the provider supplies one, is preserved on the
+   * exception — it is a safe correlation value, never a secret.
+   */
   private ObjectStorageException mapFailure(Throwable throwable, String operation) {
-    // The canonical provider-neutral error policy lives in one place — put and get both classify
-    // provider failures through this single mapper so neither can drift. The messages carry the
-    // operation name, never the key, the content, a credential or the provider's raw detail.
-    // The verifying stream signals a deterministically rejectable payload failure with a
-    // NonRetryableException — the SDK never retries it, and the message is key-free and
-    // content-free.
     for (Throwable current = throwable; current != null; current = current.getCause()) {
       if (current instanceof NonRetryableException nonRetryable) {
+        // The verifying stream signals a deterministically rejectable payload failure — the SDK
+        // never retries it, and the message is key-free and content-free.
         return new ObjectStorageException(
             ObjectStorageErrorCode.INVALID_REQUEST, nonRetryable.getMessage());
       }
     }
-    if (throwable instanceof AccessDeniedException) {
+    if (throwable instanceof NoSuchKeyException) {
       return new ObjectStorageException(
-          ObjectStorageErrorCode.ACCESS_DENIED,
-          "object storage " + operation + " was denied by the provider");
+          ObjectStorageErrorCode.NOT_FOUND, "object storage " + operation + " found no such key");
+    }
+    if (throwable instanceof ApiCallTimeoutException
+        || throwable instanceof ApiCallAttemptTimeoutException) {
+      // The SDK's own timeout class — a bounded wait exceeded, never a generic transport fault.
+      return new ObjectStorageException(
+          ObjectStorageErrorCode.TIMEOUT, "object storage " + operation + " timed out");
     }
     if (throwable instanceof AwsServiceException awsService) {
+      String requestId = requestIdFrom(awsService);
+      if (awsService.isThrottlingException()) {
+        // The SDK's explicit throttling classification — a transient condition, retryable.
+        return new ObjectStorageException(
+            ObjectStorageErrorCode.UNAVAILABLE,
+            "object storage " + operation + " is unavailable",
+            null,
+            requestId);
+      }
+      if (throwable instanceof InvalidRequestException) {
+        // A 400-shaped model rejection — deterministic, never retried.
+        return new ObjectStorageException(
+            ObjectStorageErrorCode.INVALID_REQUEST,
+            "object storage " + operation + " was rejected by the provider",
+            null,
+            requestId);
+      }
       int statusCode = awsService.statusCode();
-      if (statusCode == 403) {
+      if (statusCode == 401 || statusCode == 403) {
         return new ObjectStorageException(
             ObjectStorageErrorCode.ACCESS_DENIED,
-            "object storage " + operation + " was denied by the provider");
+            "object storage " + operation + " was denied by the provider",
+            null,
+            requestId);
       }
       if (statusCode == 408 || statusCode == 504) {
         return new ObjectStorageException(
-            ObjectStorageErrorCode.TIMEOUT, "object storage " + operation + " timed out");
+            ObjectStorageErrorCode.TIMEOUT,
+            "object storage " + operation + " timed out",
+            null,
+            requestId);
       }
       if (statusCode == 429 || statusCode >= 500) {
         return new ObjectStorageException(
-            ObjectStorageErrorCode.UNAVAILABLE, "object storage " + operation + " is unavailable");
+            ObjectStorageErrorCode.UNAVAILABLE,
+            "object storage " + operation + " is unavailable",
+            null,
+            requestId);
       }
       return new ObjectStorageException(
           ObjectStorageErrorCode.PERMANENT_FAILURE,
-          "object storage " + operation + " was rejected by the provider");
+          "object storage " + operation + " was rejected by the provider",
+          null,
+          requestId);
     }
     if (throwable instanceof SdkClientException) {
       // Transport-level fault — provider unreachable or the response could not be read.
@@ -558,6 +633,19 @@ public class GarageS3Adapter implements ObjectStoragePort {
     }
     return new ObjectStorageException(
         ObjectStorageErrorCode.PERMANENT_FAILURE, "object storage " + operation + " failed");
+  }
+
+  /**
+   * The provider's request/correlation id, if it supplied one — never a fabricated value. The
+   * {@link AwsServiceException} carries the {@code x-amzn-request-id}; a blank value is treated as
+   * absent. {@code null} when the provider carried none.
+   */
+  private static String requestIdFrom(AwsServiceException awsService) {
+    String requestId = awsService.requestId();
+    if (requestId != null && !requestId.isBlank()) {
+      return requestId.trim();
+    }
+    return null;
   }
 
   private static boolean isTimeout(Throwable throwable) {

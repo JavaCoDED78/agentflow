@@ -182,11 +182,23 @@ the MVP. Retention is owned by the consumer's state machine:
 
 `storage` classifies and reports; bounded backoff/jitter is the caller's
 policy (the contract test suite `S07-06B` asserts classification, not sleeps).
-Retriable codes: `UNAVAILABLE` / `TIMEOUT` (bounded, jittered). Not retryable:
+In the landed adapter, the retry loop itself lives in the bounded wired SDK client —
+`StandardRetryStrategy` with `maxAttempts = agentflow.storage.max-retry-attempts + 1` (default 3 → at
+most 4 attempts) and bounded connect/socket timeouts — so the adapter issues exactly one request per
+operation and never retries or sleeps internally. The adapter classifies every provider failure
+through one shared `mapFailure` mapper: a deterministic caller-side rejection (verification failure,
+model-level `400`) → `INVALID_REQUEST`; a typed miss → `NOT_FOUND`; the SDK's own per-attempt / total-call
+timeout → `TIMEOUT`; a throttling classification or `429`/`5xx` → `UNAVAILABLE`; a `401`/`403` → `ACCESS_DENIED`;
+a `408`/`504` → `TIMEOUT`; any other structural `4xx` → `PERMANENT_FAILURE`; a transport-level fault →
+`UNAVAILABLE` (or `TIMEOUT` by cause); anything else → `PERMANENT_FAILURE`. Retriable codes: `UNAVAILABLE` / `TIMEOUT` (bounded, jittered). Not retryable:
 `INVALID_KEY` / `INVALID_REQUEST` / `NOT_FOUND` / `ACCESS_DENIED` /
 `PERMANENT_FAILURE`. A storage outage never becomes a run failure — it is a
 typed infra failure the caller classifies and retries within a bounded budget
 (invariant 12).
+
+When the provider supplies a request/correlation id (the S3 `x-amzn-request-id`), the adapter
+preserves it on the contract exception (`ObjectStorageException.requestId()`) — never a secret, never
+a header, never fabricated. `toString()` echoes only the code and the optional id — never the message.
 
 **11. No secrets in the contract, rows, logs or telemetry.**
 
